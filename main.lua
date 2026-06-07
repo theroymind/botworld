@@ -1,10 +1,11 @@
 local bodies = require("lib.bodies")
 local swarm = require("lib.swarm")
 
-local SPAWN_SMALL = 1000
-local SPAWN_LARGE = 10000
+local SPAWN_SMALL = 10000
+local SPAWN_LARGE = 100000
+local SPAWN_HUGE = 1000000
 local ZOOM_STEP = 1.1
-local INITIAL_ZOOM = 0.55
+local INITIAL_ZOOM = 0.045 -- the scaled-up system spans ~8200 world units
 local TIMING_WINDOW = 60 -- frames in the rolling average
 
 local camera = { x = 0, y = 0, zoom = INITIAL_ZOOM }
@@ -26,16 +27,16 @@ end
 
 local function draw_hud()
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.print(string.format("drones  %d", swarm.count), 10, 10)
+  love.graphics.print(string.format("drones  %d / %d", swarm.count, swarm.max_count), 10, 10)
   love.graphics.print(string.format("fps     %d", love.timer.getFPS()), 10, 26)
-  love.graphics.print(string.format("update  %.2f ms", rolling_average(update_samples)), 10, 42)
+  local update_text =
+    string.format("update  %.2f ms (bodies + uniforms only)", rolling_average(update_samples))
+  local draw_text =
+    string.format("draw    %.2f ms (cpu submit; gpu = fps drop)", rolling_average(draw_samples))
+  love.graphics.print(update_text, 10, 42)
+  love.graphics.print(draw_text, 10, 58)
   love.graphics.print(
-    string.format("draw    %.2f ms (cpu submit only)", rolling_average(draw_samples)),
-    10,
-    58
-  )
-  love.graphics.print(
-    "[space] +1k   [b] +10k   [c] clear   [wheel] zoom   [drag] pan   [esc] quit",
+    "[space] +10k   [b] +100k   [m] +1M   [c] clear   [wheel] zoom   [drag] pan   [esc] quit",
     10,
     82
   )
@@ -76,6 +77,8 @@ function love.keypressed(key)
     swarm.add(SPAWN_SMALL)
   elseif key == "b" then
     swarm.add(SPAWN_LARGE)
+  elseif key == "m" then
+    swarm.add(SPAWN_HUGE)
   elseif key == "c" then
     swarm.clear()
   elseif key == "escape" then
