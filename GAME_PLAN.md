@@ -58,7 +58,7 @@ number of *live* concepts stays ~2 (older phases collapse — see Automation ram
 
 | # | Phase | Optimization family (the fresh verb) | Mega-project (evolve-gate) | Tier |
 |---|-------|--------------------------------------|----------------------------|------|
-| 1 | Cell | Spatial point-buy — arrange genes on a strand (adjacency) | biofilm → multicellularity | 1 |
+| 1 | Cell | Grow a colony — direct trait levels + milestone unlocks (incl. predation) | biofilm → multicellularity | 1 |
 | 2 | Complex cells | Rate-balancing — match grow vs. burn to intake | organelle suite / proto-body | 2 |
 | 3 | Organisms | Constrained point-buy — limbs/size/sensors under a cap | a viable body plan | 2 |
 | 4 | Primitive animals/insects | Equilibrium / homeostat — set caste %s, watch it settle | the hive / nest | 3 |
@@ -71,7 +71,7 @@ number of *live* concepts stays ~2 (older phases collapse — see Automation ram
 | 11 | Transcendence | Multi-objective sculpting — weight every prior output, no single best | transcendence engine | 5 |
 
 Advancing a phase = prestige: the previous phase collapses into a single producing number
-with carried multipliers (genome → inherited gene multipliers; rocket design → launch
+with carried multipliers (cell colony → carried net multiplier; rocket design → launch
 efficiency; etc.).
 
 *Reconciliation note:* the original plan listed 6 layers; this is the expanded 11. The
@@ -127,10 +127,13 @@ Fixed-timestep clock, layer registry, generic economy (generators + upgrades + o
 save), immediate-mode UI, GPU swarm renderer.
 
 ### Phase 1 — One playable cell layer
-Replace the cell stub with a real loop: biomass faucet + auto-division, the **genome
-strand** (spatial point-buy with adjacency synergy, each gene visibly expressed), the
-**first knob** (a manual risk/reward dial with the self-defeating dynamic), a maturity
-evolve-gate stub, save + offline progress. The first test of the core verb.
+Replace the cell stub with a real loop: a living micro-world of cells that drift, sense
+and eat nutrient motes, divide (the swarm fills as you grow), and evolve. Upgrades are
+**direct trait levels** (concrete buffs, each visibly expressed) plus **milestone
+unlocks** (photosynthesis → predation); the **first knob** is a manual risk/reward
+metabolism dial with the self-defeating dynamic; feeding is clickable nutrient blooms;
+a colony-size evolve-gate, save + offline progress. The first test of the core verb. See
+`docs/CELL_LAYER.md`.
 
 ### Phase 2 — One beautiful layer
 Make the cell layer feel alive: metaball/blob rendering, particle food, organic motion

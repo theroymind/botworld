@@ -26,13 +26,28 @@ local PANEL_BORDER_ALPHA = 0.2
 local SUBLABEL_FONT_SIZE = 10
 local SUBLABEL_ALPHA = 0.6
 
+local SLIDER_TRACK_ALPHA = 0.18
+local SLIDER_FILL_ALPHA = 0.5
+local SLIDER_HANDLE_ALPHA = 0.9
+local SLIDER_MARKER_ALPHA = 0.7
+
 local mouse_x, mouse_y = 0, 0
 local pending_click_x, pending_click_y -- recorded by mousepressed, latched by begin_frame
 local click_x, click_y -- this frame's unconsumed click, nil once a button takes it
+local slider_drag -- x of the slider being dragged this gesture, or nil
 local sublabel_font -- lazily created, cached for the lifetime of the module
 
 local function point_in_rect(px, py, x, y, w, h)
   return px ~= nil and px >= x and px < x + w and py >= y and py < y + h
+end
+
+local function clamp01(value)
+  if value < 0 then
+    return 0
+  elseif value > 1 then
+    return 1
+  end
+  return value
 end
 
 -- Host forwards LÖVE's mousepressed here; only button 1 registers.
@@ -116,6 +131,54 @@ function ui.panel(x, y, w, h)
   love.graphics.setColor(1, 1, 1, PANEL_BORDER_ALPHA)
   love.graphics.rectangle("line", x, y, w, h)
   love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- Horizontal drag dial in [0, 1]. Grab anywhere on the track and drag; the
+-- gesture sticks until the mouse releases, even if it strays off the track.
+-- Returns the (possibly updated) value. opts.marker draws a tick at a value in
+-- [0, 1] (e.g. the metabolism optimum). Consumes a click that starts a drag so
+-- the background tap-to-feed never fights the dial.
+function ui.slider(x, y, w, h, value, opts)
+  opts = opts or {}
+  if point_in_rect(click_x, click_y, x, y, w, h) then
+    slider_drag = x
+    click_x, click_y = nil, nil
+  end
+  if not love.mouse.isDown(1) then
+    slider_drag = nil
+  end
+  if slider_drag == x then
+    value = clamp01((mouse_x - x) / w)
+  else
+    value = clamp01(value)
+  end
+
+  local mid = math.floor(y + h / 2)
+  love.graphics.setColor(1, 1, 1, SLIDER_TRACK_ALPHA)
+  love.graphics.rectangle("fill", x, mid - 2, w, 4)
+  love.graphics.setColor(1, 1, 1, SLIDER_FILL_ALPHA)
+  love.graphics.rectangle("fill", x, mid - 2, w * value, 4)
+  if opts.marker then
+    local mx = x + w * clamp01(opts.marker)
+    love.graphics.setColor(1, 1, 1, SLIDER_MARKER_ALPHA)
+    love.graphics.rectangle("fill", mx - 1, y, 2, h)
+  end
+  love.graphics.setColor(1, 1, 1, SLIDER_HANDLE_ALPHA)
+  love.graphics.rectangle("fill", x + w * value - 4, y, 8, h)
+  love.graphics.setColor(1, 1, 1, 1)
+  return value
+end
+
+-- Returns this frame's click position if no widget has consumed it yet, and
+-- clears it. For click-anywhere-background actions (e.g. tap to feed). Call
+-- after every widget, before end_frame.
+function ui.consume_click()
+  if click_x then
+    local x, y = click_x, click_y
+    click_x, click_y = nil, nil
+    return x, y
+  end
+  return nil
 end
 
 return ui

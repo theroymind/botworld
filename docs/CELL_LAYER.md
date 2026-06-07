@@ -4,6 +4,46 @@ The first scale of botworld (layer 1 in `GAME_PLAN.md`). Companion to the master
 plan; this file owns the cell layer's gameplay and visual detail. Distilled from a
 design session, 2026-06-07.
 
+## Course-correction (2026-06-07): living micro-world + direct traits
+
+The first prototype rendered one big blob and an abstract *genome strand* (slots +
+splice + a hidden adjacency synergy). It missed the fantasy. The cell layer is now a
+**living micro-world**: a *myriad* of small cells of your design drift through a
+nutrient medium, sense and chase food, divide so the swarm fills as you grow, and evolve
+new capabilities. The strand sections below are **superseded** by this note; the
+**fantasy, the metabolism dial, the visuals-as-readout pillar, and prestige** all carry
+over unchanged.
+
+**Upgrades are direct trait levels, not a strand.** Five concrete, gamified traits, each
+levelled independently for a rising per-trait cost, each visibly changing every cell:
+
+| Trait | Concrete hint | Reads on the cell |
+|---|---|---|
+| Photosynthesis | +18% biomass/sec | greener body + pigment nucleus |
+| Motility | swim speed +12% | a flagellar tail, longer = faster |
+| Chemotaxis | sense range +14 | reaches more food (wider hunt) |
+| Digestion | +15% feed speed | enzyme speckles + richer bloom yield |
+| Membrane | defense +5% | a retention rim; shrugs off predators |
+
+No slots, no splicing, no hidden synergy — every row says exactly what it does.
+
+**Milestone unlocks are the evolution spine.** Capabilities open automatically as the
+colony grows, each adding a closed-form income channel *and* world contents *and* a
+visual tell: **Absorption** (start — ambient motes) → **Photosynthesis** (light →
+biomass; reveals the trait) → **Phagocytosis / Predation** (your cells hunt & engulf
+prey — legitimate at the unicellular scale) → **Predators** (paired hazard cells that
+eat low-defense cells; Membrane mitigates; live-only and always healable).
+
+**Feeding is clickable nutrient blooms.** A bloom glows for ~3s; click it to credit a
+biomass burst and scatter motes the cells then chase. The only manual feed — no "dish".
+
+**The economy is an authoritative closed form; the swarm is a cosmetic skin.** Net
+biomass/sec = per-cell yield × colony size (saturating), which is what idle/offline run
+on, so they never depend on the live agents. The live sim's only couplings back to the
+economy are the bloom click (credit) and a predator kill (debit, live-only). Modules:
+`traits.lua` (levels + unlocks → a `stats` fold), `world.lua` (the agent sim, seeded +
+capped), `sim.lua` (the closed form), `view.lua` (render), `cell.lua` (orchestrator).
+
 ## Fantasy
 
 You don't *play* a cell — you *influence a soup*. You're a gentle hand on a shared
@@ -14,8 +54,10 @@ incremental feeling comes from the soup metabolizing while you're away.
 
 ## Pillars (cell-specific; inherits the master pillars)
 
-- **The genome strand IS the tech tree.** No abstract upgrade list — a literal,
-  visible strand of genes you edit. Every gene shows on the cell.
+- **The genome strand IS the tech tree.** *(Superseded — see the course-correction
+  above: upgrades are now direct trait levels. The "every gene shows on the cell"
+  intent carries over as "every trait level visibly changes every cell".)* No abstract
+  upgrade list — a literal, visible strand of genes you edit. Every gene shows on the cell.
 - **Visuals are the progression readout.** You read your build by looking at the dish,
   not at a number. A flagellum *appears*; pigment *recolors*; the membrane *thickens*.
 - **Co-op is ambient synergy, not commerce.** Distinct lineages in a shared world help
@@ -55,7 +97,7 @@ benchmark.
 
 ---
 
-## The genome strand (core progression)
+## The genome strand (core progression) — superseded (see course-correction above)
 
 A linear strand of **gene slots**, drawn along an edge of the screen and mirrored onto
 the cell. This replaces the conventional "buy generator N" list.

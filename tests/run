@@ -1,11 +1,23 @@
 #!/bin/sh
-# Run the economy spec with the first available Lua interpreter.
+# Run every tests/*_spec.lua with the first available Lua interpreter.
 set -e
 cd "$(dirname "$0")/.."
+lua=""
 for interpreter in lua5.1 luajit lua texlua; do
   if command -v "$interpreter" >/dev/null 2>&1; then
-    exec "$interpreter" tests/economy_spec.lua
+    lua="$interpreter"
+    break
   fi
 done
-echo "tests/run: no lua interpreter found (tried lua5.1, luajit, lua, texlua)" >&2
-exit 1
+if [ -z "$lua" ]; then
+  echo "tests/run: no lua interpreter found (tried lua5.1, luajit, lua, texlua)" >&2
+  exit 1
+fi
+status=0
+for spec in tests/*_spec.lua; do
+  echo "== $spec"
+  if ! "$lua" "$spec"; then
+    status=1
+  fi
+done
+exit $status

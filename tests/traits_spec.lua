@@ -1,0 +1,146 @@
+-- Standalone spec for lib/layers/cell/traits.lua.
+-- Plain Lua 5.1, no framework. Run from the repo root: lua tests/traits_spec.lua
+local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
+package.path = root .. "/?.lua;" .. package.path
+
+local traits = require("lib.layers.cell.traits")
+
+local checks = 0
+
+local function check(condition, label)
+  checks = checks + 1
+  if not condition then
+    error("FAILED: " .. label, 2)
+  end
+end
+
+local function approx(a, b)
+  return math.abs(a - b) < 1e-9
+end
+
+-- Fresh state: every trait at level 0, nothing unlocked.
+local t = traits.new()
+check(t.levels.photosynthesis == 0, "fresh photosynthesis level 0")
+check(t.levels.membrane == 0, "fresh membrane level 0")
+check(next(t.unlocked) == nil, "fresh unlocked set empty")
+
+-- Neutral stats at all-zero: multipliers 1, bases at founder values, defense 0.
+local s0 = traits.stats(t)
+check(approx(s0.photo_mult, 1), "neutral photo multiplier")
+check(approx(s0.forage_mult, 1), "neutral forage multiplier")
+check(approx(s0.feed_rate, 1), "neutral feed rate")
+check(approx(s0.yield_mult, 1), "neutral yield multiplier")
+check(approx(s0.upkeep_mult, 1), "neutral upkeep multiplier")
+check(approx(s0.defense, 0), "zero defense at level 0")
+check(s0.speed > 0, "founder swim speed positive")
+check(s0.sense_range > 0, "founder sense range positive")
+
+-- Each trait moves exactly its own stat.
+t = traits.new()
+traits.level(t, "photosynthesis")
+check(approx(traits.stats(t).photo_mult, 1.18), "one photosynthesis level -> +18% gain")
+
+t = traits.new()
+traits.level(t, "motility")
+local base_speed = traits.stats(traits.new()).speed
+check(approx(traits.stats(t).speed, base_speed * 1.12), "one motility level -> +12% speed")
+check(traits.stats(t).forage_mult > 1, "motility also grants a small forage gain")
+
+t = traits.new()
+traits.level(t, "sensing")
+local base_sense = traits.stats(traits.new()).sense_range
+check(approx(traits.stats(t).sense_range, base_sense + 14), "one sensing level -> +14 range")
+
+t = traits.new()
+traits.level(t, "digestion")
+check(approx(traits.stats(t).feed_rate, 1.15), "one digestion level -> +15% feed")
+check(traits.stats(t).yield_mult > 1, "digestion also nudges yield")
+
+-- Membrane: defense is bounded [0,1) and diminishing; upkeep shrinks.
+t = traits.new()
+for _ = 1, 5 do
+  traits.level(t, "membrane")
+end
+local m5 = traits.stats(t)
+check(approx(m5.defense, 1 - 1 / (1 + 5 * 0.05)), "defense uses the diminishing formula")
+check(m5.defense > 0 and m5.defense < 1, "defense stays inside [0,1)")
+check(m5.upkeep_mult < 1, "membrane shrinks upkeep")
+-- More levels never reach full immunity.
+for _ = 1, 1000 do
+  traits.level(t, "membrane")
+end
+check(traits.stats(t).defense < 1, "defense never reaches full immunity")
+
+-- Per-trait cost is geometric and independent across rows.
+t = traits.new()
+local photo_base = traits.cost(t, "photosynthesis")
+check(photo_base == 10, "photosynthesis base cost")
+traits.level(t, "photosynthesis")
+check(traits.cost(t, "photosynthesis") == math.ceil(10 * 1.5), "cost rises after a level")
+check(traits.cost(t, "motility") == 8, "leveling one trait does not raise another's cost")
+
+-- Unknown id is rejected and costs infinity (unaffordable).
+check(not traits.level(t, "nonsense"), "unknown trait rejected")
+check(traits.cost(t, "nonsense") == math.huge, "unknown trait costs infinity")
+
+-- Hints are concrete strings.
+check(traits.hint("membrane") == "defense +5%", "membrane hint reads concretely")
+
+-- Photosynthesis row is locked until its milestone fires; others are free.
+t = traits.new()
+check(not traits.is_available(t, "photosynthesis"), "photosynthesis locked at start")
+check(traits.is_available(t, "motility"), "motility available at start")
+
+-- Unlocks: fire by id, flip is_unlocked, raise income, advance next_unlock.
+t = traits.new()
+check(not traits.is_unlocked(t, "photosynthesis"), "photosynthesis unlock starts off")
+check(approx(traits.income_mult(t), 1), "no income channels before any unlock")
+local first = traits.next_unlock(t)
+check(first.id == "photosynthesis", "photosynthesis is the first milestone")
+check(first.pop > 0, "milestone carries a colony threshold")
+
+local fired = traits.unlock(t, "photosynthesis")
+check(fired and fired.id == "photosynthesis", "unlock returns the def on first fire")
+check(traits.is_unlocked(t, "photosynthesis"), "unlock flips is_unlocked")
+check(traits.is_available(t, "photosynthesis"), "photosynthesis row available after unlock")
+check(traits.income_mult(t) > 1, "unlocking opens an income channel")
+check(traits.unlock(t, "photosynthesis") == nil, "re-firing a unlock is a no-op")
+check(traits.next_unlock(t).id == "predation", "next milestone advances to predation")
+
+-- Predation is the income + world-contents milestone.
+traits.unlock(t, "predation")
+check(traits.next_unlock(t) == nil, "no milestones left once both fire")
+local pred = nil
+for _, def in ipairs(traits.unlocks()) do
+  if def.id == "predation" then
+    pred = def
+  end
+end
+check(pred.spawns_prey and pred.enables_predators, "predation spawns prey and enables predators")
+
+-- Serialize -> load round-trip preserves levels and unlocks.
+t = traits.new()
+traits.level(t, "photosynthesis")
+traits.level(t, "photosynthesis")
+traits.level(t, "membrane")
+traits.unlock(t, "photosynthesis")
+local loaded = traits.load(traits.serialize(t))
+check(loaded.levels.photosynthesis == 2, "round-trip trait level")
+check(loaded.levels.membrane == 1, "round-trip second trait level")
+check(traits.is_unlocked(loaded, "photosynthesis"), "round-trip unlock")
+check(approx(traits.stats(loaded).photo_mult, traits.stats(t).photo_mult), "round-trip stats")
+
+-- Load tolerates missing, partial, and stale data.
+local fresh = traits.load(nil)
+check(fresh.levels.photosynthesis == 0, "load nil: fresh levels")
+check(next(fresh.unlocked) == nil, "load nil: nothing unlocked")
+local stale = traits.load({
+  levels = { photosynthesis = 3, ghost_trait = 9 },
+  unlocked = { predation = true, ghost_unlock = true },
+})
+check(stale.levels.photosynthesis == 3, "stale load: known level kept")
+check(stale.levels.motility == 0, "stale load: missing level defaults to 0")
+check(traits.is_unlocked(stale, "predation"), "stale load: known unlock kept")
+check(stale.unlocked.ghost_unlock == nil, "stale load: unknown unlock dropped")
+
+print("all tests passed (" .. checks .. " checks)")
