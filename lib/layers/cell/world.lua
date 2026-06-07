@@ -36,6 +36,19 @@ local MAX_AGENTS = 300 -- the bounded visual sample of the colony
 local MAX_BORN_PER_UPDATE = 4 -- smooth fill-in; no flurry on offline return
 local CELL_SPAWN_SPREAD = 16 -- daughter cell offset from a parent
 
+-- Eating-driven division (cosmetic; the closed-form economy stays the ceiling).
+-- A cell engulfs a morsel over FEED_TIME -- sped up by the digestion feed_rate, so
+-- that trait finally reads visually -- counts morsels eaten, and splits once it
+-- has eaten its per-cell quota (a fresh draw in [DIVIDE_FOOD_MIN, DIVIDE_FOOD_MAX]
+-- per (re)birth, so splits stagger instead of pulsing in lockstep). Division only
+-- fires within the per-frame birth budget reconcile hands out; when the economy
+-- leads the swarm by more than CATCHUP_GAP (an offline return), the fast catch-up
+-- fills the swarm directly instead of waiting on earned splits.
+local FEED_TIME = 2.0 -- base seconds to engulf one morsel (digestion feed_rate divides this)
+local FEED_APPROACH = 10 -- rate a latched cell eases onto its morsel (smooth, no teleport-snap)
+local DIVIDE_FOOD_MIN, DIVIDE_FOOD_MAX = 3, 6 -- morsels eaten before a cell may split
+local CATCHUP_GAP = 1 -- economy lead beyond which fast catch-up fills the swarm
+
 -- Field side steps up in TIERS with colony size: {pop_threshold, field_w},
 -- ascending. The field is the largest tier whose threshold the colony has
 -- reached -- a step function, so the fit-camera holds steady within a tier and
@@ -193,12 +206,17 @@ function world.add_food_burst(state, x, y, n)
 end
 
 -- Hit-test the active nutrient blooms; returns the bloom (and removes it) if the
--- point lands inside one, else nil. The orchestrator routes the credit + burst.
-function world.hit_bloom(state, x, y)
+-- point lands within `radius` world units of one, else nil. `radius` comes from
+-- the view -- the bloom's UI-constant on-screen size projected to world units at
+-- the current zoom -- so clicks line up with the drawn disk regardless of tier;
+-- a small fallback keeps a radius-less call working. The orchestrator routes the
+-- credit + burst.
+function world.hit_bloom(state, x, y, radius)
+  local r = radius or 24
   for i = #state.blooms, 1, -1 do
     local b = state.blooms[i]
     local dx, dy = x - b.x, y - b.y
-    if dx * dx + dy * dy <= b.radius * b.radius then
+    if dx * dx + dy * dy <= r * r then
       table.remove(state.blooms, i)
       return b
     end
@@ -211,42 +229,78 @@ function world.any_bloom(state)
   return state.blooms[1]
 end
 
-local function spawn_cell(state)
-  local x, y
-  if #state.cells > 0 then
-    -- Daughters scatter around a random parent.
-    local parent = state.cells[rint(state, #state.cells)]
-    x = parent.x + rsign(state) * CELL_SPAWN_SPREAD
-    y = parent.y + rsign(state) * CELL_SPAWN_SPREAD
-  else
-    -- Founder sits dead-centre so the camera can zoom onto it without hunting.
-    x = state.field_w / 2
-    y = state.field_h / 2
-  end
+-- A cell's division quota: how many morsels it must eat before it may split,
+-- drawn fresh in [DIVIDE_FOOD_MIN, DIVIDE_FOOD_MAX] for each (re)birth.
+local function div_need(state)
+  return DIVIDE_FOOD_MIN - 1 + rint(state, DIVIDE_FOOD_MAX - DIVIDE_FOOD_MIN + 1)
+end
+
+-- Factory: append a fresh cell at (x, y) with all per-cell state. eaten/need
+-- pace eating-fed division; feeding/feed_target are the engulf latch (nil while
+-- roaming). These live on the ENTITY -- never on the shared frozen RENDER_CELL.
+local function new_cell(state, x, y)
+  local seed = rnd(state) -- per-cell wobble phase; drawn before need for determinism
+  local need = div_need(state)
   state.cells[#state.cells + 1] = {
     x = x,
     y = y,
     vx = 0,
     vy = 0,
     age = 0, -- drives the mitosis pop-in
-    seed = rnd(state), -- per-cell wobble phase
+    seed = seed,
+    eaten = 0, -- morsels engulfed toward `need`
+    need = need, -- quota to reach before splitting
+    feeding = nil, -- > 0 while engulfing a morsel (remaining seconds)
+    feed_target = nil, -- the morsel entity being engulfed
     render = RENDER_CELL,
   }
 end
 
--- Grow toward / shrink to the colony size. Growth is rate-limited so a big
--- offline jump fills in smoothly; shrink (only on evolve, target 0) is prompt
--- and the view's fusion beat covers it.
-local function reconcile(state, target)
-  target = math.min(math.max(target, 0), MAX_AGENTS)
-  local born = 0
-  while #state.cells < target and born < MAX_BORN_PER_UPDATE do
-    spawn_cell(state)
-    born = born + 1
+-- Spawn a cell with auto-placement: a founder dead-centre (so the camera can
+-- zoom onto it without hunting), else a daughter scattered around a random
+-- parent. Used by reconcile's founder / fast-catch-up fill; an EARNED split
+-- calls new_cell directly beside the dividing cell.
+local function spawn_cell(state)
+  local x, y
+  if #state.cells > 0 then
+    local parent = state.cells[rint(state, #state.cells)]
+    x = parent.x + rsign(state) * CELL_SPAWN_SPREAD
+    y = parent.y + rsign(state) * CELL_SPAWN_SPREAD
+  else
+    x = state.field_w / 2
+    y = state.field_h / 2
   end
+  new_cell(state, x, y)
+end
+
+-- Reconcile the swarm toward the colony size and return this frame's budget for
+-- EARNED (eating-driven) splits. Three regimes:
+--   * shrink   -- over target (evolve to 0, or MAX_AGENTS overflow): prune now;
+--                 the view's fusion beat covers an evolve. Free any morsel a
+--                 pruned cell was engulfing so it rejoins the drifting field.
+--   * founder / fast catch-up -- empty, or the economy leads by more than
+--                 CATCHUP_GAP (an offline return): fill directly, rate-limited,
+--                 and grant NO earned births this frame (return 0).
+--   * trickle  -- within CATCHUP_GAP of target: hand step_cells a budget so the
+--                 last cells of the +1 economy trickle are EARNED by eating.
+local function reconcile(state, target)
+  target = clamp(target, 0, MAX_AGENTS)
   while #state.cells > target do
+    local victim = state.cells[#state.cells]
+    if victim.feed_target then
+      victim.feed_target.claimed = nil
+    end
     state.cells[#state.cells] = nil
   end
+  if #state.cells == 0 or target - #state.cells > CATCHUP_GAP then
+    local born = 0
+    while #state.cells < target and born < MAX_BORN_PER_UPDATE do
+      spawn_cell(state)
+      born = born + 1
+    end
+    return 0
+  end
+  return math.min(target - #state.cells, MAX_BORN_PER_UPDATE)
 end
 
 -- Drift a list of motes one frame. Burst motes (settle > 0) integrate their
@@ -256,29 +310,33 @@ end
 local function drift_field(state, list, dt, speed)
   local w, h = state.field_w, state.field_h
   for _, p in ipairs(list) do
-    if p.settle and p.settle > 0 then
-      -- === burst phase: integrate velocity, damp, wrap (no bounce) ===
-      p.x = p.x + p.vx * dt
-      p.y = p.y + p.vy * dt
-      local damp = math.max(0, 1 - BURST_DAMPING * dt)
-      p.vx, p.vy = p.vx * damp, p.vy * damp
-      p.settle = p.settle - dt
-      if p.settle <= 0 then
-        p.settle = nil -- graduate to ambient milling next frame
-      end
-      -- Toroidal wrap: a spray mote that flies past an edge re-enters opposite
-      -- (the realm is endless; the off-screen margin hides the seam).
-      p.x = p.x % w
-      p.y = p.y % h
-    else
-      -- === ambient milling: wrap modulo field, gentle random re-aim ===
-      p.x = (p.x + p.vx * dt) % w
-      p.y = (p.y + p.vy * dt) % h
-      p.vx = p.vx + rsign(state) * speed * dt
-      p.vy = p.vy + rsign(state) * speed * dt
-      local sp = math.sqrt(p.vx * p.vx + p.vy * p.vy)
-      if sp > speed then
-        p.vx, p.vy = p.vx / sp * speed, p.vy / sp * speed
+    -- A morsel mid-engulf sits still beneath the feeding cell (which snaps onto
+    -- it); skip drift so it doesn't squirm out from under the parked cell.
+    if not p.claimed then
+      if p.settle and p.settle > 0 then
+        -- === burst phase: integrate velocity, damp, wrap (no bounce) ===
+        p.x = p.x + p.vx * dt
+        p.y = p.y + p.vy * dt
+        local damp = math.max(0, 1 - BURST_DAMPING * dt)
+        p.vx, p.vy = p.vx * damp, p.vy * damp
+        p.settle = p.settle - dt
+        if p.settle <= 0 then
+          p.settle = nil -- graduate to ambient milling next frame
+        end
+        -- Toroidal wrap: a spray mote that flies past an edge re-enters opposite
+        -- (the realm is endless; the off-screen margin hides the seam).
+        p.x = p.x % w
+        p.y = p.y % h
+      else
+        -- === ambient milling: wrap modulo field, gentle random re-aim ===
+        p.x = (p.x + p.vx * dt) % w
+        p.y = (p.y + p.vy * dt) % h
+        p.vx = p.vx + rsign(state) * speed * dt
+        p.vy = p.vy + rsign(state) * speed * dt
+        local sp = math.sqrt(p.vx * p.vx + p.vy * p.vy)
+        if sp > speed then
+          p.vx, p.vy = p.vx / sp * speed, p.vy / sp * speed
+        end
       end
     end
   end
@@ -347,7 +405,7 @@ local function nearest_food(grid, foods, x, y, range)
           local f = foods[idx]
           local dx, dy = f.x - x, f.y - y
           local d2 = dx * dx + dy * dy
-          if d2 < best then
+          if not f.claimed and d2 < best then
             best = d2
             found = idx
           end
@@ -366,7 +424,7 @@ local function nearest_prey(prey, x, y, range)
     local p = prey[i]
     local dx, dy = p.x - x, p.y - y
     local d2 = dx * dx + dy * dy
-    if d2 < best then
+    if not p.claimed and d2 < best then
       best = d2
       found = i
     end
@@ -407,71 +465,113 @@ local function separation_push(grid, cells, self_i, x, y, radius)
   return px, py
 end
 
-local function step_cells(state, dt, stats, tempo, hunt_prey)
+-- Advance every cell one frame. `births` is reconcile's earned-split budget for
+-- this frame; a cell that finishes a meal having reached its quota consumes one.
+-- Each cell is either ENGULFING (parked on a latched morsel, draining its feed
+-- timer) or ROAMING (sense -> steer -> move -> latch a morsel on contact). No
+-- `continue` in Lua 5.1, so the two states branch with if/else.
+local function step_cells(state, dt, stats, tempo, hunt_prey, births)
   local speed = stats.speed
   local sense = stats.sense_range
+  local feed_rate = stats.feed_rate or 1 -- digestion: >1 shortens the feed pause
   local grid = build_hash(state.foods)
   -- Hash the cells too, so each can cheaply repel its crowding neighbors. Built
   -- from this frame's start positions (standard boids); deterministic.
   local cell_grid = build_hash(state.cells)
   local w, h = state.field_w, state.field_h
+  -- Fixed limit: daughters appended this frame aren't iterated until next frame.
   for ci = 1, #state.cells do
     local c = state.cells[ci]
     c.age = c.age + dt
-    -- Pick the nearest target: a food mote, or (when hunting) the nearer of food
-    -- and prey. The chosen target both steers and gets eaten on contact.
-    local food_i, food_d2 = nearest_food(grid, state.foods, c.x, c.y, sense)
-    local tx, ty, target_kind, target_idx
-    if food_i then
-      tx, ty, target_kind, target_idx = state.foods[food_i].x, state.foods[food_i].y, "food", food_i
-    end
-    if hunt_prey then
-      local prey_i, prey_d2 = nearest_prey(state.prey, c.x, c.y, sense)
-      if prey_i and (not food_i or prey_d2 < food_d2) then
-        tx, ty, target_kind, target_idx = state.prey[prey_i].x, state.prey[prey_i].y, "prey", prey_i
+
+    if c.feeding then
+      -- === engulfing: park on the morsel and drain the feed timer ===
+      local m = c.feed_target
+      if not m or m.dead then
+        -- The morsel vanished underneath us: drop the latch and roam next frame.
+        c.feeding = nil
+        c.feed_target = nil
+      else
+        -- Ease onto the morsel rather than snapping, so latching reads as gently
+        -- settling in (no teleport). The claimed morsel sits still -> this converges.
+        local k = math.min(1, FEED_APPROACH * dt)
+        c.vx, c.vy = 0, 0
+        c.x = c.x + (m.x - c.x) * k
+        c.y = c.y + (m.y - c.y) * k
+        c.feeding = c.feeding - dt
+        if c.feeding <= 0 then
+          -- Engulfed: consume the morsel, bank a meal, and split if the quota is
+          -- met AND this frame's earned-birth budget allows (economy is the cap).
+          m.dead = true
+          m.claimed = nil
+          c.feeding = nil
+          c.feed_target = nil
+          c.eaten = c.eaten + 1
+          if c.eaten >= c.need and births > 0 then
+            new_cell(state, c.x + rsign(state) * CELL_SPAWN_SPREAD, c.y + rsign(state) * CELL_SPAWN_SPREAD)
+            births = births - 1
+            c.eaten = 0
+            c.need = div_need(state)
+          end
+        end
       end
-    end
-
-    if tx then
-      local dx, dy = tx - c.x, ty - c.y
-      local d = math.sqrt(dx * dx + dy * dy) + 1e-6
-      c.vx = c.vx + (dx / d) * speed * STEER_GAIN * dt
-      c.vy = c.vy + (dy / d) * speed * STEER_GAIN * dt
     else
-      local agit = 0.5 + tempo
-      c.vx = c.vx + rsign(state) * CELL_DRIFT * agit * dt
-      c.vy = c.vy + rsign(state) * CELL_DRIFT * agit * dt
-    end
+      -- === roaming: pick the nearest target (a food mote, or when hunting the
+      -- nearer of food and prey), steer toward it, move, then latch on contact ===
+      local food_i, food_d2 = nearest_food(grid, state.foods, c.x, c.y, sense)
+      local tx, ty, target_kind, target_idx
+      if food_i then
+        tx, ty, target_kind, target_idx = state.foods[food_i].x, state.foods[food_i].y, "food", food_i
+      end
+      if hunt_prey then
+        local prey_i, prey_d2 = nearest_prey(state.prey, c.x, c.y, sense)
+        if prey_i and (not food_i or prey_d2 < food_d2) then
+          tx, ty, target_kind, target_idx = state.prey[prey_i].x, state.prey[prey_i].y, "prey", prey_i
+        end
+      end
 
-    -- Spread from crowding neighbors (survivability): always on, so the colony
-    -- fans out even while everyone chases the same bloom.
-    local px, py = separation_push(cell_grid, state.cells, ci, c.x, c.y, SEPARATION_RADIUS)
-    c.vx = c.vx + px * SEPARATION_GAIN * dt
-    c.vy = c.vy + py * SEPARATION_GAIN * dt
+      if tx then
+        local dx, dy = tx - c.x, ty - c.y
+        local d = math.sqrt(dx * dx + dy * dy) + 1e-6
+        c.vx = c.vx + (dx / d) * speed * STEER_GAIN * dt
+        c.vy = c.vy + (dy / d) * speed * STEER_GAIN * dt
+      else
+        local agit = 0.5 + tempo
+        c.vx = c.vx + rsign(state) * CELL_DRIFT * agit * dt
+        c.vy = c.vy + rsign(state) * CELL_DRIFT * agit * dt
+      end
 
-    -- Damp and clamp to the cell's swim speed.
-    local damp = math.max(0, 1 - CELL_DAMPING * dt)
-    c.vx, c.vy = c.vx * damp, c.vy * damp
-    local sp = math.sqrt(c.vx * c.vx + c.vy * c.vy)
-    if sp > speed then
-      c.vx, c.vy = c.vx / sp * speed, c.vy / sp * speed
-    end
+      -- Spread from crowding neighbors (survivability): always on, so the colony
+      -- fans out even while everyone chases the same bloom.
+      local px, py = separation_push(cell_grid, state.cells, ci, c.x, c.y, SEPARATION_RADIUS)
+      c.vx = c.vx + px * SEPARATION_GAIN * dt
+      c.vy = c.vy + py * SEPARATION_GAIN * dt
 
-    c.x = c.x + c.vx * dt
-    c.y = c.y + c.vy * dt
-    -- Toroidal wrap (no bounce): a cell that drifts off one edge re-enters the
-    -- opposite edge, so the realm is endless and seamless.
-    c.x = c.x % w
-    c.y = c.y % h
+      -- Damp and clamp to the cell's swim speed.
+      local damp = math.max(0, 1 - CELL_DAMPING * dt)
+      c.vx, c.vy = c.vx * damp, c.vy * damp
+      local sp = math.sqrt(c.vx * c.vx + c.vy * c.vy)
+      if sp > speed then
+        c.vx, c.vy = c.vx / sp * speed, c.vy / sp * speed
+      end
 
-    -- Eat the target on contact (cosmetic; income is closed-form elsewhere).
-    if target_kind then
-      local dx, dy = tx - c.x, ty - c.y
-      if dx * dx + dy * dy <= CONSUME_RADIUS * CONSUME_RADIUS then
-        if target_kind == "food" then
-          state.foods[target_idx].dead = true
-        else
-          state.prey[target_idx].dead = true
+      c.x = c.x + c.vx * dt
+      c.y = c.y + c.vy * dt
+      -- Toroidal wrap (no bounce): a cell that drifts off one edge re-enters the
+      -- opposite edge, so the realm is endless and seamless.
+      c.x = c.x % w
+      c.y = c.y % h
+
+      -- Contact -> latch (cosmetic; income is closed-form elsewhere). Claim the
+      -- morsel so no sibling latches it, and begin the engulf pause (shortened by
+      -- digestion feed_rate). The morsel is consumed only when feeding completes.
+      if target_kind then
+        local dx, dy = tx - c.x, ty - c.y
+        if dx * dx + dy * dy <= CONSUME_RADIUS * CONSUME_RADIUS then
+          local entity = (target_kind == "food") and state.foods[target_idx] or state.prey[target_idx]
+          c.feeding = FEED_TIME / feed_rate
+          c.feed_target = entity
+          entity.claimed = true
         end
       end
     end
@@ -485,17 +585,15 @@ local function step_blooms(state, dt)
   if state.bloom_timer <= 0 then
     state.bloom_timer = BLOOM_INTERVAL + rand_range(state, -1.5, 1.5)
     if #state.blooms < BLOOM_MAX then
-      -- Bloom appears in the interior of the field, proportional to its size so
-      -- blooms spread as the colony and field grow together.
-      local radius = 26
+      -- Bloom appears at a world position in the interior of the field; its drawn
+      -- size is a constant on-screen UI size owned by the view, not a world scale.
       state.blooms[#state.blooms + 1] = {
         x = rand_range(state, state.field_w * 0.2, state.field_w * 0.85),
         y = rand_range(state, state.field_h * 0.15, state.field_h * 0.85),
-        radius = radius,
         timer = BLOOM_LIFE,
         life = BLOOM_LIFE,
         -- The nutrient bloom renders as a pulsing CIRCLE with a countdown bar
-        -- (the view's "bloom" shape reads radius + timer/life off the entity).
+        -- (the view's "bloom" shape; its radius is the view's UI screen size).
         render = { kind = "bloom", shape = "bloom" },
       }
     end
@@ -556,6 +654,11 @@ local function step_predators(state, dt, defense)
       p.y = p.y + (dy / d) * PREDATOR_SPEED * dt
       if d <= PREDATOR_KILL_RADIUS then
         if rnd(state) >= defense then -- defense is the dodge chance
+          -- Free any morsel the victim was engulfing so it rejoins the drifting
+          -- field (an orphaned claim would otherwise freeze the mote forever).
+          if c.feed_target then
+            c.feed_target.claimed = nil
+          end
           table.remove(state.cells, target)
           killed = killed + 1
           p.kills = p.kills + 1
@@ -592,7 +695,7 @@ function world.update(state, dt, opts)
   state.field_w = field_for_population(pop)
   state.field_h = state.field_w / aspect
 
-  reconcile(state, opts.target_population or 0)
+  local births = reconcile(state, opts.target_population or 0)
   ensure_field(state, state.foods, food_target(state), FOOD_DRIFT, RENDER_FOOD)
   drift_field(state, state.foods, dt, FOOD_DRIFT)
 
@@ -603,7 +706,7 @@ function world.update(state, dt, opts)
     state.prey = {}
   end
 
-  step_cells(state, dt, stats, tempo, predation)
+  step_cells(state, dt, stats, tempo, predation, births)
   -- Keep the ambient field replenished after consumption.
   ensure_field(state, state.foods, food_target(state), FOOD_DRIFT, RENDER_FOOD)
   step_blooms(state, dt)

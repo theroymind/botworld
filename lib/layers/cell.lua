@@ -353,7 +353,7 @@ function cell.draw()
   local cx, cy = ui.consume_click()
   if cx and not in_panel(cx, cy) then
     local wx, wy = view.screen_to_world(view_state, cx, cy)
-    local b = world.hit_bloom(world_state, wx, wy)
+    local b = world.hit_bloom(world_state, wx, wy, view.bloom_radius(view_state))
     if b then
       feed_bloom(b)
     end
@@ -369,7 +369,7 @@ function cell.keypressed(key)
   elseif key == "space" then
     local b = world.any_bloom(world_state)
     if b then
-      world.hit_bloom(world_state, b.x, b.y)
+      world.hit_bloom(world_state, b.x, b.y, view.bloom_radius(view_state))
       feed_bloom(b)
     end
   elseif key == "r" then

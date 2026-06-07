@@ -32,7 +32,14 @@ local VIEW_FRAC = 0.9 -- field fills this fraction of the window; the rest is th
 -- off-screen margin that hides the wrap seam (tz divides by it, so the field
 -- slightly OVERFLOWS the viewport and its edges fall outside).
 local CAM_SMOOTH = 0.12 -- camera lerp factor (fraction per frame toward target)
-local RENDER_BUDGET = 180 -- max cells drawn; stride-samples when over budget
+
+-- The nutrient bloom's on-screen click-target radius, in PIXELS. The bloom is an
+-- interactive affordance, so it holds a CONSTANT screen size (like UI) as the
+-- stepped camera zooms across field tiers -- not a world-scaled disk that
+-- balloons when the camera tucks in tight on a small field. draw_bloom converts
+-- this to world units via the zoom; view.bloom_radius hands the same world-space
+-- size to the orchestrator's hit-test so clicks line up with the drawn disk.
+local BLOOM_SCREEN_R = 24
 
 -- The palette, keyed by render kind. The liked teal/green/warm/red family.
 local PALETTE = {
@@ -100,6 +107,14 @@ function view.screen_to_world(state, sx, sy)
   return (sx - cam.x) / cam.zoom, (sy - cam.y) / cam.zoom
 end
 
+-- The bloom's world-space radius at the current zoom: its constant on-screen UI
+-- size (BLOOM_SCREEN_R px) projected back into world units, so the orchestrator's
+-- world-space click hit-test matches the disk the view draws. Uses the steady
+-- camera zoom (same basis as screen_to_world), so the two stay consistent.
+function view.bloom_radius(state)
+  return BLOOM_SCREEN_R / state.camera.zoom
+end
+
 -- The evolve "fusion" beat as a composable, fx-managed world-space effect: every
 -- captured cell eases to (cx, cy) as a shrinking flat square, then a square
 -- blooms at the center -- multicellularity made literal, in flat pixels. Driven
@@ -159,6 +174,12 @@ local function resolve(e, t)
   if rc.pulse then
     alpha = alpha * (0.78 + 0.22 * math.sin(t * 4 + (e.x + e.y) * 0.05))
   end
+  -- Engulfing pause (entity-level `feeding` flag on a parked cell): swell a touch
+  -- and breathe the alpha, so the feed time reads as engulfing -- no new draw path.
+  if e.feeding then
+    size = size * 1.15
+    alpha = alpha * (0.85 + 0.15 * math.sin(t * 8))
+  end
   return size, color, alpha
 end
 
@@ -182,11 +203,14 @@ local function draw_circle(e, t)
 end
 
 -- The nutrient bloom: a soft pulsing CIRCLE with a "click me" rim and a little
--- countdown timer bar -- the clickable feed target. Reads radius + timer/life
--- off the entity; zoom keeps strokes and the bar a constant screen size.
+-- countdown timer bar -- the clickable feed target. Its radius is a CONSTANT
+-- on-screen size (BLOOM_SCREEN_R px, divided by zoom into world units here), so
+-- the whole affordance -- disk, glow, rim, bar -- holds a steady UI size across
+-- field tiers instead of scaling with the in-game zoom. Reads timer/life off the
+-- entity for the countdown.
 local function draw_bloom(e, t, zoom)
   local col = PALETTE.bloom
-  local r = e.radius or 26
+  local r = BLOOM_SCREEN_R / zoom
   local frac = clamp01((e.timer or 1) / (e.life or 1)) -- countdown remaining
   local pulse = 1 + 0.06 * math.sin(t * 6)
   -- Soft outer glow (the pulse), then the body disk.
@@ -272,12 +296,13 @@ function view.draw_world(state, snap)
   draw_list(snap.blooms, t, cam.zoom)
   draw_list(snap.prey, t, cam.zoom)
 
-  -- Render budget: stride-sample the cell list when the colony is huge so we
-  -- never blow frame time on a myriad of draw calls.
+  -- Draw every cell. MAX_AGENTS already caps the swarm at 300, and 300 flat
+  -- squares is trivially cheap — so order-independent rendering costs nothing.
+  -- Drawing all cells means list mutations (predator kills, reconcile) can no
+  -- longer remap which dots appear and snap the visible swarm.
   local cells = snap.cells
   local n = #cells
-  local stride = (n > RENDER_BUDGET) and math.ceil(n / RENDER_BUDGET) or 1
-  for i = 1, n, stride do
+  for i = 1, n do
     draw_entity(cells[i], t, cam.zoom)
   end
 
