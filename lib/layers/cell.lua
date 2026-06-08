@@ -61,8 +61,8 @@ local UPKEEP_SCALE = 1.3 -- per-cell upkeep multiplier (lowers K, slows growth, 
 local PHOTO_LIGHT = 30 -- flat light income once photosynthesis is unlocked (x photo_mult)
 -- OPEN-ENDED COMPOUNDING growth. Each cell adds a tiny per-cell income that does
 -- NOT saturate, so income scales with the colony and population climbs
--- exponentially toward the millions-scale HARD_CAP instead of walling at a fixed
--- carrying capacity. GROWTH_RATE is the net compounding surplus per cell (x the
+-- exponentially WITHOUT BOUND -- no carrying-capacity wall and no hard population
+-- cap. GROWTH_RATE is the net compounding surplus per cell (x the
 -- income mult) -- the master pacing knob: higher = a steeper climb, sooner to the
 -- millions. It's added ON TOP of foraging exactly covering upkeep, so the colony
 -- never starves under it. Phase 1 is a ~5-minute sprint: at 0.1 the colony rockets
@@ -70,13 +70,17 @@ local PHOTO_LIGHT = 30 -- flat light income once photosynthesis is unlocked (x p
 local GROWTH_RATE = 0.1
 
 -- Endosymbiosis (phase 1's climax) is an RNG event possible at ANY colony size, but
--- the per-engulf chance starts vanishingly small and ramps up by ENDO_RAMP_PER_STEP
--- for every ENDO_STEP cells -- so an early keep is *possible* but statistically very
+-- the per-engulf chance starts vanishingly small and only begins to RAMP once the
+-- colony crosses ENDO_RAMP_START cells, then climbs by ENDO_RAMP_PER_STEP for every
+-- further ENDO_STEP cells -- so an early keep is *possible* but statistically very
 -- rare, and the run almost always resolves once the colony is well into the millions.
--- ENDO_BASE_CHANCE is the floor at a single cell (tiny, never zero); clamped to 1.
-local ENDO_STEP = 100000 -- the chance ramps once per this many cells
-local ENDO_BASE_CHANCE = 0.00002 -- per-engulf chance at the start (possible but very rare)
-local ENDO_RAMP_PER_STEP = 0.0015 -- added to the chance per ENDO_STEP cells of colony size
+-- ENDO_BASE_CHANCE is the floor below the ramp start (tiny, never zero); clamped to 1.
+-- Tuned harder than the first pass (a smaller floor + gentler ramp) so the proc no
+-- longer lands too soon; the ramp deliberately starts at the first 100k milestone.
+local ENDO_RAMP_START = 100000 -- no ramp below this colony size -- just the floor
+local ENDO_STEP = 100000 -- past the start, the chance ramps once per this many cells
+local ENDO_BASE_CHANCE = 0.000004 -- per-engulf floor before the ramp (possible but very rare)
+local ENDO_RAMP_PER_STEP = 0.0006 -- added to the chance per ENDO_STEP cells past the ramp start
 local FEED_ENERGY = 40 -- nutrient reserve a bloom feed credits
 
 -- The metabolism dial has been removed; the economy runs at the sweet-spot base
@@ -225,12 +229,14 @@ local function begin_lineage_transition(cx, cy)
   })
 end
 
--- The per-engulf endosymbiosis chance at the current colony size: ENDO_BASE_CHANCE
--- plus a slight ramp for every ENDO_STEP cells (clamped to 1). Nonzero from the
--- first cell -- so a keep is possible at any size -- but tiny early and climbing
--- with the colony, so it almost always lands once the swarm is into the millions.
+-- The per-engulf endosymbiosis chance at the current colony size: the tiny
+-- ENDO_BASE_CHANCE floor until the colony reaches ENDO_RAMP_START, then a slight
+-- ramp for every further ENDO_STEP cells (clamped to 1). Nonzero from the first
+-- cell -- so a keep is possible at any size -- but held at the floor below the
+-- ramp start and only climbing once the swarm crosses 100k, so it almost always
+-- lands once the swarm is into the millions rather than too soon.
 local function endo_chance(population)
-  local steps = math.floor(population / ENDO_STEP)
+  local steps = math.floor(math.max(0, population - ENDO_RAMP_START) / ENDO_STEP)
   local chance = ENDO_BASE_CHANCE + ENDO_RAMP_PER_STEP * steps
   if chance > 1 then
     return 1
@@ -553,7 +559,6 @@ end
 local function build_panel(state)
   local intake = intake_for(state)
   local pop = state.sim.population
-  local cap = sim.capacity(intake)
   local div_cost = sim.div_cost(pop, intake.div_mult)
   local energy_ratio = math.max(0, math.min(state.sim.energy / div_cost, 1))
 
@@ -565,7 +570,7 @@ local function build_panel(state)
   table.insert(
     header,
     layout.text(
-      string.format("colony  %d / cap %d", pop, math.floor(cap)),
+      string.format("colony  %d", pop),
       { color = colors.ui.text_dim }
     )
   )

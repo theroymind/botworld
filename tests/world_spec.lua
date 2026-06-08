@@ -137,7 +137,10 @@ end
 check(#w.cells == 100, "the visible swarm fills toward the colony size")
 check(#w.foods >= 8, "ambient nutrient motes are kept topped up")
 
--- The visible swarm caps at MAX_AGENTS even for an enormous colony.
+-- The visible swarm caps at MAX_AGENTS even for an enormous colony. Filling the
+-- whole ceiling by natural growth would take thousands of rate-limited updates, so
+-- step the field out to a huge colony, seed the swarm just OVER the cap, and
+-- confirm a single reconcile clamps it back down to MAX_AGENTS.
 local huge = {
   stats = quiet.stats,
   target_population = 100000,
@@ -145,9 +148,23 @@ local huge = {
   unlocked = {},
   threats_enabled = false,
 }
-for _ = 1, 400 do
-  world.update(w, FRAME, huge)
+world.update(w, FRAME, huge) -- step the field out to the top tier first
+w.cells = {}
+for i = 1, world.MAX_AGENTS + 50 do
+  w.cells[i] = {
+    x = (i * 37) % w.field_w,
+    y = (i * 53) % w.field_h,
+    dest_x = (i * 37) % w.field_w,
+    dest_y = (i * 53) % w.field_h,
+    vx = 0,
+    vy = 0,
+    age = 1,
+    hunger = i, -- distinct so the hungriest-first cull is deterministic
+    seed = 0.5,
+    render = { kind = "cell" },
+  }
 end
+world.update(w, FRAME, huge)
 check(#w.cells == world.MAX_AGENTS, "the visible swarm caps at MAX_AGENTS")
 
 -- Evolve drops the colony to zero; the swarm empties (the fusion beat covers it).
