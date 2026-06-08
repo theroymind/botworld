@@ -695,7 +695,8 @@ function cell.draw()
 
   view.draw_world(view_state, world.snapshot(world_state), {
     mito = organelles.has(state.sim.organelles, "mitochondrion"),
-    swarm_count = target_population(state), -- the GPU field's instance count (colony sample)
+    swarm_count = target_population(state), -- the colony's visible sample size
+    sim_cap = SIM_CAP, -- cells the real boids cover; the field only draws ABOVE this
   })
 
   -- During the end-of-phase-1 cinematic the world is drawn (frozen) beneath the

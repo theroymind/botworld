@@ -1,22 +1,24 @@
--- GPU procedural swarm field: the visible Phase-1 swarm, computed almost entirely
--- on the GPU. The cosmetic agent sim used to run full boids (steer + nearest-food
--- + neighbour separation) over thousands of cells every frame -- which both pinned
--- the CPU and settled into an evenly-spaced LATTICE that merely waved. This
--- replaces the VISIBLE swarm with stateless instances whose position is a
--- closed-form function of (per-instance seed/velocity, time, and a handful of
--- attractor/repulsor uniforms) evaluated in the vertex shader. The CPU per frame
--- ships only a few scalars + the live bloom/predator positions and raises the
--- instance count; "growth" is just a higher count. Nothing here is read back, so
--- the gameplay couplings (predator kills, engulfs) stay on the small CPU set in
--- world.lua -- this field is pure cosmetic skin.
+-- GPU procedural swarm field: the COSMETIC OVERFLOW of the visible Phase-1 swarm,
+-- computed almost entirely on the GPU. world.lua simulates a small set of REAL boids
+-- (the ones that sense motes, chase, engulf and get hunted) and the view draws those
+-- 1:1; this field only fills in the teeming mass ABOVE that simulated count once the
+-- colony outgrows it. Each instance's position is a closed-form function of
+-- (per-instance seed/frequencies, time, and a handful of attractor/repulsor uniforms)
+-- evaluated in the vertex shader. The CPU per frame ships only a few scalars + the
+-- live bloom/predator positions and raises the instance count; "growth" is just a
+-- higher count. Nothing here is read back, so the gameplay couplings (predator kills,
+-- engulfs) stay on the small CPU set in world.lua -- this field is pure cosmetic skin.
 --
--- The motion model is ROAMING, like the original boids: each cell has a constant
--- drift VELOCITY, so it swims ACROSS the dish and wraps seamlessly at the toroidal
--- edge (a constant-velocity point crosses the seam cleanly -- exit one edge, enter
--- the opposite, same heading -- so there is no teleport). A small per-cell wobble
--- rides on top for organic weave. The part that reads as "they're surviving": cells
--- near a nutrient bloom EASE toward it (a knot gathers at food) and cells near a
--- predator are shoved away (the flee), both from a few uniform points.
+-- The motion model is RUN-AND-TUMBLE, the real microbial gait: each cell swims a
+-- straight RUN along a fixed heading for ~RUN_TIME, then TUMBLES to a new random
+-- heading and runs again. It never builds a single heading that dashes it across the
+-- dish. The per-cell run headings are DE-MEANED so they cancel over one cycle, making
+-- the walk a bounded closed loop that returns home -- biologically a confined cell
+-- pacing its patch, and computationally a stateless closed form (no per-frame
+-- integration, no dispersal that would empty the fixed instance buffer). A small
+-- per-cell wobble rides on top for fine organic weave. The part that reads as
+-- "they're surviving": cells near a nutrient bloom EASE toward it (a knot gathers at
+-- food) and cells near a predator are shoved away (the flee), both from uniform points.
 --
 -- Mirrors lib/swarm.lua / interior_swarm.lua: a static instance buffer filled ONCE
 -- (love.math/FFI), a unit quad instanced per cell, and ALL love.*/FFI work deferred
@@ -49,21 +51,28 @@ local loaded = false
 cell_field.count = 0
 cell_field.max_count = MAX_CELLS
 
--- Motion bands (tuning knobs -- set by eye). Drift SPEED is in FIELD-FRACTIONS per
--- second, so the roam scales with the field: a cell crosses the dish in roughly
--- 1/SPEED seconds at any tier. Wobble is a small world-unit weave on top.
-local SPEED_MIN, SPEED_MAX = 0.012, 0.045 -- drift speed (field-fractions / sec)
-local WOBBLE_MIN, WOBBLE_MAX = 3, 11 -- weave radius (world units)
+-- Motion bands (tuning knobs -- set by eye). The cell does a RUN-AND-TUMBLE walk:
+-- it swims a straight RUN for RUN_TIME, then TUMBLES to a new random heading -- the
+-- signature microbial gait (a bacterium runs ~1s, reorients, runs again). The walk
+-- is bounded into a closed loop (the per-run headings are de-meaned so they cancel
+-- over the cycle), so it disperses locally and returns home rather than dashing off
+-- the dish or needing per-frame state. RUN_LEN is the per-run stride as a FIELD-
+-- FRACTION (scales with the dish); RUN_COUNT runs make one CYCLE = RUN_COUNT*RUN_TIME.
+local RUN_COUNT = 8 -- runs per closed cycle (also the shader's constant loop bound)
+local RUN_TIME = 1.4 -- seconds per straight run before a tumble
+local RUN_LEN = 0.045 -- per-run stride as a field-fraction (scales with the dish)
+local RUN_JIT_MIN, RUN_JIT_MAX = 0.7, 1.3 -- per-cell stride-length variation
+local WOBBLE_MIN, WOBBLE_MAX = 3, 11 -- fine weave radius (world units)
 local SWIM_RATE = 1.1 -- weave angular speed (rad/sec), shared; phase desyncs cells
 local SIZE_JITTER_MIN, SIZE_JITTER_MAX = 0.7, 1.3 -- per-cell size variation
 local ALPHA_JITTER_MIN, ALPHA_JITTER_MAX = 0.62, 0.95 -- per-cell brightness variation
 
--- BLOOM_MAX / PRED_MAX and SWIM_RATE are baked into the shader so the
--- attractor/repulsor loops have constant bounds (required by GLSL ES on the iOS
--- build) and the weave needs no per-cell rate uniform.
+-- BLOOM_MAX / PRED_MAX and the run/weave constants are baked into the shader (via a
+-- const block) so the loops have constant bounds (required by GLSL ES on the iOS
+-- build) and the gait needs no per-cell rate uniform.
 local VERTEX_SHADER_TEMPLATE = [[
 uniform float time;
-uniform vec2  field;        // current field extent (world units): roam wrap + scale
+uniform vec2  field;        // current field extent (world units): run scale + tier
 uniform vec3  body_color;    // cell token (body pass) or mito token (mark pass)
 uniform float base_half;     // cell body half-size in world units
 uniform float pass_mode;     // 0 = cell body, 1 = mito mark
@@ -72,24 +81,60 @@ uniform vec4  attractors[%d]; // .xy world pos, .z radius, .w pull fraction (blo
 uniform int   repulsor_count;
 uniform vec4  repulsors[%d];  // .xy world pos, .z radius, .w push (world units, predators)
 
-attribute vec4 InstanceMove; // home.x (0..1), home.y (0..1), vel.x, vel.y (field-frac/sec)
+attribute vec4 InstanceMove; // home.x (0..1), home.y (0..1), seed (0..1), run jitter
 attribute vec4 InstanceJit;  // wobble radius, size jitter, alpha jitter, phase (0..1)
 
 varying vec4 cell_color;
 
+// Baked motion constants (RUN_COUNT/RUN_TIME/RUN_LEN, WEAVE_RATE, MARK_*). const int
+// RUN_COUNT is a constant expression so it can bound the loops on GLSL ES (iOS).
+%s
+
+// Per-(cell,run) tumble heading: a stable hash of the cell seed and the run index.
+float run_angle(float seed, int j) {
+  return fract(sin(seed * 97.0 + float(j) * 13.0) * 43758.5453) * 6.2831853;
+}
+
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   float two_pi = 6.2831853;
-
-  // Roaming drift in NORMALIZED field space, wrapped with fract(): a constant-
-  // velocity point wraps seamlessly (no teleport), so cells swim across the dish
-  // and re-enter the opposite edge like the old toroidal boids.
-  vec2 norm = fract(InstanceMove.xy + InstanceMove.zw * time);
-  vec2 pos = norm * field;
-
-  // Gentle weave on top so each cell wriggles as it drifts. Small enough that a
-  // cell riding the wrap seam still crosses cleanly (the weave is continuous).
   float phase = InstanceJit.w;
-  float ang = time * float(%f) + phase * two_pi;
+  float seed = InstanceMove.z;    // per-cell random seed (0..1)
+  float run_jit = InstanceMove.w; // per-cell stride-length jitter
+  vec2 home = InstanceMove.xy * field;
+
+  // RUN-AND-TUMBLE walk: swim a straight RUN along a fixed heading for RUN_TIME, then
+  // TUMBLE to a new random heading -- the microbial gait. The RUN_COUNT per-run
+  // headings are DE-MEANED so the runs cancel over CYCLE = RUN_COUNT*RUN_TIME: the
+  // path is a closed loop that returns home (no teleport, no dispersal off the dish),
+  // bounded and fully stateless. phase offsets each cell's clock so they desync.
+  float cycle = float(RUN_COUNT) * RUN_TIME;
+  float tl = mod(time + phase * cycle, cycle);
+  int run_k = int(floor(tl / RUN_TIME)); // which run we're in now
+  float run_f = fract(tl / RUN_TIME);    // progress through the current run
+
+  // Mean heading vector over the cycle, so subtracting it makes the runs sum to zero.
+  vec2 mean_dir = vec2(0.0);
+  for (int j = 0; j < RUN_COUNT; j++) {
+    float a = run_angle(seed, j);
+    mean_dir += vec2(cos(a), sin(a));
+  }
+  mean_dir /= float(RUN_COUNT);
+
+  // Accumulate the completed runs plus the partial current run (each de-meaned).
+  vec2 walk = vec2(0.0);
+  for (int j = 0; j < RUN_COUNT; j++) {
+    float a = run_angle(seed, j);
+    vec2 seg = vec2(cos(a), sin(a)) - mean_dir; // de-meaned run vector
+    if (j < run_k) {
+      walk += seg;
+    } else if (j == run_k) {
+      walk += seg * run_f;
+    }
+  }
+  vec2 pos = home + walk * (RUN_LEN * run_jit) * field;
+
+  // Gentle fine weave on top so each cell wriggles as it swims.
+  float ang = time * WEAVE_RATE + phase * two_pi;
   pos += vec2(cos(ang), sin(ang * 1.3)) * InstanceJit.x;
 
   // Attractors (nutrient blooms): EASE toward the food by a fraction of the
@@ -113,11 +158,11 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   }
 
   bool body = pass_mode < 0.5;
-  float half_size = base_half * InstanceJit.y * (body ? 1.0 : float(%f));
+  float half_size = base_half * InstanceJit.y * (body ? 1.0 : MARK_SCALE);
   // Gentle per-cell twinkle so the field shimmers like living matter, not a flat
   // stipple; the mark pass uses its own constant alpha.
   float twinkle = 0.85 + 0.15 * sin(time * 2.0 + phase * 10.0);
-  float alpha = body ? (InstanceJit.z * twinkle) : float(%f);
+  float alpha = body ? (InstanceJit.z * twinkle) : MARK_ALPHA;
   cell_color = vec4(body_color, alpha);
   return transform_projection * vec4(vertex_position.xy * half_size + pos, 0.0, 1.0);
 }
@@ -132,11 +177,11 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords) {
 ]]
 
 -- Fill the whole instance buffer once. Homes are UNIFORM in [0,1]^2, so any prefix
--- drawInstanced draws is uniformly spread and -- because fract(uniform + drift) is
--- still uniform -- the field stays evenly filled for all time (a centre-outward
--- sort would make a disk that drifts apart). Instance 1 is pinned to the centre so
--- the lone founder sits dead-centre. Each cell gets a random drift heading + speed
--- and weave/size/alpha jitter. Mirrors swarm.lua's FFI byte-data fill.
+-- drawInstanced draws is uniformly spread and -- because the run-and-tumble walk is a
+-- closed loop with no net translation -- the field stays evenly filled for all time (a
+-- centre-outward sort would make a disk that drifts apart). Instance 1 is pinned to the
+-- centre. Each cell gets a random SEED (its private tumble sequence) and a stride-length
+-- jitter, plus weave/size/alpha jitter. Mirrors swarm.lua's FFI fill.
 local function build_instance_data()
   local ffi = require("ffi")
   local random = love.math.random
@@ -150,13 +195,10 @@ local function build_instance_data()
     if i == 1 then
       hx, hy = 0.5, 0.5 -- the founder sits dead-centre
     end
-    -- Random drift heading at a random speed (field-fractions/sec).
-    local angle = random() * 2 * math.pi
-    local speed = lerp(SPEED_MIN, SPEED_MAX)
     floats[offset] = hx -- InstanceMove.x: home x (0..1)
     floats[offset + 1] = hy -- .y: home y (0..1)
-    floats[offset + 2] = math.cos(angle) * speed -- .z: vel x
-    floats[offset + 3] = math.sin(angle) * speed -- .w: vel y
+    floats[offset + 2] = random() -- .z: seed (0..1) -- the cell's private tumble sequence
+    floats[offset + 3] = lerp(RUN_JIT_MIN, RUN_JIT_MAX) -- .w: per-cell stride-length jitter
     floats[offset + 4] = lerp(WOBBLE_MIN, WOBBLE_MAX) -- InstanceJit.x: weave radius
     floats[offset + 5] = lerp(SIZE_JITTER_MIN, SIZE_JITTER_MAX) -- .y: size jitter
     floats[offset + 6] = lerp(ALPHA_JITTER_MIN, ALPHA_JITTER_MAX) -- .z: alpha jitter
@@ -193,15 +235,29 @@ function cell_field.load()
   if loaded then
     return
   end
+  -- Bake the motion constants into a GLSL const block. RUN_COUNT is a const int so it
+  -- can bound the shader loops (a constant expression, required on GLSL ES / iOS).
+  local consts = string.format(
+    "const int RUN_COUNT = %d;\n"
+      .. "const float RUN_TIME = %f;\n"
+      .. "const float RUN_LEN = %f;\n"
+      .. "const float WEAVE_RATE = %f;\n"
+      .. "const float MARK_SCALE = %f;\n"
+      .. "const float MARK_ALPHA = %f;",
+    RUN_COUNT,
+    RUN_TIME,
+    RUN_LEN,
+    SWIM_RATE,
+    MARK_SCALE,
+    MARK_ALPHA
+  )
   local vertex_shader = string.format(
     VERTEX_SHADER_TEMPLATE,
     MAX_ATTRACTORS,
     MAX_REPULSORS,
-    SWIM_RATE,
+    consts,
     MAX_ATTRACTORS,
-    MAX_REPULSORS,
-    MARK_SCALE,
-    MARK_ALPHA
+    MAX_REPULSORS
   )
   shader = love.graphics.newShader(FRAGMENT_SHADER, vertex_shader)
   for i = 1, MAX_ATTRACTORS do
@@ -252,7 +308,7 @@ local function fill_points(uniform, max, points)
 end
 
 -- Draw the live prefix of the swarm. params:
---   field_w / field_h      -- current field extent (roam wrap + current scale)
+--   field_w / field_h      -- current field extent (meander scale + current tier)
 --   base_half              -- cell body half-size in world units
 --   color                  -- cell token { r, g, b } (body pass)
 --   attractors / repulsors -- arrays of { x, y, radius, strength } (blooms/predators)

@@ -335,11 +335,27 @@ local function draw_list(list, t, zoom)
   end
 end
 
--- The darker inner square the GPU swarm field stamps on every cell once the colony
--- holds the mitochondrion -- the organelle that was once a separate cell, made
--- visible. Passed to cell_field as the mark pass's colour; the shader sizes it from
--- the cell body (MARK_SCALE) so it rides each cell's per-instance size.
+-- The darker inner square stamped on a cell once the colony holds the
+-- mitochondrion -- the organelle that was once a separate cell, made visible. The
+-- simulated boids get it from draw_mito_mark below (it rides their mitosis pop-in
+-- scale); the overflow field gets the same colour as its mark pass, which the
+-- shader sizes from the cell body (MARK_SCALE) so it rides each instance's size.
 local MITO_COLOR = colors.primary_dark -- inner-detail shade of the cell's token
+local function draw_mito_mark(e)
+  local rc = e.render
+  if not rc or rc.kind ~= "cell" then
+    return
+  end
+  local scale = rc.pop_in and clamp01((e.age or POP_IN) / POP_IN) or 1
+  local s = (rc.size or SIZE.cell or CELL_SIZE) * 0.34 * scale
+  if s <= 0 then
+    return
+  end
+  local half = s * 0.5
+  love.graphics.setColor(MITO_COLOR[1], MITO_COLOR[2], MITO_COLOR[3], 0.9)
+  love.graphics.rectangle("fill", e.x - half, e.y - half, s, s)
+  love.graphics.setColor(1, 1, 1, 1)
+end
 
 -- Render the whole world. The camera fits snap.field into the window (stepped,
 -- since the field steps with population) and lerps toward the target each frame.
@@ -438,41 +454,76 @@ function view.draw_world(state, snap, opts)
   draw_list(snap.blooms, t, cam.zoom)
   draw_list(snap.prey, t, cam.zoom)
 
-  -- Draw the visible swarm as a GPU procedural FIELD. The cosmetic swarm used to
-  -- be thousands of CPU boids -- which both pinned the CPU and settled into an
-  -- evenly-spaced lattice that merely waved. Now world.lua simulates only a small
-  -- invisible set (for the gameplay events: kills, engulfs, deaths), and the
-  -- VISIBLE teeming swarm is cell_field: stateless instances whose motion
-  -- (organic current + per-cell swim/dart) is computed in the vertex shader, and
-  -- which STREAM toward nutrient blooms and FLEE predators via a handful of
-  -- attractor/repulsor uniforms built from the live actors below. The count is the
-  -- colony-driven sample (opts.swarm_count); CPU cost per frame is a few uniforms.
-  cell_field.set_count((opts and opts.swarm_count) or #snap.cells)
-  local attractors = {}
-  for i = 1, #snap.blooms do
-    local b = snap.blooms[i]
-    -- Ease the pull in/out over the bloom's life so the rush ramps smoothly: fade
-    -- in for BLOOM_FADE after spawn, fade out for BLOOM_FADE before it expires.
-    local age = (b.life or 1) - (b.timer or 0)
-    local fade = clamp01(math.min(age, b.timer or 0) / BLOOM_FADE)
-    attractors[i] =
-      { x = b.x, y = b.y, radius = BLOOM_ATTRACT_R, strength = BLOOM_ATTRACT_S * fade }
+  -- HYBRID swarm render. snap.cells is world.lua's small SIMULATED set -- the cells
+  -- that actually sense motes, chase, engulf and get hunted -- so drawing them as
+  -- real boids restores genuine feeding/consuming behaviour, and the early/mid game
+  -- (colony <= the sim cap) is ALL real boids: no procedural dashing, every cell you
+  -- see is hunting. The GPU procedural field then fills in only the COSMETIC OVERFLOW
+  -- above that simulated count once the colony outgrows it, keeping the teeming-mass
+  -- look at scale for a few uniforms of CPU cost. swarm_count is the colony-driven
+  -- visible sample; the simulated set draws 1:1 and the field draws the remainder.
+  local cells = snap.cells
+  local n = #cells
+  local swarm_count = (opts and opts.swarm_count) or n
+  -- The field draws only the swarm ABOVE the simulated cap -- the real boids cover
+  -- everything up to it. Computing overflow against the CAP (not the live count n,
+  -- which lags as reconcile buds daughters in) is what stops the field from drawing
+  -- PHANTOM cells while the real swarm is still filling in: below the cap, the colony
+  -- sample may run ahead of the few real boids on screen, but those missing cells are
+  -- still being BUDDED in -- they must not pop in as parentless field instances. So
+  -- below the cap the field is empty; only a genuinely larger-than-cap colony spills
+  -- into it. Defaults to swarm_count (zero field) when no cap is supplied.
+  local sim_cap = (opts and opts.sim_cap) or swarm_count
+  local overflow = swarm_count - sim_cap
+  if overflow < 0 then
+    overflow = 0
   end
-  local repulsors = {}
-  for i = 1, #snap.predators do
-    local p = snap.predators[i]
-    repulsors[i] = { x = p.x, y = p.y, radius = PRED_REPEL_R, strength = PRED_REPEL_S }
+
+  -- The overflow field draws BEHIND the simulated boids: the cells doing the visible
+  -- hunting read crisply in front of the ambient mass. Its instances MEANDER in place
+  -- and still STREAM toward blooms / FLEE predators via the attractor/repulsor
+  -- uniforms built from the live actors. Skipped entirely while there's no overflow.
+  cell_field.set_count(overflow)
+  if overflow > 0 then
+    local attractors = {}
+    for i = 1, #snap.blooms do
+      local b = snap.blooms[i]
+      -- Ease the pull in/out over the bloom's life so the rush ramps smoothly: fade
+      -- in for BLOOM_FADE after spawn, fade out for BLOOM_FADE before it expires.
+      local age = (b.life or 1) - (b.timer or 0)
+      local fade = clamp01(math.min(age, b.timer or 0) / BLOOM_FADE)
+      attractors[i] =
+        { x = b.x, y = b.y, radius = BLOOM_ATTRACT_R, strength = BLOOM_ATTRACT_S * fade }
+    end
+    local repulsors = {}
+    for i = 1, #snap.predators do
+      local p = snap.predators[i]
+      repulsors[i] = { x = p.x, y = p.y, radius = PRED_REPEL_R, strength = PRED_REPEL_S }
+    end
+    cell_field.draw({
+      field_w = f.w,
+      field_h = f.h,
+      base_half = CELL_SIZE * 0.5,
+      color = PALETTE.cell,
+      attractors = attractors,
+      repulsors = repulsors,
+      mito = mito,
+      mark_color = MITO_COLOR,
+    })
   end
-  cell_field.draw({
-    field_w = f.w,
-    field_h = f.h,
-    base_half = CELL_SIZE * 0.5,
-    color = PALETTE.cell,
-    attractors = attractors,
-    repulsors = repulsors,
-    mito = mito,
-    mark_color = MITO_COLOR,
-  })
+
+  -- The simulated boids, drawn on top of the overflow field. A held mitochondrion
+  -- stamps the inner mark on each (riding its mitosis pop-in scale).
+  if mito then
+    for i = 1, n do
+      draw_entity(cells[i], t, cam.zoom)
+      draw_mito_mark(cells[i])
+    end
+  else
+    for i = 1, n do
+      draw_entity(cells[i], t, cam.zoom)
+    end
+  end
 
   draw_list(snap.predators, t, cam.zoom)
 

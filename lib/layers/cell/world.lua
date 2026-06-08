@@ -69,8 +69,13 @@ function world.sample_count(population)
   end
   return n
 end
-local CELL_SPAWN_SPREAD = 44 -- daughter cell offset from a parent (wide, so births don't seed clumps)
-local BIRTH_EMERGE = 0.5 -- seconds a daughter slides out of its parent (mirrors the view's POP_IN)
+-- A daughter BUDS right beside its parent (about a cell-width), then disperses on
+-- its own under the normal wander + separation push -- so a division reads as "the
+-- cell duplicated in place, then the daughter swam off" rather than the daughter
+-- being flung to a distant resting spot. Kept small on purpose; separation fans the
+-- colony out afterward, so a tight bud no longer seeds a permanent clump.
+local CELL_SPAWN_SPREAD = 8 -- daughter bud offset from the parent (~a cell-width)
+local BIRTH_EMERGE = 0.8 -- seconds the daughter eases off the parent (grows in over the view's POP_IN first, then noses clear)
 
 -- Eating-driven division (cosmetic; the closed-form economy stays the ceiling).
 -- A cell engulfs a morsel over FEED_TIME -- sped up by the digestion feed_rate, so
@@ -91,19 +96,20 @@ local FED_PULSE = 0.6 -- post-meal swell countdown stamped on the cell when a me
 -- ascending. The field is the largest tier whose threshold the colony has
 -- reached -- a step function, so the fit-camera holds steady within a tier and
 -- glides out exactly once per crossed threshold.
--- The tiers step out SOONER and FAR wider than the swarm strictly needs: growth
--- should read as the realm opening up -- the camera pulling back, the colony
--- spacing out, food getting genuinely harder to find (see food_target's
--- thinning density) -- so sense range and speed keep visibly mattering at scale
--- instead of saturating once the screen is comfortably full.
+-- The thresholds are deliberately HIGH so each tier SATURATES before it steps:
+-- the dish should look genuinely full of cells before the camera pulls back, not
+-- pull back while it is still sparse. They climb geometrically (~3x), matching the
+-- colony's exponential growth, so the zoom-outs feel evenly paced in time rather
+-- than bunched into the early game. A pullback then reads as the realm opening up --
+-- the colony spacing out, food thinning (see food_target) -- earned by a packed dish.
 local FIELD_TIERS = {
   { 1, 440 },
-  { 6, 700 },
-  { 15, 1040 },
-  { 30, 1520 },
-  { 60, 2150 },
-  { 120, 2900 },
-  { 200, 3600 },
+  { 300, 700 },
+  { 1000, 1040 },
+  { 3000, 1520 },
+  { 10000, 2150 },
+  { 30000, 2900 },
+  { 100000, 3600 },
 }
 local BASE_FIELD = 440 -- starting field side (tier 1); square-root aspect on h.
 -- A roomier tier 1 opens the camera a touch wider on the solo founder.
@@ -348,9 +354,10 @@ local function new_cell(state, x, y, ox, oy)
 end
 
 -- Spawn a cell with auto-placement: a founder dead-centre (so the camera can
--- zoom onto it without hunting), else a daughter scattered around a random
--- parent. Used by reconcile's founder / fast-catch-up fill; an EARNED split
--- calls new_cell directly beside the dividing cell.
+-- zoom onto it without hunting), else a daughter BUDDED off a random existing
+-- parent (it emerges from the parent, never a parentless drop). Used by reconcile's
+-- founder / fast-catch-up fill; an EARNED split calls new_cell directly beside the
+-- dividing cell.
 local function spawn_cell(state)
   local x, y
   if #state.cells > 0 then
@@ -361,15 +368,6 @@ local function spawn_cell(state)
   else
     new_cell(state, state.field_w / 2, state.field_h / 2) -- founder: no parent to emerge from
   end
-end
-
--- Spawn a cell scattered uniformly across the field. Used by reconcile's
--- REBUILD fill (restoring a saved colony into an empty world): that colony
--- already spread out before we ever saw it, so its agents must reappear
--- scattered across the realm -- budding them all off the founder would
--- materialise the whole swarm as one centre clump.
-local function spawn_cell_scattered(state)
-  new_cell(state, rand_range(state, 0, state.field_w), rand_range(state, 0, state.field_h))
 end
 
 -- Retire the k hungriest cells -- the shared death mechanism behind both
@@ -429,30 +427,21 @@ local function reconcile(state, target)
   -- Over target (the economy-authoritative population fell): retire the surplus
   -- hungriest via the shared death mechanism; the death positions feed the fx.
   local deaths = retire_hungriest(state, #state.cells - target)
-  -- REBUILD detection: an empty world asked to host a multi-cell colony is a
-  -- restore (load / offline return), not growth -- only there does the swarm
-  -- start from zero with a grown target. The flag rides state until the fill
-  -- completes (it spans several rate-limited updates) and routes those spawns
-  -- through the scattered placer; every mid-session path still buds off parents.
-  if #state.cells == 0 and target > 1 then
-    state.rebuilding = true
-  end
+  -- Fast-fill regime: an empty world, or the economy leading the swarm by more than
+  -- CATCHUP_GAP (e.g. an offline return restoring a grown colony). Fill directly,
+  -- rate-limited, and grant no earned births this frame. EVERY spawn buds off a
+  -- parent -- the founder first (the only cell with no parent), then each subsequent
+  -- one off a random EXISTING cell -- so even a restored colony GROWS OUTWARD by
+  -- budding rather than materialising cells at random spots with no parent. There is
+  -- no longer a parentless "scattered" placer: nothing ever appears out of nowhere.
   if #state.cells == 0 or target - #state.cells > CATCHUP_GAP then
     local born = 0
     while #state.cells < target and born < MAX_BORN_PER_UPDATE do
-      if state.rebuilding then
-        spawn_cell_scattered(state)
-      else
-        spawn_cell(state)
-      end
+      spawn_cell(state)
       born = born + 1
-    end
-    if #state.cells >= target then
-      state.rebuilding = nil
     end
     return 0, deaths
   end
-  state.rebuilding = nil
   return math.min(target - #state.cells, MAX_BORN_PER_UPDATE), deaths
 end
 
@@ -674,13 +663,14 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
     end
 
     if c.birth_t then
-      -- === emerging: a fresh daughter slides out of its parent ===
-      -- Ease (out-quadratic) from the parent's position to the resting offset over
-      -- BIRTH_EMERGE, in lockstep with the view's age-driven pop-in scale, so the
-      -- division reads as budding off an existing cell rather than popping in apart.
+      -- === emerging: a fresh daughter buds off its parent ===
+      -- Ease (SMOOTHSTEP -- slow at both ends, so no initial dash) from the parent's
+      -- position to the tight bud offset over BIRTH_EMERGE, while the view's age-driven
+      -- pop-in swells it in. The cell barely separates here; it's the duplication beat.
+      -- Once birth_t clears it roams normally and the wander/separation carry it away.
       c.birth_t = c.birth_t - dt
       local k = clamp(1 - c.birth_t / BIRTH_EMERGE, 0, 1) -- 0 at birth -> 1 when settled
-      local ease = 1 - (1 - k) * (1 - k)
+      local ease = k * k * (3 - 2 * k) -- smoothstep: eases in AND out, no fast start
       c.x = c.birth_x + (c.dest_x - c.birth_x) * ease
       c.y = c.birth_y + (c.dest_y - c.birth_y) * ease
       c.x, c.y = c.x % w, c.y % h
