@@ -111,8 +111,13 @@ end
 
 function cell_batch.is_loaded() return loaded end
 
--- Start a frame's batch: reset the write cursor. Cheap; no allocation.
-function cell_batch.begin() count = 0 end
+-- Start a frame's batch: lazily init the GPU/FFI resources (so the first push()
+-- can write the buffer -- begin runs before any push or draw) and reset the write
+-- cursor. load is idempotent, so this is a single branch after the first frame.
+function cell_batch.begin()
+  cell_batch.load()
+  count = 0
+end
 
 -- Append one cell. half/alpha drive the body square; mark_half drives the mito
 -- inner square (0 when the organelle isn't held -- the mark pass is skipped then
