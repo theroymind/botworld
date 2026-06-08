@@ -42,10 +42,19 @@ local world = {}
 --   * hard-capped at MAX_AGENTS (the readability + CPU ceiling).
 -- All three are tuning knobs -- expect to set them by eye in play (readability vs.
 -- "it keeps growing" vs. frame budget).
-local MAX_AGENTS = 1500 -- on-screen ceiling (readability + CPU bound; tune by eye)
+local MAX_AGENTS = 15000 -- on-screen ceiling (readability + CPU bound; tune by eye)
 local RENDER_KNEE = 250 -- show 1:1 up to here, then go logarithmic
-local RENDER_LOG_SLOPE = 150 -- agents added per natural-log e-fold of colony size past the knee
-local MAX_BORN_PER_UPDATE = 4 -- smooth fill-in; no flurry on offline return
+-- The log slope is scaled in lockstep with MAX_AGENTS so the ceiling is actually
+-- REACHABLE: with the old 150 slope the curve only crept to ~1500 around a 1M
+-- colony, so a 10x cap on its own would never be approached. At 1500 the swarm
+-- climbs to the new ceiling on the same colony sizes the old one filled at.
+local RENDER_LOG_SLOPE = 1500 -- agents added per natural-log e-fold of colony size past the knee
+-- Cosmetic fill rate ONLY (caps how many rendered dots bud in per update so a
+-- load/offline catch-up animates over a second or two instead of popping in all at
+-- once). NOT an economy/progression limit -- the colony size is whatever the sim
+-- says, instantly. Scaled up with the 10x MAX_AGENTS so the larger swarm still
+-- fills in roughly the same wall-clock time the old 1500 ceiling did.
+local MAX_BORN_PER_UPDATE = 40 -- smooth fill-in; no flurry on offline return
 
 -- Colony size -> number of agents to actually draw. Rises forever (slowly) but
 -- saturates at MAX_AGENTS, so a 90-cell dish and a 5-million-cell dish both read.
@@ -123,6 +132,14 @@ local CONSUME_RADIUS = 9 -- a cell this close to its target eats it
 local CELL_DRIFT = 26 -- wander acceleration when nothing is sensed
 local CELL_DAMPING = 1.6 -- velocity bleed per second
 local STEER_GAIN = 4.0 -- how hard a cell accelerates toward sensed food
+-- Organic wander: each cell random-walks a PRIVATE heading and is nudged along it
+-- every frame -- even while steering toward food. Without it a saturated colony
+-- locks into a separation-spaced lattice that just pulses toward the nearest motes
+-- (every cell sensing food + repelling neighbours settles into a regular grid).
+-- The persistent, per-cell heading (vs. raw per-frame white noise, which damps out)
+-- makes cells weave on their own curved paths, breaking the lockstep.
+local CELL_WANDER = 24 -- wander acceleration along the cell's private heading (always on)
+local WANDER_TURN = 2.6 -- how fast that heading drifts, radians/sec random walk
 -- Anti-crowding separation: daughter cells push away from nearby cells so the
 -- colony spreads instead of clumping (a clump is easy prey -- spreading is for
 -- survivability). Cheap via the cell spatial hash.
@@ -319,6 +336,7 @@ local function new_cell(state, x, y, ox, oy)
     vy = 0,
     age = 0, -- drives the mitosis pop-in (runs in lockstep with the emerge)
     seed = seed,
+    wander = seed * 2 * math.pi, -- private wander heading (random-walks each frame)
     eaten = 0, -- morsels engulfed toward `need`
     need = need, -- quota to reach before splitting
     hunger = 0, -- seconds since the last meal; rises while roaming, resets on a meal
@@ -723,16 +741,24 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
         end
       end
 
+      local agit = 0.5 + tempo
       if tx then
         local dx, dy = tx - c.x, ty - c.y
         local d = math.sqrt(dx * dx + dy * dy) + 1e-6
         c.vx = c.vx + (dx / d) * speed * STEER_GAIN * dt
         c.vy = c.vy + (dy / d) * speed * STEER_GAIN * dt
       else
-        local agit = 0.5 + tempo
         c.vx = c.vx + rsign(state) * CELL_DRIFT * agit * dt
         c.vy = c.vy + rsign(state) * CELL_DRIFT * agit * dt
       end
+
+      -- Organic wander (always on, even while chasing food): random-walk the cell's
+      -- private heading and push gently along it. Breaks the separation-spaced
+      -- lattice a saturated colony otherwise settles into -- cells weave instead of
+      -- pulsing in lockstep toward the nearest motes.
+      c.wander = (c.wander or 0) + rsign(state) * WANDER_TURN * dt
+      c.vx = c.vx + math.cos(c.wander) * CELL_WANDER * agit * dt
+      c.vy = c.vy + math.sin(c.wander) * CELL_WANDER * agit * dt
 
       -- Spread from crowding neighbors (survivability): always on, so the colony
       -- fans out even while everyone chases the same bloom.

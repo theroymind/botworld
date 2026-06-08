@@ -38,12 +38,13 @@ local DIV_YIELD = 2 -- banked biomass minted by each successful division
 -- (which whipsaws near carrying capacity as the integer population wobbles).
 local RATE_TAU = 12
 local DEATH_RELEASE = 3 -- energy a starvation death refunds (each deficit unit culls more cells)
--- Population ceiling, bounds the mint loop. With the open-ended COMPOUNDING economy
--- (intake.growth_per_cell > 0) this IS the effective ceiling -- a millions-scale
--- number the colony climbs toward over days, rendered as a dense swarm. With the
--- legacy logistic economy (growth_per_cell == 0) the carrying capacity K is reached
--- first and this never binds.
-local HARD_CAP = 8000000 -- 8M cells
+-- There is NO population ceiling: with the open-ended COMPOUNDING economy the
+-- colony climbs without bound (the old 8M wall is gone -- both as a mechanic and
+-- as a HUD readout). The mint loop is instead bounded PER STEP by MAX_MINTS_PER_STEP
+-- -- a pure safety guard so a single step (e.g. a long offline sub-step folding a
+-- huge reserve) can never spin unboundedly; population itself keeps growing across
+-- steps. Live ticks mint a tiny fraction of this each frame, so it never binds play.
+local MAX_MINTS_PER_STEP = 200000
 
 -- Offline relaxation: replay the shared step in fixed sub-steps so leaving and
 -- returning converges the colony toward carrying capacity instead of crashing.
@@ -99,7 +100,7 @@ end
 -- colony and growth becomes exponential. Linear upkeep is the only drain. When
 -- growth_per_cell == 0 this is exactly the old logistic model (carrying capacity
 -- K); when growth_per_cell*mult exceeds upkeep the colony climbs without a finite
--- cap, toward HARD_CAP.
+-- cap, growing without bound.
 local function intake_rate(intake, population)
   local photo = intake.photo or 0
   local forage = intake.forage_per_cell or 0
@@ -127,7 +128,7 @@ function sim.step(state, dt, intake)
   state.energy = state.energy + intake_rate(intake, state.population) * dt
 
   local minted = 0
-  while state.energy >= spacing(state.population, div_mult) and state.population < HARD_CAP do
+  while state.energy >= spacing(state.population, div_mult) and minted < MAX_MINTS_PER_STEP do
     state.energy = state.energy - spacing(state.population, div_mult)
     state.population = state.population + 1
     state.biomass = state.biomass + DIV_YIELD
@@ -218,8 +219,9 @@ function sim.take_divisions(state)
 end
 
 -- Carrying capacity K: the colony size at which the saturated intake exactly
--- meets upkeep -- the population the food supply can sustain. The 'cap K' HUD
--- readout. Clamped to [1, HARD_CAP].
+-- meets upkeep -- the population the food supply can sustain. No longer surfaced in
+-- the HUD; kept as the closed-form reference (and for tests) on the legacy logistic
+-- economy. Floors at 1.
 function sim.capacity(intake)
   local photo = intake.photo or 0
   local forage = intake.forage_per_cell or 0
@@ -228,16 +230,14 @@ function sim.capacity(intake)
   local mult = intake.mult or 1
   local growth = intake.growth_per_cell or 0
   -- The compounding income offsets upkeep per cell. Once it covers upkeep the
-  -- colony has no finite carrying capacity -- it climbs to the hard ceiling.
+  -- colony has NO finite carrying capacity -- it grows without bound.
   local eff_upkeep = upkeep - growth * mult
   if eff_upkeep <= 0 then
-    return HARD_CAP
+    return math.huge
   end
   local k = (photo + forage * cap) * mult / eff_upkeep
   if k < 1 then
     return 1
-  elseif k > HARD_CAP then
-    return HARD_CAP
   end
   return k
 end
