@@ -22,7 +22,7 @@
 -- held mitochondrion stamps a tiny inner mark on every cell.
 local fx = require("lib.engine.fx")
 local colors = require("lib.engine.ui.colors")
-local cell_batch = require("lib.layers.cell.cell_batch")
+local cell_field = require("lib.layers.cell.cell_field")
 
 local view = {}
 
@@ -37,6 +37,15 @@ local HUNGER_DIM = 8 -- seconds of hunger that fully dims a starving cell
 local HUNGER_FADE = 0.7 -- how far a fully starved cell fades (alpha *= 1 - this)
 local FED_PULSE = 0.6 -- seconds of the post-meal swell (matches the world's `fed` stamp)
 local FED_SWELL = 0.35 -- peak extra size of the just-fed pulse (a satisfied gulp)
+
+-- The GPU swarm field's response to the world's actors, in WORLD units: how far a
+-- nutrient bloom pulls cells in to feed (the swarm rushing food) and how far a
+-- predator scatters them (the flee). Radius is the reach; strength is how far a
+-- fully-engaged cell is displaced toward/away. Tuned by eye for a legible react.
+local BLOOM_ATTRACT_R = 260
+local BLOOM_ATTRACT_S = 200
+local PRED_REPEL_R = 190
+local PRED_REPEL_S = 170
 
 local VIEW_FRAC = 0.9 -- field fills this fraction of the window; the rest is the
 -- off-screen margin that hides the wrap seam (tz divides by it, so the field
@@ -121,6 +130,7 @@ end
 function view.update(state, dt)
   state.time = state.time + dt
   fx.update(state.fx, dt)
+  cell_field.update(dt) -- advance the GPU swarm's shader clock
 end
 
 -- Spawn a composable effect entity onto this view's fx controller; returns it.
@@ -326,17 +336,11 @@ local function draw_list(list, t, zoom)
   end
 end
 
--- The half-size of the tiny darker inner square stamped on a cell once the colony
+-- The darker inner square the GPU swarm field stamps on every cell once the colony
 -- holds the mitochondrion -- the organelle that was once a separate cell, made
--- visible. It rides the cell's mitosis pop-in scale so it grows in with the
--- daughter. Pushed per cell into the instanced mark pass (cell_batch); 0 collapses
--- the quad to a point (invisible), matching the old draw's size<=0 skip.
+-- visible. Passed to cell_field as the mark pass's colour; the shader sizes it from
+-- the cell body (MARK_SCALE) so it rides each cell's per-instance size.
 local MITO_COLOR = colors.primary_dark -- inner-detail shade of the cell's token
-local function mito_half(e)
-  local rc = e.render
-  local scale = rc.pop_in and clamp01((e.age or POP_IN) / POP_IN) or 1
-  return (rc.size or SIZE.cell or CELL_SIZE) * 0.34 * scale * 0.5
-end
 
 -- Render the whole world. The camera fits snap.field into the window (stepped,
 -- since the field steps with population) and lerps toward the target each frame.
@@ -435,25 +439,36 @@ function view.draw_world(state, snap, opts)
   draw_list(snap.blooms, t, cam.zoom)
   draw_list(snap.prey, t, cam.zoom)
 
-  -- Draw every cell through ONE GPU-instanced pass. The swarm is the only list
-  -- that grows large (up to world.MAX_AGENTS), and the old per-cell
-  -- setColor+rectangle path issued a draw call per cell -- every alpha change
-  -- (hunger/fed/pop-in) flushed LÖVE's auto-batch, so a full swarm cost thousands
-  -- of draws a frame. Here the CPU only resolves each cell's size/alpha (the same
-  -- resolve() the immediate path used, so visuals are identical) and pushes it
-  -- into the instance buffer; cell_batch.draw uploads the prefix once and draws
-  -- the whole swarm -- body, plus the mito mark when held -- in one (or two) calls.
-  -- Order-independent as before: drawing every cell means list mutations (predator
-  -- kills, reconcile) can't remap which dots appear and snap the visible swarm.
-  local cells = snap.cells
-  local n = #cells
-  cell_batch.begin()
-  for i = 1, n do
-    local e = cells[i]
-    local size, _, alpha = resolve(e, t)
-    cell_batch.push(e.x, e.y, size * 0.5, alpha, mito and mito_half(e) or 0)
+  -- Draw the visible swarm as a GPU procedural FIELD. The cosmetic swarm used to
+  -- be thousands of CPU boids -- which both pinned the CPU and settled into an
+  -- evenly-spaced lattice that merely waved. Now world.lua simulates only a small
+  -- invisible set (for the gameplay events: kills, engulfs, deaths), and the
+  -- VISIBLE teeming swarm is cell_field: stateless instances whose motion
+  -- (organic current + per-cell swim/dart) is computed in the vertex shader, and
+  -- which STREAM toward nutrient blooms and FLEE predators via a handful of
+  -- attractor/repulsor uniforms built from the live actors below. The count is the
+  -- colony-driven sample (opts.swarm_count); CPU cost per frame is a few uniforms.
+  cell_field.set_count((opts and opts.swarm_count) or #snap.cells)
+  local attractors = {}
+  for i = 1, #snap.blooms do
+    local b = snap.blooms[i]
+    attractors[i] = { x = b.x, y = b.y, radius = BLOOM_ATTRACT_R, strength = BLOOM_ATTRACT_S }
   end
-  cell_batch.draw(PALETTE.cell, mito and MITO_COLOR or nil)
+  local repulsors = {}
+  for i = 1, #snap.predators do
+    local p = snap.predators[i]
+    repulsors[i] = { x = p.x, y = p.y, radius = PRED_REPEL_R, strength = PRED_REPEL_S }
+  end
+  cell_field.draw({
+    field_w = f.w,
+    field_h = f.h,
+    base_half = CELL_SIZE * 0.5,
+    color = PALETTE.cell,
+    attractors = attractors,
+    repulsors = repulsors,
+    mito = mito,
+    mark_color = MITO_COLOR,
+  })
 
   draw_list(snap.predators, t, cam.zoom)
 

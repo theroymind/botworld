@@ -996,7 +996,14 @@ function world.update(state, dt, opts)
     starve_deaths = run_starvation(state)
   end
 
-  local births, deaths = reconcile(state, opts.target_population or 0)
+  -- The SIMULATED cell set is bounded by sim_cap (the visible swarm is now a GPU
+  -- procedural field in the view, decoupled from this set -- world.lua keeps only a
+  -- small invisible set to drive the gameplay events: predator kills, prey engulfs,
+  -- starvation/feed bursts). Field SIZE still tracks the true colony (pop, above),
+  -- so the realm opens up as the colony grows; only the count we step is capped.
+  -- Default = MAX_AGENTS, so callers that omit sim_cap (the specs) are unchanged.
+  local sim_target = math.min(opts.target_population or 0, opts.sim_cap or MAX_AGENTS)
+  local births, deaths = reconcile(state, sim_target)
   -- The starvation retirements ride the same death-points channel as the cull.
   if starve_deaths then
     for i = 1, #starve_deaths do
