@@ -44,6 +44,40 @@ economy are the bloom click (credit) and a predator kill (debit, live-only). Mod
 `traits.lua` (levels + unlocks → a `stats` fold), `world.lua` (the agent sim, seeded +
 capped), `sim.lua` (the closed form), `view.lua` (render), `cell.lua` (orchestrator).
 
+## Course-correction (2026-06-08): waste/vitality is now a real fail-state
+
+The economy was *too* forgiving — you could leave the dish running, touch nothing, and
+the colony still rocketed to the millions, because every cell carried a free compounding
+surplus (`growth_per_cell = upkeep/mult + GROWTH_RATE`) that covered its own upkeep no
+matter what. There was no way to lose. This is a **deliberate reversal** of the original
+"never a survival tax / never a fail-state" pillar **for phase 1 specifically** (the
+master pillar still holds for later, automated phases): the cell layer now has teeth.
+
+- **Waste / toxicity** (`sim.lua`). The dish fouls at a flat rate (`TOX_PROD`); the colony
+  clears waste at `tox_clear`. Net positive waste accrues as `toxicity`, which throttles
+  the **whole intake side** by a health factor `TOX_HALF / (TOX_HALF + toxicity)` — 1 in a
+  clean dish (so a tended colony behaves *exactly* as before — the millions sprint is
+  untouched), falling toward 0 as waste builds, at which point upkeep outruns the choked
+  intake and the colony starves back down. It is part of the closed form, so offline
+  replays it identically.
+- **Vitality** is that health factor, surfaced as a HUD bar. It's the player's read on the
+  pressure: it sinks when waste outpaces clearance and recovers when they act.
+- **Clearance is the survival lever.** `cleanup` (in `traits.stats`) is the founder's small
+  intrinsic floor (`CLEAN_BASE`, *below* `TOX_PROD` on purpose) plus the cleanup traits —
+  **Digestion** (primary), **Evasion** (lean metabolism), **Photosynthesis** (oxygenation)
+  — and **feeding a bloom** flushes a chunk of waste (`FEED_TOX_CLEAR`). So an untended
+  colony is doomed; feeding or ~2 cleanup levels keep it alive; a built colony thrives.
+- **Collapse = the run ends.** When vitality sits at the critical floor (`COLLAPSE_HEALTH`)
+  for `COLLAPSE_GRACE` seconds, a game-over beat plays and a fresh lineage seeds (the same
+  wipe+reload as `[r]`). Pace: an untended founder collapses in ~90s (validated in
+  `tools/sim_lab.lua survival`).
+- **Motility now earns its keep.** It was a near-cosmetic tail; it's now a real economic
+  lever (+8% foraging/level) *and* a clearly visible +25% swim-speed/level. Per-cell speed
+  *variety* (`world.lua` `speed_mult`) breaks the uniform shoal so the swarm reads as alive.
+
+Tune the whole failure curve on paper with `lua tools/sim_lab.lua survival` before touching
+the live game; mirror any constant change in both `cell.lua`/`traits.lua` and the harness.
+
 ## Fantasy
 
 You don't *play* a cell — you *influence a soup*. You're a gentle hand on a shared

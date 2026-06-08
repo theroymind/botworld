@@ -73,6 +73,76 @@ local PHOTO_LIGHT = 30 -- flat light income once photosynthesis is unlocked (x p
 -- past a million cells in well under 5 min. Validate with `lua tools/sim_lab.lua growth`.
 local GROWTH_RATE = 0.1
 
+-- WASTE / TOXICITY -- the failure pressure (see sim.lua). The dish fouls at a flat
+-- TOX_PROD units/sec; the colony clears waste at intake.tox_clear (the cleanup
+-- traits + feeding). When fouling outruns clearance toxicity climbs and throttles
+-- intake (health = TOX_HALF / (TOX_HALF + toxicity)) until upkeep outruns the
+-- choked intake and the colony starves back toward the founder. A bare founder's
+-- clearance (traits CLEAN_BASE = 0.15) sits BELOW TOX_PROD, so an UNTOUCHED colony
+-- is doomed to choke within a minute or two -- the "do nothing and you survive"
+-- hole is closed. Leveling Digestion/Evasion/Photosynthesis (or feeding blooms)
+-- lifts clearance past fouling and the colony thrives. Tuned via sim_lab survival.
+local TOX_PROD = 0.5 -- waste produced per second (flat; the fouling rate to out-clear)
+local TOX_HALF = 10 -- toxicity at which intake is throttled to half (slows growth as it fouls)
+local FEED_TOX_CLEAR = 5 -- waste a single bloom feed flushes (feeding is a survival lever)
+-- The cull: once toxicity passes TOX_TOLERANCE the medium KILLS cells directly
+-- (sim.lua), at TOX_KILL_K of the colony per second per unit of overage. This is
+-- the failure -- the colony visibly dies off, cell by cell, and (unlike ordinary
+-- starvation) can reach EXTINCTION. There is NO aggregate game-over trigger: the
+-- run ends only when the population actually hits 0. With the defaults an untended
+-- founder grows briefly, then the cull thins it to extinction in ~1.5-2 min;
+-- feeding or ~2 cleanup levels hold toxicity below tolerance and it never culls.
+-- Tune via `lua tools/sim_lab.lua survival`. SOFTENED to the lab's locked, validated
+-- values (was tolerance 8 / kill_k 0.035) so toxicity is co-dominant with the two new
+-- pressures below rather than the sole, too-fast killer -- the lab is the source of truth.
+local TOX_TOLERANCE = 26 -- toxicity below which the dish is harmless (no cull) [lab-locked]
+local TOX_KILL_K = 0.005 -- fraction of the colony killed per second per unit of overage [lab-locked]
+
+-- COMPETITION + PREDATION -- the two NEW failure pressures ported from the locked
+-- sim_lab harness (tools/sim_lab.lua "PROTOTYPE -- TUNE ME" block; these values are
+-- the lab's validated numbers, MIRRORED exactly so the lab stays a regression ref).
+-- Both ramps are keyed on the lineage clock state.age (seconds since lineage start),
+-- so they replay byte-identically offline (sim.offline advances age every sub-step).
+-- Both fold into intake_for's `mult`, throttling ALL gain channels (photo + foraging
+-- + the compounding climb), the way the toxicity health factor does -- so they keep
+-- biting at millions-scale where raw forage is negligible.
+--
+-- COMPETITION (nutrient rivals): your_share = 1/(1 + comp_frac(age)*(1-counter)),
+-- where comp_frac(age) = COMP_FRAC_MAX*(1 - exp(-age/COMP_TAU)) is a saturating
+-- time ramp and counter = clamp((forage_mult-1)*COMP_COUNTER_GAIN, 0, 1) -- a strong
+-- forager (sensing + motility) keeps its share near 1; a non-forager eats the full
+-- crowding tax. It NEVER kills directly; it tips a throttled colony over its carrying
+-- capacity so it STARVES (the starvation column is competition's fingerprint).
+-- Retuned 2026-06-08 to bite a touch harder (a 1-level-per-trait dish was coasting
+-- well past the 2-minute mark): the crowding ceiling rose 0.6 -> 0.68 and the ramp
+-- TAU dropped 50 -> 42 so competition saturates sooner. MIRRORED in tools/sim_lab.lua
+-- and tests/cell_pressures_spec.lua (the lab regression ref) -- keep the three in sync.
+local COMP_FRAC_MAX = 0.68 -- crowding share ceiling (rivals eventually take ~40% of an uncountered colony's food)
+local COMP_TAU = 42 -- time scale (s) for the rival ramp to reach ~63% of the ceiling
+local COMP_COUNTER_GAIN = 2.0 -- how strongly (forage_mult-1) restores your_share (0 = uncounterable)
+
+-- PREDATION (ramping cull + a fear/harassment intake throttle -- the death-spiral):
+--   pred_pressure(age) = clamp(PRED_BASE + PRED_RAMP*(age/PRED_TAU), .., PRED_MAX)
+--   evasion_mit        = 1 - min(PRED_MIT_CAP, evasion*PRED_EVASION_GAIN)  -- surviving fraction
+--   pred_cull_frac     = pred_pressure(age) * evasion_mit                  -- the real cull (sim.step)
+--   fear               = clamp(1 - PRED_FEAR*pred_cull_frac, FEAR_FLOOR, 1) -- intake suppression
+-- A high-evasion build feels almost no fear (income intact -> still climbs to the
+-- millions); a ZERO-evasion build's births are suppressed AND the floorless cull runs
+-- -> deaths beat births -> spiral to literal 0 (predation is SOLO-LETHAL). PRED_EVASION_GAIN
+-- is the lab-side amplifier turning the shipped (weak ~0.20 maxed) evasion stat into a
+-- real mitigator; PRED_MIT_CAP keeps a maxed build slightly contested (never immune).
+-- Retuned 2026-06-08 alongside competition (above): the predation ramp climbs faster
+-- (PRED_RAMP 0.008 -> 0.010, PRED_TAU 50 -> 42) so a neglected dish feels the cull
+-- sooner. MIRRORED in tools/sim_lab.lua and tests/cell_pressures_spec.lua.
+local PRED_BASE = 0.004 -- floor cull fraction/sec at age 0 (small but nonzero)
+local PRED_RAMP = 0.010 -- added rate over time (the ramping threat)
+local PRED_TAU = 42 -- time scale (s) of the predation ramp
+local PRED_MAX = 0.25 -- safety clamp on the per-second cull fraction (never an instant wipe)
+local PRED_EVASION_GAIN = 8.0 -- amplifies the shipped evasion stat into real predation mitigation
+local PRED_MIT_CAP = 0.97 -- max fraction of predation a high-evasion build can neutralize (<1: maxed stays contested)
+local PRED_FEAR = 8.0 -- intake suppression per unit effective predation pressure (the fear gain) [lab-locked; softened from 18 in the lab's pop re-key so a neglected founder still grows enough for toxicity+competition to stay co-dominant]
+local FEAR_FLOOR = 0.0 -- min surviving fraction of intake under max fear (0 -> fear can fully starve income)
+
 -- Endosymbiosis (phase 1's climax) is an RNG event possible at ANY colony size, but
 -- the per-engulf chance starts vanishingly small and only begins to RAMP once the
 -- colony crosses ENDO_RAMP_START cells, then climbs by ENDO_RAMP_PER_STEP for every
@@ -98,7 +168,25 @@ local PANEL_H = 502
 local PAD = 16
 local BTN_W = 96 -- fixed-width trait button, pinned right by the fill label column
 local TRAIT_BTN_H = 40
+local TOGGLE_BTN_W = 26 -- square minimize/expand toggle pinned to the title row's right
+
+-- Panel collapse: when true the panel shrinks to just its title row (the toggle
+-- stays reachable so it can be expanded again). In-memory only -- a fresh launch
+-- opens expanded.
+local panel_collapsed = false
 local BAR_COLOR = colors.secondary -- energy bar rides the global nourishment token
+
+-- VITALITY BAND thresholds -- a qualitative weak->strong read driven by PER-CAPITA
+-- net replication (net_rate / population), so it's SCALE-INVARIANT: the same per-cell
+-- growth reads identically at 100 cells and at a million. net_rate folds ALL three
+-- pressures (births minus toxicity+competition+predation deaths), so the band is the
+-- whole colony's health, not just waste. Above THRIVING per-capita -> Thriving;
+-- down through Stable/Strained; any negative net -> Failing, deeply negative ->
+-- Collapsing. Tune these (they map directly to the bands).
+local VIT_THRIVING = 0.05 -- per-capita net/s at/above which the colony is Thriving
+local VIT_STABLE = 0.01 -- per-capita net/s above which it's comfortably Stable
+local VIT_STRAINED = 0.0 -- at/above 0 (but below STABLE) it's Strained; below 0 it's failing
+local VIT_COLLAPSING = -0.02 -- per-capita net/s at/below which decline is Collapsing
 
 cell.state = nil
 
@@ -116,6 +204,48 @@ local transition_state = transition.new()
 -- background. Reset on a fresh load ([r] / boot) so a new lineage runs normally.
 local retired = false
 
+-- COLLAPSE -- the lose state. Failure is purely extinction (is_extinct): once the
+-- toxicity/predation cull drives the population to 0 the run ENDS -- a short
+-- game-over beat plays, then a fresh lineage seeds (same wipe+reload as [r]).
+-- collapse_anim runs the death overlay before the reload fires.
+local collapsing = false -- true while the game-over overlay plays (freezes the sim)
+local collapse_anim = 0 -- remaining seconds of the death overlay
+local COLLAPSE_ANIM = 2.6 -- length of the game-over beat before the fresh reload
+
+-- The saturating COMPETITION ramp (mirrors sim_lab.comp_frac): rivals take a
+-- growing share of the food as the lineage ages, climbing toward COMP_FRAC_MAX with
+-- time scale COMP_TAU, then saturating (it never re-caps the millions climb). Pure;
+-- keyed on the lineage clock so offline replays the same ramp position.
+local function comp_frac(age)
+  return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU))
+end
+
+-- The ramping PREDATION pressure (mirrors sim_lab.pred_pressure): the per-second
+-- cull fraction climbs LINEARLY with elapsed lineage time (a rising clock is what
+-- lets the unevaded death-spiral reach literal 0 and keeps late game contested),
+-- clamped at PRED_MAX so it can never instant-wipe. Evasion mitigation is applied
+-- by the caller (evasion_mit below). Pure.
+local function pred_pressure(age)
+  local p = PRED_BASE + PRED_RAMP * (math.max(age or 0, 0) / PRED_TAU)
+  if p > PRED_MAX then
+    p = PRED_MAX
+  end
+  return p
+end
+
+-- The evasion COUNTER-GATE (mirrors sim_lab.evasion_mitigation): turn the weak
+-- shipped evasion stat into a real predation mitigation via PRED_EVASION_GAIN,
+-- capped at PRED_MIT_CAP so a maxed colony stays slightly contested. Returns the
+-- SURVIVING fraction the cull applies to: 1 at evasion 0 (full cull -> spiral),
+-- -> (1-PRED_MIT_CAP) at high evasion (cull all but neutralized -> the colony climbs).
+local function evasion_mit(evasion)
+  local m = (evasion or 0) * PRED_EVASION_GAIN
+  if m > PRED_MIT_CAP then
+    m = PRED_MIT_CAP
+  end
+  return 1 - m
+end
+
 -- The INTAKE fold: the one place the pure modules meet. Assemble the table the
 -- sim's shared economy step runs on -- the photosynthesis light (opened by the
 -- unlock, lifted by the trait and the chloroplast), the per-cell foraging and its
@@ -132,10 +262,52 @@ local function intake_for(state)
   photo = photo + organelles.photo_bonus(set)
   local upkeep = metabolism.loss(FIXED_TEMPO) * stats.upkeep_mult * UPKEEP_SCALE
   local mult = traits.income_mult(state.traits) * organelles.intake_mult(set)
+
+  -- The lineage clock the two age-keyed pressures ramp on (seconds since lineage
+  -- start; ticked by sim.step, so it advances identically online and offline).
+  local age = state.sim.age or 0
+
+  -- COMPETITION throttle (mirrors sim_lab intake_for): rivals thin your share of
+  -- the food as the lineage ages. Applied to `mult` so it scales ALL gain channels
+  -- (photo + foraging + the compounding climb), keeping it biting at millions-scale.
+  -- COUNTER-GATE: sensing+motility lift forage_mult; COMP_COUNTER_GAIN turns that
+  -- into share RESTORATION, so a strong forager keeps your_share near 1 while a
+  -- non-forager eats the full crowding tax. counter in [0,1]; tax = comp_frac*(1-counter).
+  local counter = (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+  if counter < 0 then
+    counter = 0
+  elseif counter > 1 then
+    counter = 1
+  end
+  local your_share = 1 / (1 + comp_frac(age) * (1 - counter))
+  mult = mult * your_share
+
+  -- PREDATION fear/harassment throttle (mirrors sim_lab intake_for): heavy predation
+  -- makes cells FLEE instead of feed, so income (and thus births) collapses. Applied
+  -- to the SAME mult. pred_cull_frac already folds in evasion mitigation, so a
+  -- high-evasion build feels almost no fear (income intact -> it still reaches the
+  -- millions) while a zero-evasion build's births are suppressed AND the floorless
+  -- cull (sim.step) runs -> deaths beat births -> spiral to literal 0. Clamped to
+  -- [FEAR_FLOOR, 1]. The cull fraction itself is forwarded as pred_cull_frac for sim.step.
+  local pred_mit = evasion_mit(stats.evasion)
+  local pred_cull_frac = pred_pressure(age) * pred_mit
+  local fear = 1 - PRED_FEAR * pred_cull_frac
+  if fear < FEAR_FLOOR then
+    fear = FEAR_FLOOR
+  elseif fear > 1 then
+    fear = 1
+  end
+  mult = mult * fear
+
   -- Compounding income per cell: enough to cover its own upkeep (upkeep/mult) plus
   -- the GROWTH_RATE surplus, so the net per-cell contribution is GROWTH_RATE x mult
   -- -- a small positive that compounds the colony exponentially. Scaling the
   -- surplus by mult means unlocks/organelles also steepen the climb.
+  --
+  -- NOTE: upkeep/mult uses the THROTTLED mult, so as competition/predation/fear bite
+  -- the per-cell income falls below upkeep (net per cell drops below GROWTH_RATE),
+  -- which is exactly what tips a harassed colony into the starvation cull -- mirroring
+  -- the lab, where the same throttled mult divides the compounding channel.
   local growth_per_cell = upkeep / mult + GROWTH_RATE
   return {
     photo = photo,
@@ -145,6 +317,17 @@ local function intake_for(state)
     growth_per_cell = growth_per_cell, -- the open-ended compounding channel (-> millions)
     mult = mult,
     div_mult = stats.div_mult, -- digestion: < 1 cheapens every division
+    -- Toxicity model (the failure pressure): the dish fouls at TOX_PROD and the
+    -- colony clears at stats.cleanup (cleanup traits). Net waste throttles intake
+    -- (TOX_HALF) and, past TOX_TOLERANCE, CULLS cells (TOX_KILL_K) toward extinction.
+    tox_prod = TOX_PROD,
+    tox_clear = stats.cleanup,
+    tox_half = TOX_HALF,
+    tox_tolerance = TOX_TOLERANCE,
+    tox_kill_k = TOX_KILL_K,
+    -- Predation: the per-second cull fraction (already evasion-mitigated) sim.step
+    -- applies as a floorless, ramping cull -- the closed-form home for predation.
+    pred_cull_frac = pred_cull_frac,
   }
 end
 
@@ -198,7 +381,7 @@ local function feed_bloom(b)
   -- Pentatonic pitch set (root, 2nd, 3rd, 5th, 6th): every variation stays
   -- consonant with the Cmaj BGM, where free jitter would read as detuned.
   sound.play("bloom", { volume = 0.9, pitches = { 1.0, 9 / 8, 5 / 4, 3 / 2, 5 / 3 } })
-  sim.feed_burst(cell.state.sim, FEED_ENERGY)
+  sim.feed_burst(cell.state.sim, FEED_ENERGY, FEED_TOX_CLEAR)
   world.add_food_burst(world_state, b.x, b.y)
   view.spawn(view_state, fx.pulse({ x = b.x, y = b.y }))
   view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.18, life = 0.2 }))
@@ -218,6 +401,27 @@ local function check_unlocks()
       end
     end
   end
+end
+
+-- The colony has FAILED only when it is EXTINCT -- the toxicity cull (sim.lua) has
+-- killed every last cell. No aggregate trigger, no vitality threshold: the run
+-- ends purely because the population reached 0, the natural end of the die-off. As
+-- long as a single cell survives, feeding or leveling cleanup can still turn it
+-- around. Returns true the moment the colony is wiped out.
+local function is_extinct()
+  return cell.state.sim.population <= 0
+end
+
+-- Begin the game-over beat: freeze the sim, shake + flash red, toast the cause.
+-- The overlay runs for COLLAPSE_ANIM, then cell.update reloads a fresh lineage.
+local function begin_collapse()
+  collapsing = true
+  collapse_anim = COLLAPSE_ANIM
+  set_toast("The colony choked on its own waste — a new lineage begins")
+  sound.play("pop", { volume = 1.0, pitch_spread = 0.2 })
+  view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
+  view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = cell.state.sim.population }))
+  persist()
 end
 
 -- Arm the end-of-phase-1 transition cinematic on the cell at (cx, cy) -- the one
@@ -243,6 +447,10 @@ local function begin_lineage_transition(cx, cy)
   transition.begin(transition_state, {
     x = cx,
     y = cy,
+    -- The "dive" finale: dissolve the dish to the lone winner, brighten it into a hero,
+    -- and plunge the camera into it -- the zoom itself is the bridge into phase 2 (no
+    -- white-out wipe). The matching teal isolation fade is driven from cell.draw.
+    style = "dive",
     -- Phase-2 seam text: the zoom-into-the-cell, not a fresh soup.
     title = "A CELL WITHIN A CELL",
     kicker = "endosymbiosis",
@@ -252,10 +460,11 @@ local function begin_lineage_transition(cx, cy)
       view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
     end,
     on_reset = function()
-      -- Cross the seam into phase 2: initialize a fresh complex cell (the engulfed
-      -- bacterium is its first mitochondrion), carrying phase 1's snapshotted metrics
-      -- as its statistic, then switch layers behind the white-out. RETIRE phase 1 so
-      -- its sim freezes at the snapshot rather than ticking on in the background.
+      -- Cross the seam into phase 2 at the deepest point of the dive: initialize a fresh
+      -- complex cell (the engulfed bacterium is its first mitochondrion), carrying phase
+      -- 1's snapshotted metrics as its statistic, then switch layers behind the teal
+      -- engulf (phase 2 opens out of the same teal via its intro fade -- no flash, no
+      -- cut). RETIRE phase 1 so its sim freezes at the snapshot rather than ticking on.
       retired = true
       complexcell.enter_from_seam({ stats = stats })
       layers.switch("complexcell")
@@ -313,6 +522,8 @@ end
 
 function cell.load()
   retired = false -- a fresh lineage runs live again (clears any prior phase-2 hand-off)
+  collapsing = false -- clear any prior game-over state (a fresh founder runs normally)
+  collapse_anim = 0
   sound.load("pop", "assets/sounds/pop.ogg")
   sound.load("bloom", "assets/sounds/bloom.ogg")
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
@@ -337,7 +548,12 @@ function cell.load()
   if type(data.stamp) == "number" then
     local seconds = math.min(os.time() - data.stamp, OFFLINE_CAP)
     if seconds > 0 then
-      sim.offline(cell.state.sim, seconds, intake_for(cell.state))
+      -- Pass intake_for as a PROVIDER (a closure over the live state) rather than a
+      -- single precomputed table: the competition/predation ramps are keyed on
+      -- state.sim.age, which sim.step advances every sub-step, so offline must
+      -- recompute the fold each sub-step to stay byte-identical to the live per-frame
+      -- path (which already rebuilds intake every tick). This is the determinism hinge.
+      sim.offline(cell.state.sim, seconds, function() return intake_for(cell.state) end)
       sim.take_divisions(cell.state.sim)
     end
   end
@@ -356,6 +572,9 @@ function cell.tick(tick_dt)
   end
   if transition.active(transition_state) and not transition_state.reset_done then
     return
+  end
+  if collapsing then
+    return -- the colony has failed: freeze the sim under the game-over overlay
   end
   sim.tick(cell.state.sim, tick_dt, intake_for(cell.state))
 end
@@ -377,6 +596,22 @@ function cell.update(dt)
   end
   if transition.active(transition_state) then
     transition.update(transition_state, dt) -- post-reset: tick the white-out fade to its end
+  end
+
+  -- The colony has FAILED: the game-over beat owns the frame. Advance only the
+  -- view (so the red flash + shake play) and the overlay clock, then -- when it
+  -- elapses -- wipe the save and seed a fresh lineage (the same reset as [r]).
+  if collapsing then
+    view.update(view_state, dt)
+    if toast_timer > 0 then
+      toast_timer = toast_timer - dt
+    end
+    collapse_anim = collapse_anim - dt
+    if collapse_anim <= 0 then
+      save.remove(SAVE_NAME)
+      cell.load() -- fresh founder; clears collapsing via the load reset below
+    end
+    return
   end
 
   tween.update(dt) -- advance the UI kit's hover/press lighten transitions
@@ -402,6 +637,7 @@ function cell.update(dt)
   local predation = traits.is_unlocked(cell.state.traits, "predation")
   local killed, engulfs, deaths, kill_points, engulf_points = world.update(world_state, dt, {
     stats = traits.stats(cell.state.traits),
+    competition = comp_frac(cell.state.sim.age), -- 0..1 rival intensity -> competitor-cell skin
     dial_tempo = FIXED_TEMPO,
     aspect = aspect,
     target_population = target_population(cell.state),
@@ -465,6 +701,11 @@ function cell.update(dt)
   end
 
   check_unlocks()
+  -- Failure: the toxicity cull has driven the colony to extinction. End the run
+  -- into a fresh lineage (game-over beat). Nothing fires while a cell still lives.
+  if is_extinct() then
+    begin_collapse()
+  end
   sim.take_divisions(cell.state.sim) -- drain; the swarm reconciles off population
   view.update(view_state, dt)
 
@@ -523,6 +764,27 @@ local function action_button_node(opts)
       end
     end,
     on_click = enabled and opts.on_click or nil,
+    resolved_rect = nil,
+  }
+end
+
+-- The title-row minimize/expand toggle: a small square button pinned to the right
+-- of the "biomass" line. Shows "−" while expanded (click to collapse) and "+" while
+-- collapsed (click to restore). h = "fill" so it centres against the lg title line.
+local function toggle_button_node()
+  return {
+    type = "node",
+    w = TOGGLE_BTN_W,
+    h = "fill",
+    draw_fn = function(r)
+      button.draw(r, panel_collapsed and "+" or "−", {
+        font = "hud",
+        id = "panel_toggle",
+      })
+    end,
+    on_click = function()
+      panel_collapsed = not panel_collapsed
+    end,
     resolved_rect = nil,
   }
 end
@@ -603,6 +865,48 @@ local function organelle_children(state)
   return children
 end
 
+-- The VITALITY BAND: classify the colony's health from its SCALE-INVARIANT per-capita
+-- net replication (net_rate / population). Returns the label, its color token, a trend
+-- arrow (sign of net_rate), and an analog 0..1 fraction for the thin backing bar.
+-- Color ramps secondary (good) -> tertiary -> quaternary (bad) across the bands.
+local function vitality_band(state)
+  local pop = math.max(state.sim.population, 1)
+  local net = state.sim.net_rate or 0
+  local per_cap = net / pop
+
+  local label, color
+  if per_cap >= VIT_THRIVING then
+    label, color = "thriving", colors.secondary
+  elseif per_cap >= VIT_STABLE then
+    label, color = "stable", colors.secondary
+  elseif per_cap >= VIT_STRAINED then
+    label, color = "strained", colors.tertiary
+  elseif per_cap > VIT_COLLAPSING then
+    label, color = "failing", colors.quaternary
+  else
+    label, color = "collapsing", colors.quaternary
+  end
+
+  -- Trend arrow from the sign of net_rate (rising / falling / level).
+  local arrow = "▶"
+  if net > 0 then
+    arrow = "▲"
+  elseif net < 0 then
+    arrow = "▼"
+  end
+
+  -- Analog backing: map per-capita net across [VIT_COLLAPSING, VIT_THRIVING] to 0..1
+  -- so the thin bar fills as the band climbs (clamped at the ends).
+  local span = VIT_THRIVING - VIT_COLLAPSING
+  local frac = span > 0 and (per_cap - VIT_COLLAPSING) / span or 0
+  if frac < 0 then
+    frac = 0
+  elseif frac > 1 then
+    frac = 1
+  end
+  return label, color, arrow, frac
+end
+
 -- The whole panel as a declarative node tree, rebuilt each frame so dynamic values
 -- and the on_click closures capture the current state. Stacked groups (header /
 -- traits / organelles / footer) inside a PAD-padded vstack.
@@ -612,27 +916,57 @@ local function build_panel(state)
   local div_cost = sim.div_cost(pop, intake.div_mult)
   local energy_ratio = math.max(0, math.min(state.sim.energy / div_cost, 1))
 
-  local header = {}
-  table.insert(
-    header,
+  -- Title row: the "biomass N" headline (fill width) pushes the minimize/expand
+  -- toggle to the right edge. Collapsed, this row is the whole panel.
+  local title_row = layout.hstack({
     layout.text(
       "biomass  " .. format.number(state.sim.biomass),
       { size = "lg", color = colors.ui.text }
-    )
-  )
+    ),
+    toggle_button_node(),
+  }, { gap = theme.spacing.sm })
+
+  if panel_collapsed then
+    return layout.vstack({ title_row }, { padding = PAD, gap = theme.spacing.md })
+  end
+
+  local header = { title_row }
   table.insert(
     header,
     layout.text(string.format("colony  %d", pop), { color = colors.ui.text_dim })
   )
+  -- NET REPLICATION headline: births minus ALL deaths, per MINUTE, SIGNED -- the
+  -- single most honest "are you winning" number. It goes red and negative BEFORE
+  -- the colony visibly slides, the leading indicator the vitality band follows.
+  -- Measured (EMA of net mints in sim.step), so it doesn't whipsaw on the integer
+  -- population wobble; format.number handles the magnitude, we own the +/- sign.
+  local net_min = (state.sim.net_rate or 0) * 60
+  local net_sign = net_min < 0 and "−" or "+"
+  local net_arrow = net_min < 0 and "▼" or "▲"
+  local net_color = net_min < 0 and colors.quaternary or colors.secondary
   table.insert(
     header,
     layout.text(
-      -- Measured throughput (EMA of actual mints in sim.step), not the
-      -- instantaneous theoretical rate -- which whipsaws near carrying capacity
-      -- as the integer population wobbles with each division/death/kill.
-      string.format("division  %s /min", format.number(state.sim.div_rate * 60)),
-      { color = colors.ui.text_muted }
+      string.format("%s %s%s /min", net_arrow, net_sign, format.number(math.abs(net_min))),
+      { size = "lg", color = net_color }
     )
+  )
+  -- Dish VITALITY: a qualitative weak->strong BAND (not a percent-to-zero), derived
+  -- from per-capita net replication so it reflects ALL three pressures at once and
+  -- reads the same at 100 cells or a million. The LABEL is the read; a trend arrow
+  -- shows direction; the thin bar is analog backing. Color ramps green->amber->red.
+  local band, band_color, band_arrow, band_frac = vitality_band(state)
+  table.insert(
+    header,
+    layout.text(string.format("vitality  %s %s", band, band_arrow), { color = band_color })
+  )
+  table.insert(
+    header,
+    layout.bar(band_frac, {
+      h = 8,
+      color = band_color,
+      bg_color = colors.with_alpha(colors.ui.white, 0.12),
+    })
   )
   -- The energy reserve filling toward the next division (banks biomass on cross).
   table.insert(
@@ -672,7 +1006,7 @@ end
 local function draw_help(width)
   text(
     rect(0, love.graphics.getHeight() - 44, width, 16),
-    "click a nutrient bloom to feed   ·   level traits (biomass)   ·   grow the colony   ·   [r] new lineage",
+    "click a bloom to feed   ·   level traits (biomass)   ·   keep net replication positive or the colony fails   ·   [r] new lineage",
     { color = colors.with_alpha(colors.ui.text_faint, 0.7), align = "center" }
   )
 end
@@ -689,14 +1023,50 @@ local function draw_toast(width)
   })
 end
 
+-- The game-over overlay: a darkening red wash with the cause of death, drawn over
+-- the frozen dish for COLLAPSE_ANIM before the fresh lineage reloads.
+local function draw_collapse(width)
+  local height = love.graphics.getHeight()
+  local progress = 1 - math.max(0, math.min(collapse_anim / COLLAPSE_ANIM, 1)) -- 0 -> 1
+  local dim = math.min(0.82, 0.2 + progress * 0.8)
+  love.graphics.setColor(0.06, 0.0, 0.0, dim)
+  love.graphics.rectangle("fill", 0, 0, width, height)
+  love.graphics.setColor(1, 1, 1, 1)
+  text(rect(0, height / 2 - 32, width, 30), "THE COLONY COLLAPSED", {
+    font = "hud_lg",
+    color = colors.quaternary,
+    align = "center",
+  })
+  text(rect(0, height / 2 + 8, width, 18), "choked on its own waste — a new lineage begins", {
+    font = "hud",
+    color = colors.with_alpha(colors.ui.text, 0.85),
+    align = "center",
+  })
+end
+
 function cell.draw()
   local state = cell.state
   local width = love.graphics.getWidth()
+
+  -- The end-of-phase-1 dive DISSOLVES the dish to isolate the winning cell: hand the
+  -- view the triggering cell + the transition's world-fade so everything but the winner
+  -- fades out as the camera plunges in. Absent in normal play (isolate = nil -> the
+  -- dish renders exactly as before).
+  local isolate
+  if transition.active(transition_state) then
+    isolate = {
+      x = transition_state.x,
+      y = transition_state.y,
+      fade = transition.world_fade(transition_state),
+    }
+  end
 
   view.draw_world(view_state, world.snapshot(world_state), {
     mito = organelles.has(state.sim.organelles, "mitochondrion"),
     swarm_count = target_population(state), -- the colony's visible sample size
     sim_cap = SIM_CAP, -- cells the real boids cover; the field only draws ABOVE this
+    stats = traits.stats(cell.state.traits), -- folded trait levels -> view trait visuals
+    isolate = isolate, -- the dive's "fade everything but the winner" (nil in normal play)
   })
 
   -- During the end-of-phase-1 cinematic the world is drawn (frozen) beneath the
@@ -706,6 +1076,14 @@ function cell.draw()
   if transition.active(transition_state) then
     local sx, sy = view.world_to_screen(view_state, transition_state.x, transition_state.y)
     transition.draw(transition_state, sx, sy)
+    return
+  end
+
+  -- The colony has failed: the game-over wash owns the screen (panel suppressed),
+  -- drawn over the frozen dish until the fresh lineage reloads.
+  if collapsing then
+    draw_collapse(width)
+    draw_toast(width)
     return
   end
 
@@ -731,8 +1109,13 @@ function cell.draw()
 end
 
 function cell.keypressed(key)
-  -- The cinematic owns the screen: swallow gameplay input until it finishes.
-  if transition.active(transition_state) then
+  -- The cinematic / game-over beat owns the screen: swallow gameplay input until
+  -- it finishes (the [r] new-lineage hatch still works through it, handled below).
+  if transition.active(transition_state) or collapsing then
+    if key == "r" then
+      save.remove(SAVE_NAME)
+      cell.load()
+    end
     return
   end
   if key == "space" then
@@ -761,8 +1144,8 @@ function cell.mousepressed(x, y, button_index)
   if button_index ~= 1 then
     return
   end
-  -- The cinematic owns the screen: ignore clicks until it finishes.
-  if transition.active(transition_state) then
+  -- The cinematic / game-over beat owns the screen: ignore clicks until it ends.
+  if transition.active(transition_state) or collapsing then
     return
   end
   -- A widget hit fires its on_click closure; anything else outside the panel

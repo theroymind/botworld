@@ -22,14 +22,14 @@ local TRAITS = {
   {
     id = "photosynthesis",
     label = "Photosynthesis",
-    hint = "+18% biomass/sec",
+    hint = "+18% biomass/sec, oxygenates",
     base_cost = 10,
     locked_until = "photosynthesis", -- revealed by the early milestone
   },
-  { id = "motility", label = "Motility", hint = "swim speed +12%", base_cost = 8 },
+  { id = "motility", label = "Motility", hint = "swim speed +25%, +8% forage", base_cost = 8 },
   { id = "sensing", label = "Chemotaxis", hint = "sense range +14", base_cost = 8 },
-  { id = "digestion", label = "Digestion", hint = "division cost -8%", base_cost = 12 },
-  { id = "evasion", label = "Evasion", hint = "evade +5%", base_cost = 12 },
+  { id = "digestion", label = "Digestion", hint = "division -8%, clears waste", base_cost = 12 },
+  { id = "evasion", label = "Evasion", hint = "evade +5%, clears waste", base_cost = 12 },
 }
 
 -- Stable order for the panel / fold (pairs() over a keyed table is unordered).
@@ -44,16 +44,33 @@ local COST_GROWTH = 1.5 -- per-trait cost multiplier per level (independent rows
 
 -- Folding magnitudes. Each maps a trait's level to its stat contribution.
 local PHOTO_PER = 0.18 -- +18% gain per photosynthesis level
-local FORAGE_MOTILITY_PER = 0.03 -- small economic gain: reaches food faster
+-- Motility now pulls real economic weight (not just a cosmetic tail): a leveled
+-- swimmer reaches food the colony has thinned, so each level is a meaningful
+-- +8% foraging income AND a clearly visible +25% swim speed (the on-screen tell).
+local FORAGE_MOTILITY_PER = 0.08 -- economic gain per motility level: reaches food faster
 local FORAGE_SENSING_PER = 0.02 -- small economic gain: finds more food
 local SPEED_BASE = 30 -- world units/sec at motility 0 (a slow drift; motility upgrades earn their keep)
-local SPEED_PER = 0.12 -- +12% swim speed per level
+local SPEED_PER = 0.25 -- +25% swim speed per level (a big, legible jump -- the upgrade reads on screen)
 local SENSE_BASE = 70 -- chemotaxis radius at sensing 0
 local SENSE_PER = 14 -- +14 range per level
 local FEED_PER = 0.15 -- +15% feed (consume) speed per digestion level (cosmetic flavor)
 local DIV_FACTOR = 0.92 -- division energy cost x0.92 per digestion level (-8%, compounding)
 local EVASION_K = 0.05 -- evasion = 1 - 1/(1 + levels*K): bounded [0,1) flee/dodge chance
 local UPKEEP_K = 0.05 -- upkeep_mult = 1/(1 + levels*K): a leaner, nimbler cell also trims upkeep
+
+-- WASTE CLEARANCE (tox_clear, units/sec) -- the survival lever the failure pressure
+-- is balanced against. The dish fouls at a fixed rate (cell.lua TOX_PROD); the
+-- colony must clear at least that fast or toxicity climbs and chokes intake (see
+-- sim.lua). CLEAN_BASE is what a bare founder manages on its own -- deliberately
+-- BELOW the fouling rate, so an UNTENDED colony is doomed to choke (the failure
+-- condition). The player buys headroom by leveling the cleanup traits: Digestion
+-- (the primary -- processing waste), Evasion (a lean, efficient metabolism), and
+-- Photosynthesis (oxygenation). A couple of cleanup levels, or steady feeding,
+-- tips clearance above fouling and the colony survives.
+local CLEAN_BASE = 0.12 -- founder's intrinsic clearance (below TOX_PROD on purpose)
+local CLEAN_PER_DIGESTION = 0.24 -- digestion is the primary waste-processing trait
+local CLEAN_PER_EVASION = 0.16 -- a lean metabolism wastes less
+local CLEAN_PER_PHOTO = 0.12 -- photosynthesis oxygenates the medium
 
 -- Trait SYNERGY magnitudes. Paired traits multiply, so a BALANCED build beats a
 -- one-trait spike and "all maxed" keeps a reason to keep leveling. The sqrt(a*b)
@@ -126,6 +143,13 @@ function traits.stats(state)
     speed = SPEED_BASE * (1 + SPEED_PER * lv.motility),
     sense_range = SENSE_BASE + SENSE_PER * lv.sensing,
     evasion = 1 - 1 / (1 + EVASION_K * lv.evasion),
+    -- Waste clearance (units/sec): the founder's intrinsic floor plus the cleanup
+    -- traits. The orchestrator passes this as intake.tox_clear; when it beats the
+    -- dish's fouling rate, toxicity falls and the colony stays healthy.
+    cleanup = CLEAN_BASE
+      + CLEAN_PER_DIGESTION * lv.digestion
+      + CLEAN_PER_EVASION * lv.evasion
+      + CLEAN_PER_PHOTO * lv.photosynthesis,
   }
 end
 

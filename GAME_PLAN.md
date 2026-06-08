@@ -62,7 +62,10 @@ The thing the player actually *does* across the whole game:
 - **Anti-overwhelm is a hard rule.** ≤3-4 *active* knobs on screen ever; introduce them one at a
   time; forgiving plateau optima (a wide band yields ~85-95% of max; "wrong" is mildly slower,
   never a fail-state); live feedback as you drag. **Litmus test: you can clear any phase without
-  ever opening the knob panel — tuning is opt-in upside.**
+  ever opening the knob panel — tuning is opt-in upside.** *(Exception, decided 2026-06-08:
+  phase 1 now has a real fail-state — a waste/vitality pressure that ends the run if you
+  neglect the dish entirely. See `docs/CELL_LAYER.md`. The "no fail-state" rule still governs
+  the later automated phases; phase 1 wanted teeth.)*
 
 ## Scale ladder (the vision — mechanics TBD)
 

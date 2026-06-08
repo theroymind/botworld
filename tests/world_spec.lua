@@ -61,7 +61,7 @@ end
 
 local field1 = field_after_update(1, 16 / 9)
 local field_grown = field_after_update(1000, 16 / 9)
-local field_huge = field_after_update(100000, 16 / 9)
+local field_huge = field_after_update(5000000, 16 / 9)
 
 check(math.abs(field1.w - world.BASE_FIELD) < 1, "pop 1 -> field_w approx BASE_FIELD")
 check(math.abs(field1.h - world.BASE_FIELD / (16 / 9)) < 1, "pop 1 -> field_h approx BASE_FIELD/aspect")
@@ -72,13 +72,18 @@ check(math.abs(field_huge.w - world.MAX_FIELD) < 1, "huge pop clamps at MAX_FIEL
 -- tier and JUMPS exactly at a threshold, instead of climbing continuously.
 check(math.abs(field_after_update(1, 16 / 9).w - 440) < 1, "tier 1: pop 1 -> 440")
 check(math.abs(field_after_update(299, 16 / 9).w - 440) < 1, "tier 1 holds below the next threshold (pop 299 -> 440)")
-check(math.abs(field_after_update(300, 16 / 9).w - 700) < 1, "tier 2: pop 300 steps to 700")
-check(math.abs(field_after_update(999, 16 / 9).w - 700) < 1, "tier 2 holds (pop 999 -> 700)")
-check(math.abs(field_after_update(1000, 16 / 9).w - 1040) < 1, "tier 3: pop 1000 -> 1040")
-check(math.abs(field_after_update(3000, 16 / 9).w - 1520) < 1, "tier 4: pop 3000 -> 1520")
-check(math.abs(field_after_update(10000, 16 / 9).w - 2150) < 1, "tier 5: pop 10000 -> 2150")
-check(math.abs(field_after_update(30000, 16 / 9).w - 2900) < 1, "tier 6: pop 30000 -> 2900")
-check(math.abs(field_after_update(100000, 16 / 9).w - 3600) < 1, "tier 7: pop 100000 -> 3600 (max)")
+check(math.abs(field_after_update(300, 16 / 9).w - 1360) < 1, "tier 2: pop 300 steps to 1360")
+check(math.abs(field_after_update(999, 16 / 9).w - 1360) < 1, "tier 2 holds (pop 999 -> 1360)")
+check(math.abs(field_after_update(1000, 16 / 9).w - 2580) < 1, "tier 3: pop 1000 -> 2580")
+check(math.abs(field_after_update(3000, 16 / 9).w - 3330) < 1, "tier 4: pop 3000 -> 3330")
+check(math.abs(field_after_update(10000, 16 / 9).w - 3980) < 1, "tier 5: pop 10000 -> 3980")
+check(math.abs(field_after_update(30000, 16 / 9).w - 4500) < 1, "tier 6: pop 30000 -> 4500")
+check(math.abs(field_after_update(50000, 16 / 9).w - 4720) < 1, "tier 7: pop 50000 -> 4720 (added mid-band step)")
+check(math.abs(field_after_update(100000, 16 / 9).w - 5010) < 1, "tier 8: pop 100000 -> 5010")
+check(math.abs(field_after_update(300000, 16 / 9).w - 5430) < 1, "tier 9: pop 300000 -> 5430")
+check(math.abs(field_after_update(500000, 16 / 9).w - 5620) < 1, "tier 10: pop 500000 -> 5620 (added mid-band step)")
+check(math.abs(field_after_update(1000000, 16 / 9).w - 5860) < 1, "tier 11: pop 1000000 -> 5860")
+check(math.abs(field_after_update(3000000, 16 / 9).w - 6220) < 1, "tier 12: pop 3000000 -> 6220 (max)")
 
 -- RECENTRE on a tier step: the field grows anchored at the origin, so without a
 -- shift the old realm's inhabitants would strand in the top-left corner of the

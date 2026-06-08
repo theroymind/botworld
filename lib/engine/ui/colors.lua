@@ -114,6 +114,21 @@ colors.secondary = { 0.56, 1.0, 0.46 } -- green: nourishment / progress (bright,
 colors.secondary_bright = { 0.72, 1.0, 0.66 } -- highlight shade of secondary
 colors.tertiary = { 0.95, 0.86, 0.55 } -- warm sand: neutral third parties
 colors.quaternary = { 0.96, 0.34, 0.30 } -- red: threat / violence
+
+-- Rival SPECIES palette: vibrant, saturated hues for the neutral competitor microbes
+-- so a contested dish reads as several distinct other-life species rather than one
+-- grey mass. Deliberately spread across orange/gold/pink/purple/violet -- a warm-to-
+-- cool sweep that stays clear of the protagonist teal (primary), nourishment green
+-- (secondary) and threat red (quaternary), so rivals never get mistaken for your
+-- cells, food, or a predator. The view buckets each rival's color-free `tint` seed
+-- into one of these; extend/recolor here (the one home for the RGB).
+colors.competitor_species = {
+  { 1.00, 0.55, 0.10 }, -- vibrant orange
+  { 1.00, 0.78, 0.16 }, -- amber gold
+  { 1.00, 0.30, 0.66 }, -- hot pink
+  { 0.78, 0.28, 0.98 }, -- magenta-purple
+  { 0.42, 0.46, 1.00 }, -- violet blue
+}
 colors.success = p.green_sage
 colors.destructive = p.red_vibrant
 colors.info = p.blue_steel

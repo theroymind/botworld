@@ -43,8 +43,8 @@ check(approx(traits.stats(t).photo_mult, 1.18), "one photosynthesis level -> +18
 t = traits.new()
 traits.level(t, "motility")
 local base_speed = traits.stats(traits.new()).speed
-check(approx(traits.stats(t).speed, base_speed * 1.12), "one motility level -> +12% speed")
-check(traits.stats(t).forage_mult > 1, "motility also grants a small forage gain")
+check(approx(traits.stats(t).speed, base_speed * 1.25), "one motility level -> +25% speed")
+check(approx(traits.stats(t).forage_mult, 1.08), "one motility level -> +8% forage (now a real economic lever)")
 
 t = traits.new()
 traits.level(t, "sensing")
@@ -74,6 +74,31 @@ for _ = 1, 1000 do
 end
 check(traits.stats(t).evasion < 1, "evasion never reaches full immunity")
 
+-- Waste clearance (cleanup): a bare founder has a positive floor, and the three
+-- cleanup traits (digestion, evasion, photosynthesis) each raise it -- this is the
+-- survival lever the toxicity failure pressure is balanced against.
+t = traits.new()
+local clean0 = traits.stats(t).cleanup
+check(clean0 > 0, "founder has a positive baseline waste clearance")
+t = traits.new()
+traits.level(t, "digestion")
+check(traits.stats(t).cleanup > clean0, "digestion raises clearance (the primary cleanup trait)")
+t = traits.new()
+traits.level(t, "evasion")
+check(traits.stats(t).cleanup > clean0, "evasion raises clearance (a lean metabolism)")
+t = traits.new()
+traits.level(t, "photosynthesis")
+check(traits.stats(t).cleanup > clean0, "photosynthesis raises clearance (oxygenation)")
+-- Digestion is the strongest single cleanup lever.
+local dig1 = traits.new()
+traits.level(dig1, "digestion")
+local eva1 = traits.new()
+traits.level(eva1, "evasion")
+check(
+  traits.stats(dig1).cleanup >= traits.stats(eva1).cleanup,
+  "digestion clears at least as much as evasion per level (the primary lever)"
+)
+
 -- Per-trait cost is geometric and independent across rows.
 t = traits.new()
 local photo_base = traits.cost(t, "photosynthesis")
@@ -87,7 +112,7 @@ check(not traits.level(t, "nonsense"), "unknown trait rejected")
 check(traits.cost(t, "nonsense") == math.huge, "unknown trait costs infinity")
 
 -- Hints are concrete strings.
-check(traits.hint("evasion") == "evade +5%", "evasion hint reads concretely")
+check(traits.hint("evasion") == "evade +5%, clears waste", "evasion hint reads concretely")
 
 -- Photosynthesis row is locked until its milestone fires; others are free.
 t = traits.new()
