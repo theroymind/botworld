@@ -60,25 +60,25 @@ local function field_after_update(pop, aspect)
 end
 
 local field1 = field_after_update(1, 16 / 9)
-local field10 = field_after_update(10, 16 / 9)
+local field_grown = field_after_update(1000, 16 / 9)
 local field_huge = field_after_update(100000, 16 / 9)
 
 check(math.abs(field1.w - world.BASE_FIELD) < 1, "pop 1 -> field_w approx BASE_FIELD")
 check(math.abs(field1.h - world.BASE_FIELD / (16 / 9)) < 1, "pop 1 -> field_h approx BASE_FIELD/aspect")
-check(field10.w > field1.w, "field grows with population (pop 10 > pop 1)")
+check(field_grown.w > field1.w, "field grows with population (pop 1000 > pop 1)")
 check(math.abs(field_huge.w - world.MAX_FIELD) < 1, "huge pop clamps at MAX_FIELD")
 
 -- Stepped tiers: the field is a STEP function of population. It HOLDS within a
 -- tier and JUMPS exactly at a threshold, instead of climbing continuously.
 check(math.abs(field_after_update(1, 16 / 9).w - 440) < 1, "tier 1: pop 1 -> 440")
-check(math.abs(field_after_update(5, 16 / 9).w - 440) < 1, "tier 1 holds below the next threshold (pop 5 -> 440)")
-check(math.abs(field_after_update(6, 16 / 9).w - 700) < 1, "tier 2: pop 6 steps to 700")
-check(math.abs(field_after_update(14, 16 / 9).w - 700) < 1, "tier 2 holds (pop 14 -> 700)")
-check(math.abs(field_after_update(15, 16 / 9).w - 1040) < 1, "tier 3: pop 15 -> 1040")
-check(math.abs(field_after_update(30, 16 / 9).w - 1520) < 1, "tier 4: pop 30 -> 1520")
-check(math.abs(field_after_update(60, 16 / 9).w - 2150) < 1, "tier 5: pop 60 -> 2150")
-check(math.abs(field_after_update(120, 16 / 9).w - 2900) < 1, "tier 6: pop 120 -> 2900")
-check(math.abs(field_after_update(200, 16 / 9).w - 3600) < 1, "tier 7: pop 200 -> 3600 (max)")
+check(math.abs(field_after_update(299, 16 / 9).w - 440) < 1, "tier 1 holds below the next threshold (pop 299 -> 440)")
+check(math.abs(field_after_update(300, 16 / 9).w - 700) < 1, "tier 2: pop 300 steps to 700")
+check(math.abs(field_after_update(999, 16 / 9).w - 700) < 1, "tier 2 holds (pop 999 -> 700)")
+check(math.abs(field_after_update(1000, 16 / 9).w - 1040) < 1, "tier 3: pop 1000 -> 1040")
+check(math.abs(field_after_update(3000, 16 / 9).w - 1520) < 1, "tier 4: pop 3000 -> 1520")
+check(math.abs(field_after_update(10000, 16 / 9).w - 2150) < 1, "tier 5: pop 10000 -> 2150")
+check(math.abs(field_after_update(30000, 16 / 9).w - 2900) < 1, "tier 6: pop 30000 -> 2900")
+check(math.abs(field_after_update(100000, 16 / 9).w - 3600) < 1, "tier 7: pop 100000 -> 3600 (max)")
 
 -- RECENTRE on a tier step: the field grows anchored at the origin, so without a
 -- shift the old realm's inhabitants would strand in the top-left corner of the
@@ -88,7 +88,7 @@ local rcw = world.new({ rng = make_rng(3), aspect = 16 / 9 })
 world.update(rcw, FRAME, { target_population = 1, aspect = 16 / 9 }) -- founder, tier 1
 local old_w, old_h = rcw.field_w, rcw.field_h
 local fx0, fy0 = rcw.cells[1].x, rcw.cells[1].y
-world.update(rcw, FRAME, { target_population = 6, aspect = 16 / 9 }) -- steps to tier 2
+world.update(rcw, FRAME, { target_population = 300, aspect = 16 / 9 }) -- steps to tier 2
 local grow_x, grow_y = (rcw.field_w - old_w) / 2, (rcw.field_h - old_h) / 2
 check(grow_x > 0, "tier step grew the field for the recentre check")
 check(
@@ -312,11 +312,11 @@ check(snap.field.w ~= nil and snap.field.w > 0, "snapshot field has w")
 check(snap.field.h ~= nil and snap.field.h > 0, "snapshot field has h")
 
 -- WIDE BURST: burst motes scatter far from the origin, not bunched in a ~30px clump.
--- Build a max-field world (pop 300), clear foods, add a burst at centre, run ~12
+-- Build a max-field world (pop 100000), clear foods, add a burst at centre, run ~12
 -- updates with sense_range=0 so cells don't chase/eat motes, then measure spread.
 local burst_opts = {
   stats = { speed = 60, sense_range = 0, evasion = 0 },
-  target_population = 300,
+  target_population = 100000,
   aspect = 16 / 9,
   unlocked = {},
   threats_enabled = false,

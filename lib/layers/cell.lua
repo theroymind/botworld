@@ -148,10 +148,19 @@ local function intake_for(state)
   }
 end
 
--- The drawn swarm is a logarithmic SAMPLE of the (now millions-scale) colony, so
+-- The VISIBLE swarm is a logarithmic SAMPLE of the (now millions-scale) colony, so
 -- the dish keeps visibly filling without ever becoming an unreadable blur. The
--- mapping + its tuning knobs live in world.sample_count.
+-- mapping + its tuning knobs live in world.sample_count. This count drives the GPU
+-- procedural field (view -> cell_field) and the field's tier SIZE, but NOT how many
+-- cells world.lua actually steps -- that's bounded by SIM_CAP below.
 local function target_population(state) return world.sample_count(state.sim.population) end
+
+-- How many cells world.lua actually SIMULATES (the invisible CPU set that drives
+-- the gameplay events -- predator kills, prey engulfs, starvation/feed bursts). The
+-- teeming visible swarm is the GPU field, so this stays small: it restores the
+-- cheap ~original agent count regardless of how large the colony (and the field)
+-- grows. Generous enough that a predator incursion always has cells to hunt.
+local SIM_CAP = 200
 
 -- The panel hugs its content and rides the RIGHT edge: cell.draw stamps the
 -- resolved tree height and the frame's computed left x here so the hit-test region
@@ -396,6 +405,7 @@ function cell.update(dt)
     dial_tempo = FIXED_TEMPO,
     aspect = aspect,
     target_population = target_population(cell.state),
+    sim_cap = SIM_CAP, -- bound the CPU-simulated set; the visible swarm is the GPU field
     unlocked = traits.unlocked_set(cell.state.traits),
     threats_enabled = predation,
     bloom_exclude = bloom_exclude,
@@ -685,6 +695,8 @@ function cell.draw()
 
   view.draw_world(view_state, world.snapshot(world_state), {
     mito = organelles.has(state.sim.organelles, "mitochondrion"),
+    swarm_count = target_population(state), -- the colony's visible sample size
+    sim_cap = SIM_CAP, -- cells the real boids cover; the field only draws ABOVE this
   })
 
   -- During the end-of-phase-1 cinematic the world is drawn (frozen) beneath the
