@@ -16,11 +16,17 @@
 -- and the line BROWNS OUT. ATP (sim.energy) is the single currency; every upgrade is
 -- bought with it directly (NOT phase-1 biomass -- that's sim.spend, a different sim).
 local save = require("lib.engine.save")
+local fx = require("lib.engine.fx")
 local sound = require("lib.engine.sound")
 local format = require("lib.engine.format")
 local sim = require("lib.layers.complexcell.sim")
 local catalog = require("lib.layers.complexcell.catalog")
 local view = require("lib.layers.complexcell.view")
+-- The end-of-phase-2 finale: the shared cinematic timeline (REUSED from phase 1,
+-- not forked) plus the plant/animal CHOICE screen + ascension placeholder it
+-- resolves into. transition owns the clock + white-out; fork owns the choice modal.
+local transition = require("lib.layers.cell.transition")
+local fork = require("lib.layers.complexcell.fork")
 
 -- Canonical UI kit (lib/engine/ui): retained-mode layout tree + renderer, themed
 -- primitives, fonts, interaction. The panel below is a declarative node tree.
@@ -63,6 +69,18 @@ local view_state
 local save_accum = 0
 local toast_text
 local toast_timer = 0
+-- The end-of-phase-2 transition cinematic (armed when `built` first crosses the
+-- FORK gate). While active the orchestrator FREEZES the live sim and hands the
+-- frame to it -- exactly as cell.lua does at the endosymbiosis finale.
+local transition_state = transition.new()
+-- One-shot arming guard: the FORK cinematic fires ONCE when reached_fork first
+-- becomes true (reset only on a fresh [r] cell / a load that hasn't reached it).
+local fork_armed = false
+-- The terminal fork flow this draft lands on. nil = normal play. "choice" = the
+-- white-out has resolved into the plant/animal modal (set by the cinematic's
+-- on_reset at the white peak). "ascension" = a kingdom is picked; the placeholder
+-- screen, where the draft ends.
+local fork_mode = nil
 
 -- The panel hugs its content and rides the RIGHT edge: complexcell.draw stamps the
 -- resolved tree height and the frame's computed left x here (the renderer click map
@@ -80,6 +98,9 @@ local function persist()
   save.write(SAVE_NAME, {
     sim = sim.serialize(complexcell.state.sim),
     carry = complexcell.state.carry, -- the colony number carried from phase 1
+    -- The terminal fork: persist the recorded kingdom so a resumed save returns
+    -- straight to the ascension placeholder rather than re-playing the cinematic.
+    fork_choice = complexcell.state.fork_choice,
     stamp = os.time(),
   })
 end
@@ -100,13 +121,32 @@ local function build_state(data)
     -- colony "became" -- a fixed statistic, surfaced in the panel. nil on a [r] fresh
     -- cell (no phase-1 lineage to carry).
     carry = type(data.carry) == "table" and data.carry or nil,
+    -- The end-of-phase fork pick ("plant"|"animal"), restored from a resumed save so
+    -- the placeholder is returned to without re-playing the cinematic. nil until chosen.
+    fork_choice = fork.choice_def(data.fork_choice) and data.fork_choice or nil,
   }
+end
+
+-- Reset the end-of-phase fork runtime flags from the (re)built state. A resumed
+-- save that already recorded a kingdom returns STRAIGHT to the terminal ascension
+-- placeholder (the cinematic never re-plays); otherwise the layer opens in normal
+-- play and the cinematic arms the first time `built` crosses the FORK gate.
+local function reset_fork_runtime()
+  transition_state = transition.new()
+  if complexcell.state.fork_choice then
+    fork_armed = true
+    fork_mode = "ascension"
+  else
+    fork_armed = false
+    fork_mode = nil
+  end
 end
 
 function complexcell.load()
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
   local data = DEV_FRESH_START and {} or (save.read(SAVE_NAME) or {})
   complexcell.state = build_state(data)
+  reset_fork_runtime()
   view_state = view.new()
 
   -- Offline catch-up from a wall-clock stamp (closed-form rate only -- the same
@@ -129,15 +169,77 @@ end
 function complexcell.enter_from_seam(opts)
   opts = opts or {}
   complexcell.state = build_state({ carry = opts.stats })
+  reset_fork_runtime()
   view_state = view.new()
   persist()
+end
+
+-- Arm the END-OF-PHASE-2 victory cinematic -- the phase-2 sibling of cell.lua's
+-- begin_lineage_transition. REUSES lib/layers/cell/transition.lua verbatim (the
+-- same freeze -> focus -> charge -> white-out timeline), with phase-2 text and the
+-- three side-effect callbacks bound here. The interior view has no camera (its
+-- interface is new/update/draw/spawn), so on_focus/on_shake route to subtle
+-- view.spawn beats; on_reset, fired at the WHITE PEAK, flips the layer into CHOICE
+-- mode so the modal is revealed as the white-out fades (it does NOT reset or switch
+-- layers -- the fork is the terminal beat of this draft). One-shot via fork_armed.
+local function arm_fork()
+  fork_armed = true
+  -- Centre the cinematic on the cell's centre (the view fills the screen). The
+  -- transition projects (x, y) itself; we pass screen-centre-ish coords directly
+  -- since the interior has no world camera to project through.
+  local cx, cy = 0, 0
+  if love and love.graphics then
+    cx, cy = love.graphics.getWidth() * 0.5, love.graphics.getHeight() * 0.5
+  end
+  sound.play("endosymbiosis")
+  transition.begin(transition_state, {
+    x = cx,
+    y = cy,
+    title = "TWO PATHS",
+    kicker = "ascension",
+    subtitle = "what will you become",
+    on_focus = function()
+      -- No camera in the interior view; mark the moment with a gentle flash beat.
+      view.spawn(view_state, fx.flash({ color = colors.primary, alpha = 0.12, life = 0.5 }))
+    end,
+    on_shake = function(mag, life, seed)
+      view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
+    end,
+    on_reset = function()
+      -- The white-out peaks: reveal the plant/animal CHOICE behind the lifting white.
+      -- No layer switch, no economy reset -- the assembly line is simply done.
+      fork_mode = "choice"
+    end,
+  })
+end
+
+-- Commit the player's plant/animal pick: record it (via the pure fork helper),
+-- persist it in the save blob, and fall through to the terminal ascension
+-- placeholder. Wired as the on_choose callback the choice modal's cards fire.
+local function choose_kingdom(id)
+  if fork.record_choice(complexcell.state, id) then
+    fork_mode = "ascension"
+    persist()
+  end
 end
 
 -- Fixed sim tick (runs even while backgrounded). Pure: fold -> step -> apply gates;
 -- no love.*, no view. A freshly-crossed gate toasts and persists (the named-beat
 -- unlock -- the phase-2 analogue of cell.lua's check_unlocks). Mirrors cell.tick.
+-- FROZEN once the cell reaches the FORK: while the victory cinematic is mid-build
+-- (up to its white peak) and through the whole choice/ascension flow, the economy
+-- must not mint/starve under the freeze -- the assembly line has stopped. Mirrors
+-- cell.tick's transition guard.
 function complexcell.tick(tick_dt)
   if not complexcell.state then
+    return
+  end
+  -- The fork is a terminal beat: once the choice/ascension screen is up, freeze.
+  if fork_mode then
+    return
+  end
+  -- Freeze while the cinematic builds toward its white peak (before on_reset fires).
+  if transition.active(transition_state) and not transition_state.reset_done then
     return
   end
   local s = complexcell.state.sim
@@ -155,10 +257,36 @@ function complexcell.update(dt)
     return
   end
   tween.update(dt) -- advance the UI kit's hover/press lighten transitions
-  view.update(view_state, dt)
+  view.update(view_state, dt) -- the interior keeps animating beneath the overlay
+
+  -- Advance the victory cinematic whenever it's armed. The view/tween still update
+  -- (so the fx beats play + the white-out fades), but the economy is frozen by
+  -- tick's guard, and we bail before the autosave/arming so the terminal beat is
+  -- clean. The choice modal is revealed by on_reset at the white peak.
+  if transition.active(transition_state) then
+    transition.update(transition_state, dt)
+    if toast_timer > 0 then
+      toast_timer = toast_timer - dt
+    end
+    return
+  end
 
   if toast_timer > 0 then
     toast_timer = toast_timer - dt
+  end
+
+  -- Live-only arming (mirrors cell.lua, where the finale arms from update, not the
+  -- backgrounded tick): the first frame `built` crosses the FORK gate, play the
+  -- victory cinematic. Guarded one-shot via fork_armed; skipped once the fork flow
+  -- is up. arm_fork touches love.*/sound, so it lives here, never in tick.
+  if not fork_armed and not fork_mode and catalog.reached_fork(complexcell.state.sim) then
+    arm_fork()
+    return
+  end
+
+  -- The terminal fork flow (choice / ascension) is a held screen: no autosave churn.
+  if fork_mode then
+    return
   end
 
   save_accum = save_accum + dt
@@ -363,13 +491,13 @@ local function build_panel(s)
     layout.vstack(stage_children, { gap = theme.spacing.sm }),
   }
 
-  -- FOOTER: the self-revealing next beat, or the FORK line once it's reached.
-  -- TODO(phase-2 fork): the plant/animal choice UI is out of scope for this first
-  -- draft -- when built reaches FORK_AT we only surface the line; the fuel-factor
-  -- pole + ascension wiring land in a later pass.
+  -- FOOTER: the self-revealing next beat, or the FORK line once it's reached. At
+  -- the FORK the victory cinematic takes over the whole screen (the panel is
+  -- suppressed), so this line is only briefly visible as `built` crosses FORK_AT
+  -- on the frame before the cinematic arms.
   local footer_text
   if catalog.reached_fork(s) then
-    footer_text = "FORK reached — plant/animal choice (TODO)"
+    footer_text = "FORK reached — a choice of kingdoms"
   else
     local nxt = catalog.next_gate(s)
     if nxt then
@@ -421,6 +549,35 @@ function complexcell.draw()
   -- contract), THEN the panel over it -- mirroring cell.draw's world-then-panel pipe.
   view.draw(view_state, build_snapshot(s))
 
+  -- The end-of-phase-2 finale OWNS the screen (the panel is suppressed):
+  --   * the victory cinematic plays over the frozen interior, its overlay drawn by
+  --     the REUSED transition module (centred on screen-centre coords);
+  --   * at the white peak on_reset flips fork_mode to "choice" -- the modal is then
+  --     revealed beneath the lifting white-out (drawn AFTER transition.draw so the
+  --     cards bleed up through the fade), and clicking a card commits the kingdom;
+  --   * once chosen, the terminal ascension placeholder holds the screen.
+  if fork_mode then
+    if fork_mode == "ascension" then
+      fork.draw("ascension", { choice = complexcell.state.fork_choice })
+      complexcell._fork_click_map = nil
+    else
+      complexcell._fork_click_map = fork.draw("choice", { on_choose = choose_kingdom })
+    end
+    -- During the white-out fade the cinematic is still active; draw its overlay ON
+    -- TOP of the freshly-revealed modal so the white sheet lifts to expose it.
+    if transition.active(transition_state) then
+      transition.draw(transition_state, transition_state.x, transition_state.y)
+    end
+    return
+  end
+
+  if transition.active(transition_state) then
+    -- Pre-reset cinematic: the build-up + white-out over the frozen interior. The
+    -- panel/help/toast are suppressed -- the screen belongs to the transition.
+    transition.draw(transition_state, transition_state.x, transition_state.y)
+    return
+  end
+
   -- The panel rides the RIGHT edge: its left x is computed from the window width
   -- each frame (it hugs its content height, so only x moves with resize).
   local panel_x = width - PANEL_W - PANEL_MARGIN
@@ -448,11 +605,36 @@ function complexcell.keypressed(key)
     -- carried phase-1 stats, the instant clean-slate start for tuning.
     save.remove(SAVE_NAME)
     complexcell.enter_from_seam({})
+  elseif key == "f" then
+    -- DEV: force the end-of-phase FORK (the real climb to FORK_AT is a ~10-min
+    -- playthrough). Slam `built` to the gate + apply any gates it crosses, so the
+    -- next update arms the victory cinematic -- mirrors cell.lua's [m]. No-op once
+    -- the fork flow is already up.
+    if not fork_mode and not transition.active(transition_state) then
+      complexcell.state.sim.built = catalog.FORK_AT
+      catalog.apply_gates(complexcell.state.sim)
+    end
   end
 end
 
 function complexcell.mousepressed(x, y, button_index)
   if button_index ~= 1 then
+    return
+  end
+  -- The end-of-phase finale owns the screen. During the cinematic, swallow clicks.
+  -- In the CHOICE modal, a card hit commits the kingdom; the ascension placeholder
+  -- has no click targets.
+  if fork_mode then
+    if fork_mode == "choice" and not transition.active(transition_state) then
+      local cb = complexcell._fork_click_map
+        and renderer.hit_test(complexcell._fork_click_map, x, y)
+      if cb then
+        cb()
+      end
+    end
+    return
+  end
+  if transition.active(transition_state) then
     return
   end
   -- A widget hit fires its on_click closure; clicks outside the panel fall through
