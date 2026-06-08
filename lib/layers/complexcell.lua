@@ -96,7 +96,10 @@ local function build_state(data)
   s.stages.ribosomes = math.max(s.stages.ribosomes or 0, 1)
   return {
     sim = s,
-    carry = type(data.carry) == "number" and data.carry or 0,
+    -- The frozen phase-1 snapshot (colony / divisions / biomass / organelles) the
+    -- colony "became" -- a fixed statistic, surfaced in the panel. nil on a [r] fresh
+    -- cell (no phase-1 lineage to carry).
+    carry = type(data.carry) == "table" and data.carry or nil,
   }
 end
 
@@ -125,7 +128,7 @@ end
 -- the zoom-into-the-cell lands in a real, saved phase 2.
 function complexcell.enter_from_seam(opts)
   opts = opts or {}
-  complexcell.state = build_state({ carry = opts.colony })
+  complexcell.state = build_state({ carry = opts.stats })
   view_state = view.new()
   persist()
 end
@@ -282,6 +285,19 @@ local function build_panel(s)
     header,
     layout.text("built  " .. format.number(s.built), { size = "lg", color = colors.ui.text })
   )
+  -- The phase-1 colony, now a frozen statistic carried across the seam.
+  local carry = complexcell.state.carry
+  if carry then
+    local legacy = string.format(
+      "from phase 1  ·  colony %s  ·  %s divisions",
+      format.number(carry.colony or 0),
+      format.number(carry.divisions or 0)
+    )
+    if (carry.organelles or 0) > 0 then
+      legacy = legacy .. string.format("  ·  %d organelles", carry.organelles)
+    end
+    table.insert(header, layout.text(legacy, { color = colors.ui.text_faint }))
+  end
   table.insert(
     header,
     layout.text(string.format("ATP  %s", format.number(s.energy)), { color = colors.ui.text_dim })
@@ -429,9 +445,9 @@ end
 function complexcell.keypressed(key)
   if key == "r" then
     -- DEV: a fresh complex cell -- wipe the save and re-enter from the seam with no
-    -- carried colony, the instant clean-slate start for tuning.
+    -- carried phase-1 stats, the instant clean-slate start for tuning.
     save.remove(SAVE_NAME)
-    complexcell.enter_from_seam({ colony = 0 })
+    complexcell.enter_from_seam({})
   end
 end
 

@@ -110,6 +110,11 @@ local toast_timer = 0
 -- The end-of-phase-1 transition cinematic (armed by the endosymbiosis proc).
 -- While active the orchestrator FREEZES the live sim and hands the frame to it.
 local transition_state = transition.new()
+-- Once the endosymbiosis finale hands off into phase 2, phase 1 is RETIRED: its
+-- final metrics are snapshotted into the carry and its sim is frozen, so the colony
+-- you left behind becomes a fixed statistic instead of quietly ticking on in the
+-- background. Reset on a fresh load ([r] / boot) so a new lineage runs normally.
+local retired = false
 
 -- The INTAKE fold: the one place the pure modules meet. Assemble the table the
 -- sim's shared economy step runs on -- the photosynthesis light (opened by the
@@ -218,7 +223,14 @@ end
 -- so the focus pushes in relative to the camera's current settled fit.
 local function begin_lineage_transition(cx, cy)
   local base_zoom = view_state.camera.zoom
-  local colony = cell.state.sim.population -- the population that "becomes a statistic"
+  -- Snapshot phase 1's final metrics NOW (before the reset) -- the figures the
+  -- colony "becomes" as a single statistic carried into phase 2.
+  local stats = {
+    colony = cell.state.sim.population,
+    divisions = cell.state.sim.total_divisions,
+    biomass = cell.state.sim.biomass,
+    organelles = #organelles.acquired_list(cell.state.sim.organelles),
+  }
   transition.begin(transition_state, {
     x = cx,
     y = cy,
@@ -232,9 +244,11 @@ local function begin_lineage_transition(cx, cy)
     end,
     on_reset = function()
       -- Cross the seam into phase 2: initialize a fresh complex cell (the engulfed
-      -- bacterium is its first mitochondrion), carrying the collapsed colony as a
-      -- single number, then switch layers behind the white-out.
-      complexcell.enter_from_seam({ colony = colony })
+      -- bacterium is its first mitochondrion), carrying phase 1's snapshotted metrics
+      -- as its statistic, then switch layers behind the white-out. RETIRE phase 1 so
+      -- its sim freezes at the snapshot rather than ticking on in the background.
+      retired = true
+      complexcell.enter_from_seam({ stats = stats })
       layers.switch("complexcell")
     end,
   })
@@ -289,6 +303,7 @@ local function roll_endosymbiosis(engulfs, engulf_points, predation)
 end
 
 function cell.load()
+  retired = false -- a fresh lineage runs live again (clears any prior phase-2 hand-off)
   sound.load("pop", "assets/sounds/pop.ogg")
   sound.load("bloom", "assets/sounds/bloom.ogg")
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
@@ -326,6 +341,9 @@ end
 function cell.tick(tick_dt)
   if not cell.state then
     return
+  end
+  if retired then
+    return -- phase 1 handed off to phase 2: frozen at its snapshot, no longer ticking
   end
   if transition.active(transition_state) and not transition_state.reset_done then
     return
