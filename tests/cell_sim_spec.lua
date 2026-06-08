@@ -1,5 +1,11 @@
--- Standalone spec for lib/layers/cell/sim.lua.
+-- Standalone spec for lib/layers/cell/sim.lua (the INVERTED economy).
 -- Plain Lua 5.1, no framework. Run from the repo root: lua tests/cell_sim_spec.lua
+--
+-- The economy no longer accrues biomass passively. An ENERGY reserve folds from
+-- the colony's intake (photosynthesis light + per-cell foraging, saturating at a
+-- finite food supply) minus per-cell upkeep; divisions MINT banked biomass and
+-- climb the population; a negative reserve STARVES cells (population falls, biomass
+-- kept, floored at 1). tick and offline share one step(state, dt, intake).
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. package.path
 
@@ -18,201 +24,261 @@ local function approx(a, b)
   return math.abs(a - b) < 1e-9
 end
 
-local MIN_SP, MAX_SP = sim.div_bounds()
-local POP_TARGET = sim.maturity_pop_target()
-
--- Helper: population is within the jittered division band for a given lifetime.
-local function within_div_bounds(pop, L)
-  return pop >= 1 + math.floor(L / MAX_SP) and pop <= 1 + math.ceil(L / MIN_SP)
+-- A folded intake table. Defaults give a tidy carrying capacity of
+-- (photo + forage*cap)*mult / upkeep = (0 + 6*6)*1/2 = 18, with each below-cap
+-- cell netting forage*mult - upkeep = 4 energy/sec. Override any field per test.
+-- (Lua treats 0 as truthy, so `o.x or default` still honours an explicit 0.)
+local function intake(o)
+  o = o or {}
+  return {
+    photo = o.photo or 0,
+    forage_per_cell = o.forage_per_cell or 6,
+    forage_cap = o.forage_cap or 6,
+    upkeep_per_cell = o.upkeep_per_cell or 2,
+    mult = o.mult or 1,
+  }
 end
 
--- Fresh state: founder present, economy at zero.
+-- Fresh state: founder present, reserve empty, banked currency empty, no division
+-- history, no organelles, and none of the old evolve/maturity/lifetime fields.
 local s = sim.new()
 check(s.biomass == 0, "fresh biomass 0")
-check(s.lifetime == 0, "fresh lifetime 0")
+check(s.energy == 0, "fresh energy 0")
 check(s.population == 1, "fresh population is 1 (the founder)")
-check(approx(s.maturity, 1 / POP_TARGET), "fresh maturity is 1/POP_TARGET")
-check(s.evolve_mult == 1, "fresh evolve multiplier 1")
-check(s.generation == 0, "fresh generation 0")
+check(s.total_divisions == 0, "fresh total_divisions 0")
+check(s.pending_divisions == 0, "fresh pending_divisions 0")
+check(type(s.organelles) == "table" and next(s.organelles) == nil, "fresh organelles set is empty")
+check(s.lifetime == nil, "no lifetime field (passive accrual is gone)")
+check(s.maturity == nil, "no maturity field (the evolve gate is gone)")
+check(s.evolve_mult == nil and s.generation == nil, "no evolve/generation fields")
 
--- div_bounds: the floor is the asymptotic base minimum; the ceiling is the
--- founder's slow-started maximum. With the defaults the band is (8, 112).
+-- div_bounds: floor is the asymptotic base minimum; ceiling is the founder's
+-- slow-started maximum. With the defaults the band is (8, 112).
+local MIN_SP, MAX_SP = sim.div_bounds()
 check(MIN_SP == 8, "div_bounds min is DIV_BASE (8)")
 check(approx(MAX_SP, 112), "div_bounds max is the slow-started first-division ceiling (112)")
 
--- Determinism: spacing is keyed on the cell index (a pure hash), never rng, so
--- two identically-ticked sims reach the exact same population.
+-- Determinism: no rng in the economy (division-cost jitter is a pure index hash),
+-- so two identically-stepped sims stay bit-identical in population AND biomass.
 do
   local d1, d2 = sim.new(), sim.new()
-  for _ = 1, 200 do
-    sim.tick(d1, 0.1, 25)
-    sim.tick(d2, 0.1, 25)
+  local I = intake()
+  for _ = 1, 3000 do
+    sim.step(d1, 0.1, I)
+    sim.step(d2, 0.1, I)
   end
-  check(d1.population == d2.population, "identical ticks -> identical population (deterministic spacing)")
-  check(d1.population > 1, "the determinism check is non-trivial (the sims actually grew)")
+  check(d1.population == d2.population, "identical steps -> identical population (deterministic)")
+  check(d1.biomass == d2.biomass, "identical steps -> identical biomass")
+  check(d1.population > 1, "the determinism check is non-trivial (the sims grew)")
 end
 
--- Tick accrues net_rate * dt to both biomass and lifetime.
+-- step folds (photo + forage*min(P,cap))*mult - upkeep*P into the reserve. At the
+-- founder this is 6 - 2 = 4/sec; 4 is far below the first division cost (~97), so
+-- the reserve just banks energy with no mint yet.
 s = sim.new()
-sim.tick(s, 0.1, 30) -- 30/sec for 0.1s = 3
-check(approx(s.biomass, 3), "tick adds net_rate * dt to biomass")
-check(approx(s.lifetime, 3), "tick adds net_rate * dt to lifetime")
-sim.tick(s, 0.1, 30)
-check(approx(s.biomass, 6), "ticks accumulate")
-check(approx(s.lifetime, 6), "lifetime accumulates")
+sim.step(s, 1, intake())
+check(approx(s.energy, 4), "step folds the intake rate into the energy reserve")
+check(s.population == 1, "a small reserve mints no divisions")
+check(s.biomass == 0, "no division -> no minted biomass")
 
--- Tap injects biomass, scaled by the feed multiplier; lifetime tracks it.
--- Small taps may or may not cross a division boundary, so we check
--- biomass/lifetime only (not exact population).
-s = sim.new()
-sim.tap(s, 1)
-check(approx(s.biomass, 5), "tap adds the base feed")
-sim.tap(s, 2)
-check(approx(s.biomass, 15), "tap scales by the feed multiplier")
-check(approx(s.lifetime, 15), "taps count toward lifetime")
+-- A division MINTS banked biomass and counts toward total_divisions. Force exactly
+-- one division from the reserve to read the per-division yield.
+local one = sim.new()
+one.energy = sim.div_cost(1) + 0.001
+sim.step(one, 0, intake())
+check(one.population == 2, "the reserve covering one division cost mints exactly one cell")
+check(one.total_divisions == 1, "a division counts toward total_divisions")
+check(one.pending_divisions == 1, "a division queues a view pulse")
+local DIV_YIELD = one.biomass
+check(DIV_YIELD > 0, "each division mints a positive chunk of banked biomass")
 
--- feed_burst credits a real biomass gain (a nutrient-bloom click) -- it counts
--- toward lifetime, so it advances the colony, and negatives clamp to zero.
--- Feed past the founder's (slow-started) first-division ceiling so a division is
--- guaranteed regardless of the index jitter.
+-- Many divisions from a big reserve: biomass == divisions * DIV_YIELD, the
+-- leftover reserve sits below the next cost, and biomass is a PURE bank (no rate).
 s = sim.new()
-local credited = sim.feed_burst(s, 150)
-check(approx(credited, 150), "feed_burst returns the credited amount")
-check(approx(s.biomass, 150), "feed_burst adds to biomass")
-check(approx(s.lifetime, 150), "feed_burst counts toward lifetime (advances colony)")
-check(s.population > 1, "feed_burst(150) advances at least one division")
-check(within_div_bounds(s.population, 150), "feed_burst population within jitter band")
+sim.feed_burst(s, 400)
+sim.step(s, 0, intake())
+check(s.population > 2, "a large reserve mints several divisions")
+check(s.total_divisions == s.population - 1, "every division past the founder is counted")
+check(approx(s.biomass, s.total_divisions * DIV_YIELD), "minted biomass == divisions * DIV_YIELD")
+check(s.energy >= 0 and s.energy < sim.div_cost(s.population), "leftover reserve is below the next division cost")
+
+-- div_mult (the digestion discount) cheapens every division: the cost readout
+-- scales by it, the same reserve mints MORE cells, and the rate readout rises.
+check(approx(sim.div_cost(1, 0.5), sim.div_cost(1) * 0.5), "div_cost scales by div_mult")
+local cheap = sim.new()
+sim.feed_burst(cheap, 400)
+local cheap_intake = intake()
+cheap_intake.div_mult = 0.5
+sim.step(cheap, 0, cheap_intake)
+local full = sim.new()
+sim.feed_burst(full, 400)
+sim.step(full, 0, intake())
+check(cheap.population > full.population, "a div_mult < 1 mints more cells from the same reserve")
+check(
+  sim.division_rate(cheap_intake, 10) > sim.division_rate(intake(), 10),
+  "division_rate rises with the digestion discount"
+)
+
+-- feed_burst credits the energy reserve (a nutrient-bloom click); negatives clamp.
+s = sim.new()
+local credited = sim.feed_burst(s, 50)
+check(approx(credited, 50), "feed_burst returns the credited amount")
+check(approx(s.energy, 50), "feed_burst adds to the energy reserve")
+check(s.biomass == 0, "feed_burst alone mints no biomass (no step yet)")
 check(sim.feed_burst(s, -10) == 0, "feed_burst clamps negatives to zero")
-check(approx(s.biomass, 150), "a clamped feed_burst credits nothing")
+check(approx(s.energy, 50), "a clamped feed credits nothing")
 
--- threat_loss debits biomass only; lifetime (and so population/maturity) is
--- left untouched, and the debit clamps so biomass never goes negative.
+-- feed -> step -> divisions -> banked biomass: the active loop.
 s = sim.new()
-sim.tick(s, 1, 100) -- biomass = lifetime = 100
-local pop_before = s.population
-local lost = sim.threat_loss(s, 30)
-check(approx(lost, 30), "threat_loss returns the biomass lost")
-check(approx(s.biomass, 70), "threat_loss debits biomass")
-check(approx(s.lifetime, 100), "threat_loss leaves lifetime untouched")
-check(s.population == pop_before, "threat_loss never rolls back the colony")
-local overkill = sim.threat_loss(s, 1000)
-check(approx(overkill, 70), "threat_loss clamps to available biomass")
-check(s.biomass == 0, "threat_loss never drives biomass negative")
+sim.feed_burst(s, 150)
+local pop0, bm0 = s.population, s.biomass
+sim.step(s, 1 / 30, intake())
+check(s.population > pop0, "fed energy converts into divisions")
+check(s.biomass > bm0, "those divisions mint banked biomass")
 
--- Spending deducts biomass but never lifetime; overspend is rejected.
+-- Starvation: a population past carrying capacity STARVES down toward the cap.
+-- Biomass is never touched by death (kept, even climbing as the capped colony
+-- oscillates and mints), and the population floors at 1.
 s = sim.new()
-sim.tick(s, 1, 100) -- biomass = lifetime = 100
+s.population = 40
+s.biomass = 100
+local cap_intake = intake() -- capacity 18, well below 40
+for _ = 1, 600 do
+  sim.step(s, 0.1, cap_intake)
+end
+check(s.population < 40, "a deficit shrinks the population")
+check(s.population >= 1, "the population floors at 1")
+check(math.abs(s.population - sim.capacity(cap_intake)) <= 2, "the population settles near carrying capacity")
+check(s.biomass >= 100, "starvation never spends banked biomass")
+
+-- Floor at 1: even a brutal, unsurvivable intake leaves the founder and its bank.
+s = sim.new()
+s.population = 12
+s.biomass = 7
+local brutal = { photo = 0, forage_per_cell = 0, forage_cap = 6, upkeep_per_cell = 5, mult = 1 }
+for _ = 1, 600 do
+  sim.step(s, 0.1, brutal)
+end
+check(s.population == 1, "a brutal deficit floors the colony at the founder")
+check(s.biomass == 7, "the bank survives total starvation")
+check(s.energy >= 0, "the reserve never sticks negative at the floor (gentle idle)")
+
+-- Carrying capacity K = (photo + forage*cap)*mult / upkeep, clamped to [1, cap].
+check(approx(sim.capacity(intake()), 18), "capacity from the default intake is 18")
+check(sim.capacity(intake({ photo = 12 })) > 18, "light income raises the capacity")
+check(sim.capacity(intake({ mult = 2 })) > 18, "the overall multiplier raises the capacity")
+check(sim.capacity(intake({ upkeep_per_cell = 0 })) > 1000, "zero upkeep clamps high (no division by zero)")
+check(sim.capacity({}) >= 1, "capacity floors at 1 for an empty intake")
+
+-- kill removes cells (a live predator delta): population falls, floored at 1, and
+-- the banked biomass is untouched (a kill is a setback the economy regrows).
+s = sim.new()
+s.population = 10
+s.biomass = 50
+local lost = sim.kill(s, 3)
+check(lost == 3, "kill returns the cells lost")
+check(s.population == 7, "kill reduces the population")
+check(s.biomass == 50, "kill never touches banked biomass")
+local over = sim.kill(s, 100)
+check(s.population == 1, "kill floors the population at 1")
+check(over == 6, "kill clamps to the cells available above the floor")
+
+-- Spend deducts biomass; overspend is rejected.
+s = sim.new()
+s.biomass = 100
 check(sim.can_spend(s, 40), "can spend within balance")
 check(sim.spend(s, 40), "spend succeeds")
 check(approx(s.biomass, 60), "spend deducts biomass")
-check(approx(s.lifetime, 100), "spend leaves lifetime untouched")
 check(not sim.can_spend(s, 1000), "cannot spend beyond balance")
 check(not sim.spend(s, 1000), "overspend rejected")
 check(approx(s.biomass, 60), "rejected spend deducts nothing")
 
--- Divisions: jittered spacing, so we use the bounds helper.
--- Tick to a known lifetime and confirm population lands in the band.
-s = sim.new()
-local L_DIV = 200
-sim.tick(s, 1, L_DIV)
-check(within_div_bounds(s.population, L_DIV), "population within jitter band at lifetime 200")
--- Population strictly increases with more lifetime.
-local pop_at_200 = s.population
-sim.tick(s, 1, 400) -- lifetime now 600
-check(s.population > pop_at_200, "population increases with more lifetime")
-check(within_div_bounds(s.population, 600), "population within jitter band at lifetime 600")
-
 -- take_divisions: returns queued divisions since last call, then zero.
 s = sim.new()
-sim.tick(s, 1, 400) -- enough to cross several divisions even with the slow start
+sim.feed_burst(s, 400)
+sim.step(s, 0, intake())
 local pending = sim.take_divisions(s)
-check(pending == s.population - 1, "take_divisions returns (population - 1) after first growth")
-check(sim.take_divisions(s) == 0, "pending divisions cleared after taking")
--- spending below a threshold does not undo a division
-sim.spend(s, 80)
-check(s.population == pending + 1, "spending does not undo divisions")
--- more lifetime -> more divisions; only the new ones queue
-local pop_snapshot = s.population
-sim.tick(s, 1, 400)
-local new_pending = sim.take_divisions(s)
-check(new_pending == s.population - pop_snapshot, "only newly crossed divisions queue")
-check(sim.take_divisions(s) == 0, "take_divisions is cleared after reading")
+check(pending == s.population - 1, "take_divisions returns the queued divisions")
+check(sim.take_divisions(s) == 0, "pending divisions clear after taking")
 
--- Division rate reacts to the net rate (the dial's downstream effect) and to the
--- colony size (the slow-start factor: early divisions are slow, later accelerate).
-check(sim.division_rate(50, 1) > sim.division_rate(20, 1), "higher net rate => faster divisions")
-check(sim.division_rate(50, 50) > sim.division_rate(50, 1), "divisions accelerate as the colony grows")
+-- division_rate reacts to the intake and accelerates as the colony grows (below
+-- the cap), and reads ZERO once the colony is at or past carrying capacity.
+local rich = intake({ forage_per_cell = 20 })
+local lean = intake()
+check(sim.division_rate(rich, 1) > sim.division_rate(lean, 1), "richer intake => faster divisions")
+check(sim.division_rate(lean, 5) > sim.division_rate(lean, 1), "divisions accelerate as the colony grows")
+check(sim.division_rate(lean, 100000) == 0, "no divisions at or past carrying capacity")
 
--- Maturity is colony-size driven: fills as population approaches POP_TARGET.
+-- offline replays the shared step in capped sub-steps: it relaxes toward capacity
+-- and never crashes below the founder.
 s = sim.new()
--- Tick enough to grow but not fill: use a modest lifetime
-sim.tick(s, 1, 80) -- well below POP_TARGET*MIN_SP (400)
-check(s.population < POP_TARGET, "population stays below target for small lifetime")
-check(s.maturity < 1, "maturity below 1 for small population")
-check(not sim.can_evolve(s), "not evolvable below the gate")
--- Now tick enough to exceed POP_TARGET cells (POP_TARGET*MAX_SP = 5600 guarantees it)
-sim.tick(s, 1, POP_TARGET * MAX_SP)
-check(s.population >= POP_TARGET, "population reaches the colony target after sufficient lifetime")
-check(approx(s.maturity, 1) or s.maturity >= 1, "maturity reaches 1 at the colony target")
-check(s.maturity <= 1, "maturity is clamped to 1")
-check(sim.can_evolve(s), "evolvable once the colony matures")
-
--- Evolve: banks the carried multiplier, bumps generation, resets the colony.
-local before_mult = s.evolve_mult
-local returned = sim.evolve(s)
-check(returned == before_mult * 1.5, "evolve returns the boosted multiplier")
-check(s.evolve_mult == before_mult * 1.5, "evolve banks the carried multiplier")
-check(s.generation == 1, "evolve bumps the generation")
-check(s.biomass == 0 and s.lifetime == 0, "evolve resets biomass and lifetime")
-check(s.population == 1, "evolve resets to 1 (founder)")
-check(approx(s.maturity, 1 / POP_TARGET), "evolve maturity is reset to 1/POP_TARGET")
-check(sim.take_divisions(s) == 0, "evolve queues no pending divisions")
-check(sim.evolve(s) == nil, "evolve is a no-op before the next maturity")
-
--- Offline lump-sum equals net_rate * seconds, applied to biomass and lifetime.
+sim.offline(s, 3600, intake())
+check(s.population >= 1, "offline never crashes below the founder")
+check(math.abs(s.population - sim.capacity(intake())) <= 3, "offline relaxes toward carrying capacity")
+check(s.biomass > 0, "offline mints biomass via divisions")
+-- An over-cap colony relaxes DOWN offline, keeping its bank.
 s = sim.new()
-sim.tick(s, 1, 10) -- seed: biomass = lifetime = 10
-local gained = sim.offline(s, 30, 4) -- 4/sec for 30s = 120
-check(approx(gained, 120), "offline returns net_rate * seconds")
-check(approx(s.biomass, 130), "offline applies gains to biomass")
-check(approx(s.lifetime, 130), "offline gains count toward lifetime")
-check(within_div_bounds(s.population, 130), "offline updates derived divisions (in band)")
-
--- Serialize -> load round-trip preserves persisted state and rederives the rest.
+s.population = 200
+s.biomass = 500
+sim.offline(s, 3600, intake())
+check(s.population < 200 and s.population >= 1, "offline relaxes an over-cap colony down toward the cap")
+check(s.biomass >= 500, "offline keeps the banked biomass")
+-- A very long absence still resolves (the sub-step loop is capped).
 s = sim.new()
-sim.tick(s, 1, 130) -- lifetime 130
-sim.spend(s, 30) -- biomass 100, lifetime 130
-s.evolve_mult = 2.25
-s.generation = 2
+sim.offline(s, 8 * 3600, intake())
+check(s.population >= 1, "a very long offline still resolves to a sane colony")
+
+-- Live and offline share ONE step, so they converge from the same start.
+do
+  local live, off = sim.new(), sim.new()
+  local I = intake()
+  for _ = 1, 1200 do
+    sim.step(live, 1, I)
+  end
+  sim.offline(off, 1200, I)
+  check(math.abs(live.population - off.population) <= 3, "live and offline converge (shared step)")
+end
+
+-- Serialize -> load round-trip preserves the persisted economy incl. organelles.
+s = sim.new()
+sim.feed_burst(s, 400)
+sim.step(s, 0, intake())
+s.organelles.mitochondrion = true
+s.energy = 12.5
 local blob = sim.serialize(s)
-check(type(blob.population) == "number", "serialize persists population")
-check(type(blob.next_div) == "number", "serialize persists next_div")
+check(blob.population == s.population, "serialize persists population")
+check(blob.total_divisions == s.total_divisions, "serialize persists total_divisions")
+check(approx(blob.energy, 12.5), "serialize persists energy")
+check(blob.organelles.mitochondrion == true, "serialize persists organelles")
+check(blob.organelles ~= s.organelles, "serialize copies the organelle set (no shared reference)")
 local loaded = sim.load(blob)
-check(approx(loaded.biomass, 100), "round-trip biomass")
-check(approx(loaded.lifetime, 130), "round-trip lifetime")
-check(loaded.evolve_mult == 2.25, "round-trip evolve multiplier")
-check(loaded.generation == 2, "round-trip generation")
-check(loaded.population == s.population, "load trusts persisted population (O(1))")
-check(approx(loaded.next_div, s.next_div), "load trusts persisted next_div")
-check(approx(loaded.maturity, loaded.population / POP_TARGET) or loaded.maturity == 1,
-  "load rederives maturity from population")
+check(approx(loaded.biomass, s.biomass), "round-trip biomass")
+check(approx(loaded.energy, 12.5), "round-trip energy")
+check(loaded.population == s.population, "round-trip population")
+check(loaded.total_divisions == s.total_divisions, "round-trip total_divisions")
+check(loaded.organelles.mitochondrion == true, "round-trip organelles")
 check(sim.take_divisions(loaded) == 0, "load queues no spurious division pulses")
 
--- Load tolerates missing, partial, and stale data.
+-- Load tolerates nil, legacy keys, and stale/wrong-typed data.
 local fresh = sim.load(nil)
-check(fresh.biomass == 0, "load nil: fresh biomass")
-check(fresh.population == 1, "load nil: fresh population is 1")
-check(fresh.evolve_mult == 1, "load nil: fresh multiplier")
-
--- Legacy save: only {lifetime=200}, no population/next_div -> rebuild from lifetime.
-local partial = sim.load({ lifetime = 200 })
-check(partial.biomass == 0, "partial load: missing biomass defaults")
-check(within_div_bounds(partial.population, 200), "partial load: derived population in band")
-check(sim.take_divisions(partial) == 0, "partial load: no spurious pending divisions")
-
--- Stale save: keeps valid fields, ignores wrong-typed ones.
-local stale = sim.load({ biomass = 5, lifetime = 50, junk = true, generation = "oops" })
+check(fresh.biomass == 0 and fresh.population == 1, "load nil -> fresh founder")
+local legacy = sim.load({
+  biomass = 40,
+  lifetime = 500, -- old passive-accrual field
+  next_div = 88, -- old division cursor
+  evolve_mult = 1.5, -- old prestige multiplier
+  generation = 3,
+  population = 12,
+})
+check(legacy.biomass == 40, "legacy load: known field kept")
+check(legacy.population == 12, "legacy load: a present population is trusted")
+check(legacy.total_divisions == 0, "legacy load: missing total_divisions defaults to 0")
+check(legacy.evolve_mult == nil and legacy.lifetime == nil, "legacy load: stale fields are dropped")
+check(next(legacy.organelles) == nil, "legacy load: no organelles")
+local stale = sim.load({ biomass = 5, energy = "oops", population = 0, organelles = "nope" })
 check(stale.biomass == 5, "stale load: known field kept")
-check(stale.generation == 0, "stale load: wrong-typed field ignored")
+check(stale.energy == 0, "stale load: wrong-typed energy ignored")
+check(stale.population == 1, "stale load: an invalid population falls back to the fresh founder")
+check(next(stale.organelles) == nil, "stale load: wrong-typed organelles ignored")
 
 print("all tests passed (" .. checks .. " checks)")

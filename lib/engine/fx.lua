@@ -17,6 +17,10 @@
 --   fx.add(ctrl, fx.flash{ ... }); fx.add(ctrl, fx.shake{ ... }).
 -- Pure Lua 5.1 at require time -- love.* is touched only inside draw closures,
 -- so the controller, update, factories and camera_offset are headless-testable.
+-- Default effect colors come from the GLOBAL color tokens (lib/engine/ui/colors):
+-- generic ordinals (primary, secondary, ...), never literal RGB.
+local colors = require("lib.engine.ui.colors")
+
 local fx = {}
 
 -- Shared lifecycle: advance age, report done once it reaches life. Factories
@@ -148,12 +152,109 @@ function fx.shake(opts)
   }
 end
 
+-- A world-space death burst: a few small squares fan out from (x, y), shrinking
+-- and fading over a short life (~0.4s) -- a cell bursting into recycled particles.
+-- The shard directions are precomputed at build time (no rng, allocation-free
+-- draw) and varied by the seed, so two deaths don't fan identically. opts:
+--   x, y (world position), count (shards, default 5), size (start px, default 4),
+--   speed (fan-out, default 60), color (default the secondary token), alpha (peak,
+--   default 0.9), life (default 0.4), seed (rotation phase, default 0).
+function fx.burst(opts)
+  opts = opts or {}
+  local n = opts.count or 5
+  local seed = opts.seed or 0
+  local shards = {}
+  for i = 1, n do
+    local a = (i / n) * 2 * math.pi + seed
+    shards[i] = { dx = math.cos(a), dy = math.sin(a) }
+  end
+  return {
+    age = 0,
+    life = opts.life or 0.4,
+    space = "world",
+    x = opts.x or 0,
+    y = opts.y or 0,
+    size = opts.size or 4,
+    speed = opts.speed or 60,
+    color = opts.color or colors.secondary,
+    alpha = opts.alpha or 0.9,
+    shards = shards,
+    update = advance,
+    draw = function(self)
+      local k = clamp01(self.age / self.life)
+      local s = self.size * (1 - k) -- shrink to nothing
+      if s <= 0 then
+        return
+      end
+      local half = s * 0.5
+      local dist = self.age * self.speed
+      love.graphics.setColor(self.color[1], self.color[2], self.color[3], self.alpha * (1 - k))
+      for i = 1, #self.shards do
+        local sh = self.shards[i]
+        local px = self.x + sh.dx * dist
+        local py = self.y + sh.dy * dist
+        love.graphics.rectangle("fill", px - half, py - half, s, s)
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+    end,
+  }
+end
+
+-- A world-space REVERSE burst: a few small squares converge INTO (x, y) from a
+-- ring around it, growing and brightening as they arrive -- matter being drawn
+-- in (a cell absorbing prey), fx.burst played backwards. Same precomputed-shard
+-- scheme as fx.burst (no rng, allocation-free draw), varied by the seed. opts:
+--   x, y (world position), count (shards, default 5), size (peak px, default 3),
+--   speed (fall-in, default 60), color (default the tertiary token), alpha (peak,
+--   default 0.9), life (default 0.4), seed (rotation phase, default 0).
+function fx.implode(opts)
+  opts = opts or {}
+  local n = opts.count or 5
+  local seed = opts.seed or 0
+  local shards = {}
+  for i = 1, n do
+    local a = (i / n) * 2 * math.pi + seed
+    shards[i] = { dx = math.cos(a), dy = math.sin(a) }
+  end
+  return {
+    age = 0,
+    life = opts.life or 0.4,
+    space = "world",
+    x = opts.x or 0,
+    y = opts.y or 0,
+    size = opts.size or 3,
+    speed = opts.speed or 60,
+    color = opts.color or colors.tertiary,
+    alpha = opts.alpha or 0.9,
+    shards = shards,
+    update = advance,
+    draw = function(self)
+      local k = clamp01(self.age / self.life)
+      local s = self.size * k -- grow as they arrive
+      if s <= 0 then
+        return
+      end
+      local half = s * 0.5
+      local dist = (self.life - self.age) * self.speed -- converge to zero
+      love.graphics.setColor(self.color[1], self.color[2], self.color[3], self.alpha * k)
+      for i = 1, #self.shards do
+        local sh = self.shards[i]
+        local px = self.x + sh.dx * dist
+        local py = self.y + sh.dy * dist
+        love.graphics.rectangle("fill", px - half, py - half, s, s)
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+    end,
+  }
+end
+
 -- A world-space expanding ring (a feed ripple). opts:
 --   x, y (world position), r0 (start radius, default 4), speed (default 120),
---   color (default soft green), alpha (peak, default 0.6), life (default 0.6).
+--   color (default the bright secondary token), alpha (peak, default 0.6),
+--   life (default 0.6).
 function fx.pulse(opts)
   opts = opts or {}
-  local color = opts.color or { 0.42, 1.0, 0.55 }
+  local color = opts.color or colors.secondary_bright
   return {
     age = 0,
     life = opts.life or 0.6,

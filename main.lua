@@ -6,8 +6,14 @@ local layers = require("lib.engine.layers")
 local cell = require("lib.layers.cell")
 local solar = require("lib.layers.solar")
 
+local music
+
 function love.load()
   love.graphics.setBackgroundColor(0, 0, 0)
+  music = love.audio.newSource("assets/music/botworld.ogg", "stream")
+  music:setLooping(true)
+  music:setVolume(0.75)
+  music:play()
   layers.register("cell", cell)
   layers.register("solar", solar)
   layers.load_all()

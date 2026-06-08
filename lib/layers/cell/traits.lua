@@ -8,6 +8,10 @@
 -- closed-form income channels and reveal world contents. Pure Lua 5.1 (no
 -- love.*) so it runs headless under tests. Adding a trait is one TRAITS entry
 -- (plus one draw fragment in view.lua); adding an unlock is one UNLOCKS entry.
+--
+-- Two trait PAIRS also synergize (see SYN_* below): the cross-terms are explicit
+-- and legible (not the old hidden strand adjacency), and reward a balanced build
+-- over spiking one trait -- this is what gives "all maxed" a reason to keep going.
 local traits = {}
 
 -- Per-trait definitions: id, label, the concrete per-level hint shown on the
@@ -24,12 +28,12 @@ local TRAITS = {
   },
   { id = "motility", label = "Motility", hint = "swim speed +12%", base_cost = 8 },
   { id = "sensing", label = "Chemotaxis", hint = "sense range +14", base_cost = 8 },
-  { id = "digestion", label = "Digestion", hint = "+15% feed speed", base_cost = 12 },
-  { id = "membrane", label = "Membrane", hint = "defense +5%", base_cost = 12 },
+  { id = "digestion", label = "Digestion", hint = "division cost -8%", base_cost = 12 },
+  { id = "evasion", label = "Evasion", hint = "evade +5%", base_cost = 12 },
 }
 
 -- Stable order for the panel / fold (pairs() over a keyed table is unordered).
-local ORDER = { "photosynthesis", "motility", "sensing", "digestion", "membrane" }
+local ORDER = { "photosynthesis", "motility", "sensing", "digestion", "evasion" }
 
 local BY_ID = {}
 for _, def in ipairs(TRAITS) do
@@ -46,10 +50,18 @@ local SPEED_BASE = 30 -- world units/sec at motility 0 (a slow drift; motility u
 local SPEED_PER = 0.12 -- +12% swim speed per level
 local SENSE_BASE = 70 -- chemotaxis radius at sensing 0
 local SENSE_PER = 14 -- +14 range per level
-local FEED_PER = 0.15 -- +15% feed (consume) speed per digestion level
-local YIELD_PER = 0.05 -- digestion also nudges conversion yield
-local DEFENSE_K = 0.05 -- defense = 1 - 1/(1 + levels*K): bounded [0,1)
-local UPKEEP_K = 0.05 -- upkeep_mult = 1/(1 + levels*K): membrane shrinks upkeep
+local FEED_PER = 0.15 -- +15% feed (consume) speed per digestion level (cosmetic flavor)
+local DIV_FACTOR = 0.92 -- division energy cost x0.92 per digestion level (-8%, compounding)
+local EVASION_K = 0.05 -- evasion = 1 - 1/(1 + levels*K): bounded [0,1) flee/dodge chance
+local UPKEEP_K = 0.05 -- upkeep_mult = 1/(1 + levels*K): a leaner, nimbler cell also trims upkeep
+
+-- Trait SYNERGY magnitudes. Paired traits multiply, so a BALANCED build beats a
+-- one-trait spike and "all maxed" keeps a reason to keep leveling. The sqrt(a*b)
+-- shape only pays out when BOTH partners are high. Each pairing is fully legible
+-- (no hidden adjacency -- the panel can name the partner). Tune here, then re-run
+-- tools/sim_lab.lua to read the new carrying-capacity curve.
+local SYN_REACH = 0.06 -- Motility x Chemotaxis: forage cap x (1 + this * sqrt(motility*sensing))
+local SYN_THRIFT = 0.02 -- Digestion x Evasion:   upkeep   / (1 + this * sqrt(digestion*evasion))
 
 -- Milestone unlocks, in reach order. Each fires automatically when the colony
 -- crosses `pop` cells (the orchestrator drives this), opening a closed-form
@@ -87,7 +99,7 @@ function traits.new()
       motility = 0,
       sensing = 0,
       digestion = 0,
-      membrane = 0,
+      evasion = 0,
     },
     unlocked = {}, -- id -> true once a milestone has fired
   }
@@ -98,15 +110,22 @@ end
 -- the founding-cell values.
 function traits.stats(state)
   local lv = state.levels
+  -- Synergy factors (>= 1; exactly 1 until both partners are leveled, so all-zero
+  -- stats stay neutral). reach lifts the forage CAP (mobile, sensing cells reach
+  -- food the colony outgrew -> higher carrying capacity); thrift trims upkeep (a
+  -- lean, efficient cell wastes less -> lower K denominator).
+  local reach_syn = 1 + SYN_REACH * math.sqrt(lv.motility * lv.sensing)
+  local thrift_syn = 1 + SYN_THRIFT * math.sqrt(lv.digestion * lv.evasion)
   return {
     photo_mult = 1 + PHOTO_PER * lv.photosynthesis,
     forage_mult = 1 + FORAGE_MOTILITY_PER * lv.motility + FORAGE_SENSING_PER * lv.sensing,
+    forage_cap_mult = reach_syn, -- synergy: multiplies the food-saturation cap (cell.lua applies it)
     feed_rate = 1 + FEED_PER * lv.digestion,
-    yield_mult = 1 + YIELD_PER * lv.digestion,
-    upkeep_mult = 1 / (1 + UPKEEP_K * lv.membrane),
+    div_mult = DIV_FACTOR ^ lv.digestion,
+    upkeep_mult = 1 / ((1 + UPKEEP_K * lv.evasion) * thrift_syn), -- evasion base x thrift synergy
     speed = SPEED_BASE * (1 + SPEED_PER * lv.motility),
     sense_range = SENSE_BASE + SENSE_PER * lv.sensing,
-    defense = 1 - 1 / (1 + DEFENSE_K * lv.membrane),
+    evasion = 1 - 1 / (1 + EVASION_K * lv.evasion),
   }
 end
 
@@ -226,6 +245,11 @@ function traits.load(data)
   local state = traits.new()
   data = data or {}
   local levels = data.levels or {}
+  -- Migration: the "membrane" trait was renamed to "evasion". Carry an old
+  -- save's membrane level over unless the new key is already present.
+  if levels.membrane ~= nil and levels.evasion == nil then
+    levels.evasion = levels.membrane
+  end
   for _, id in ipairs(ORDER) do
     local lv = levels[id]
     if type(lv) == "number" and lv > 0 then

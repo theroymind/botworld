@@ -21,17 +21,17 @@ end
 -- Fresh state: every trait at level 0, nothing unlocked.
 local t = traits.new()
 check(t.levels.photosynthesis == 0, "fresh photosynthesis level 0")
-check(t.levels.membrane == 0, "fresh membrane level 0")
+check(t.levels.evasion == 0, "fresh evasion level 0")
 check(next(t.unlocked) == nil, "fresh unlocked set empty")
 
--- Neutral stats at all-zero: multipliers 1, bases at founder values, defense 0.
+-- Neutral stats at all-zero: multipliers 1, bases at founder values, evasion 0.
 local s0 = traits.stats(t)
 check(approx(s0.photo_mult, 1), "neutral photo multiplier")
 check(approx(s0.forage_mult, 1), "neutral forage multiplier")
 check(approx(s0.feed_rate, 1), "neutral feed rate")
-check(approx(s0.yield_mult, 1), "neutral yield multiplier")
+check(approx(s0.div_mult, 1), "neutral division-cost multiplier")
 check(approx(s0.upkeep_mult, 1), "neutral upkeep multiplier")
-check(approx(s0.defense, 0), "zero defense at level 0")
+check(approx(s0.evasion, 0), "zero evasion at level 0")
 check(s0.speed > 0, "founder swim speed positive")
 check(s0.sense_range > 0, "founder sense range positive")
 
@@ -53,23 +53,26 @@ check(approx(traits.stats(t).sense_range, base_sense + 14), "one sensing level -
 
 t = traits.new()
 traits.level(t, "digestion")
-check(approx(traits.stats(t).feed_rate, 1.15), "one digestion level -> +15% feed")
-check(traits.stats(t).yield_mult > 1, "digestion also nudges yield")
+check(approx(traits.stats(t).div_mult, 0.92), "one digestion level -> divisions cost 8% less")
+check(traits.stats(t).feed_rate > 1, "digestion also speeds the (cosmetic) engulf")
+traits.level(t, "digestion")
+check(approx(traits.stats(t).div_mult, 0.92 * 0.92), "the division discount compounds per level")
+check(traits.stats(t).div_mult > 0, "the division cost never reaches zero")
 
--- Membrane: defense is bounded [0,1) and diminishing; upkeep shrinks.
+-- Evasion: the flee/dodge chance is bounded [0,1) and diminishing; upkeep shrinks.
 t = traits.new()
 for _ = 1, 5 do
-  traits.level(t, "membrane")
+  traits.level(t, "evasion")
 end
 local m5 = traits.stats(t)
-check(approx(m5.defense, 1 - 1 / (1 + 5 * 0.05)), "defense uses the diminishing formula")
-check(m5.defense > 0 and m5.defense < 1, "defense stays inside [0,1)")
-check(m5.upkeep_mult < 1, "membrane shrinks upkeep")
+check(approx(m5.evasion, 1 - 1 / (1 + 5 * 0.05)), "evasion uses the diminishing formula")
+check(m5.evasion > 0 and m5.evasion < 1, "evasion stays inside [0,1)")
+check(m5.upkeep_mult < 1, "evasion shrinks upkeep")
 -- More levels never reach full immunity.
 for _ = 1, 1000 do
-  traits.level(t, "membrane")
+  traits.level(t, "evasion")
 end
-check(traits.stats(t).defense < 1, "defense never reaches full immunity")
+check(traits.stats(t).evasion < 1, "evasion never reaches full immunity")
 
 -- Per-trait cost is geometric and independent across rows.
 t = traits.new()
@@ -84,7 +87,7 @@ check(not traits.level(t, "nonsense"), "unknown trait rejected")
 check(traits.cost(t, "nonsense") == math.huge, "unknown trait costs infinity")
 
 -- Hints are concrete strings.
-check(traits.hint("membrane") == "defense +5%", "membrane hint reads concretely")
+check(traits.hint("evasion") == "evade +5%", "evasion hint reads concretely")
 
 -- Photosynthesis row is locked until its milestone fires; others are free.
 t = traits.new()
@@ -122,13 +125,18 @@ check(pred.spawns_prey and pred.enables_predators, "predation spawns prey and en
 t = traits.new()
 traits.level(t, "photosynthesis")
 traits.level(t, "photosynthesis")
-traits.level(t, "membrane")
+traits.level(t, "evasion")
 traits.unlock(t, "photosynthesis")
 local loaded = traits.load(traits.serialize(t))
 check(loaded.levels.photosynthesis == 2, "round-trip trait level")
-check(loaded.levels.membrane == 1, "round-trip second trait level")
+check(loaded.levels.evasion == 1, "round-trip second trait level")
 check(traits.is_unlocked(loaded, "photosynthesis"), "round-trip unlock")
 check(approx(traits.stats(loaded).photo_mult, traits.stats(t).photo_mult), "round-trip stats")
+
+-- Legacy migration: an old save's "membrane" level loads as "evasion".
+local migrated = traits.load({ levels = { membrane = 3 } })
+check(migrated.levels.evasion == 3, "legacy membrane level migrates to evasion")
+check(migrated.levels.membrane == nil, "the old membrane key is not retained")
 
 -- Load tolerates missing, partial, and stale data.
 local fresh = traits.load(nil)

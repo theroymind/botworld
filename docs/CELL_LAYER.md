@@ -22,8 +22,8 @@ levelled independently for a rising per-trait cost, each visibly changing every 
 | Photosynthesis | +18% biomass/sec | greener body + pigment nucleus |
 | Motility | swim speed +12% | a flagellar tail, longer = faster |
 | Chemotaxis | sense range +14 | reaches more food (wider hunt) |
-| Digestion | +15% feed speed | enzyme speckles + richer bloom yield |
-| Membrane | defense +5% | a retention rim; shrugs off predators |
+| Digestion | division cost -8% | faster engulf; the division bar fills sooner |
+| Evasion | evade +5% | a nimble cell; flees and dodges predator strikes |
 
 No slots, no splicing, no hidden synergy — every row says exactly what it does.
 
@@ -32,7 +32,7 @@ colony grows, each adding a closed-form income channel *and* world contents *and
 visual tell: **Absorption** (start — ambient motes) → **Photosynthesis** (light →
 biomass; reveals the trait) → **Phagocytosis / Predation** (your cells hunt & engulf
 prey — legitimate at the unicellular scale) → **Predators** (paired hazard cells that
-eat low-defense cells; Membrane mitigates; live-only and always healable).
+eat cells that fail to flee; Evasion mitigates; live-only and always healable).
 
 **Feeding is clickable nutrient blooms.** A bloom glows for ~3s; click it to credit a
 biomass burst and scatter motes the cells then chase. The only manual feed — no "dish".
@@ -107,7 +107,7 @@ the cell. This replaces the conventional "buy generator N" list.
 - **Genes are the generators/upgrades, expressed as traits.** Examples:
   - *Photosynthesis* — passive biomass faucet (the idle engine).
   - *Flagellum* — motility; reaches more of the nutrient field.
-  - *Thick membrane* — retention/defense; less biomass lost to the medium.
+  - *Evasion* — flees/dodges predator strikes; a leaner cell also loses less biomass to the medium.
   - *Enzyme* — faster conversion of nutrients to biomass.
   - *Pigment* — recolors the cell and grants a situational buff.
   - *Receptor* — unlocks symbiosis pairing with another species.
@@ -175,13 +175,22 @@ complementary channels, no pairing UI, no ledger:
 6. **Offline** — The dish keeps metabolizing as background math (aggregate-number offline
    progress), per the master plan.
 
-## Prestige — merge upward, don't wipe
+## End of phase 1 — the endosymbiosis finale
 
-You never reset to zero. When the strand is full and well-expressed, the colony goes
-**multicellular**: the swarm of cells fuses into a single body at phase 2, carrying its
-genome forward as inherited multipliers. The thing you grew becomes one organ in the
-bigger thing — the master plan's "becomes a statistic," made literal and visible, and
-animated by the same metaball threshold that handled mitosis.
+**Current state (2026-06-08): phase 1 is the whole game.** There is no phase 2 /
+multicellular layer yet, so the cell layer's *ending* is the **endosymbiosis proc**:
+a rare engulf-and-keep fires the cinematic in `transition.lua` and the run resets into
+a **fresh lineage** (wipe + new founder, same as `[r]`). It's a clean culmination beat,
+standing in as the prestige moment until a real next scale exists. See
+`docs/CELL_GROWTH.md` for the growth arc that leads up to it (trait synergy, the
+proposed biofilm network stage).
+
+**Future vision (deferred — not built):** the merge-upward prestige. Rather than
+wiping, the colony would go **multicellular** — the swarm fuses into a single body and
+carries its genome forward as inherited multipliers, the master plan's "becomes a
+statistic" made literal, animated by the same metaball threshold that handles mitosis.
+This is intentionally *not* wired in today to avoid implying a phase 2 that doesn't
+exist; it lives in `GAME_PLAN.md` as the long-term ladder.
 
 ---
 

@@ -1,155 +1,190 @@
 -- Cell sim: the headless heart of the loop and the AUTHORITATIVE economy.
--- Biomass accrues at a net rate the orchestrator folds from metabolism (at a
--- fixed sweet-spot base rate), the traits and the unlocked income channels
--- (passed in -- this module knows nothing of metabolism or traits, so it stays
--- decoupled and testable). Lifetime totals
--- never fall when biomass is spent, so POPULATION (division events) only ever
--- climbs; MATURITY (the evolve gate) is now keyed on COLONY SIZE
--- (population / MATURITY_POP_TARGET), so "grow the colony to evolve" is literal.
+-- The economy is INVERTED from the old passive-accrual model: biomass is no
+-- longer a stream that accrues over time -- it is a BANKED CURRENCY minted purely
+-- by successful DIVISIONS, spent by traits, and never touched by death. What
+-- accrues now is an ENERGY reserve, folded from the colony's intake (photosynthesis
+-- light + per-cell foraging, saturating at a finite food supply) minus per-cell
+-- upkeep. When the reserve covers the next cell's energy cost a division mints a
+-- cell + a chunk of biomass; when the reserve goes NEGATIVE (upkeep outruns intake
+-- past carrying capacity) cells STARVE and the population falls -- but biomass is
+-- kept. The colony floors at 1 (the founder never fully dies), so idle is gentle.
 --
--- The live agent sim (world.lua) is a cosmetic skin over this closed form and
--- never feeds back into it, with exactly two real live deltas routed here:
---   * feed_burst -- a nutrient-bloom click credits a biomass burst (counts as a
---     real gain, so it advances the colony).
---   * threat_loss -- a live predator kill debits biomass only; lifetime is left
---     untouched so a kill never rolls back the colony. Combat is a scare, not a
---     setback, and the always-positive baseline heals it. Predators are
---     live-only and ignored offline.
+-- The live agent sim (world.lua) is a cosmetic skin over this closed form, with
+-- exactly THREE real live deltas routed in by the orchestrator:
+--   * feed_burst -- a nutrient-bloom click credits the energy reserve;
+--   * kill       -- a live predator removes cells (population setback the energy
+--                   economy regrows; biomass untouched -- never a currency loss);
+--   * (endosymbiosis lives in organelles.lua + the orchestrator: a rare prey
+--      engulf keeps an organelle, folded into intake -- the sim only banks the
+--      acquired-organelle SET and total_divisions that gate it).
 --
--- Evolve is a prestige stub: bank a carried net multiplier and reset. Patterns
--- (accrue, offline lump-sum, tolerant serialize/load) borrow from
--- lib/engine/economy.lua. Pure Lua 5.1.
+-- tick and offline share ONE step(state, dt, intake) so live and offline stay
+-- identical and deterministic (no rng anywhere -- division-cost jitter is a pure
+-- index hash; offline replays the same step in capped sub-steps). Pure Lua 5.1.
 local sim = {}
 
-local TAP_BASE = 5 -- biomass per manual nutrient-bloom feed, before the feed fold
--- Division thresholds are JITTERED and SLOW-STARTED. The base lifetime cost of
--- the next cell is drawn from a deterministic band [DIV_BASE, DIV_BASE+DIV_RANGE]
--- (a hash of the cell index, not rng, so offline/load stay closed-form), then
--- multiplied by early_scale(n) -- a big factor for the founder that decays toward
--- 1 as the colony grows. So the first division idles ~20-30s and divisions
--- accelerate later: a real solo-cell open, not over in seconds.
-local DIV_BASE, DIV_RANGE = 8, 8 -- base band [8,16] (avg 12) before the slow-start
-local EARLY_SLOW, EARLY_TAU = 6, 6 -- slow-start: +6x at the founder, e-folding over ~6 cells
-local MATURITY_POP_TARGET = 50 -- colony size that fills the evolve gate
-local EVOLVE_BONUS = 1.5 -- carried net multiplier banked per evolve
+-- Division ENERGY cost: a JITTERED, SLOW-STARTED band. The next cell's cost is a
+-- deterministic draw in [DIV_BASE, DIV_BASE+DIV_RANGE] (a hash of the cell index,
+-- not rng, so offline/load stay closed-form), scaled by early_scale(n) -- a big
+-- factor for the founder decaying toward 1 as the colony grows. So the first
+-- division idles ~20-30s on the founder's intake and divisions accelerate later.
+local DIV_BASE, DIV_RANGE = 8, 8
+local EARLY_SLOW, EARLY_TAU = 6, 6
 
-local function clamp01(value)
-  if value < 0 then
-    return 0
-  elseif value > 1 then
-    return 1
-  end
-  return value
-end
+local DIV_YIELD = 2 -- banked biomass minted by each successful division
+-- Smoothing horizon (seconds) for the MEASURED division-rate readout: div_rate
+-- is an exponential moving average of actual divisions minted per second, so the
+-- panel shows real throughput instead of the instantaneous theoretical rate
+-- (which whipsaws near carrying capacity as the integer population wobbles).
+local RATE_TAU = 12
+local DEATH_RELEASE = 3 -- energy a starvation death refunds (each deficit unit culls more cells)
+local HARD_CAP = 100000 -- population ceiling (bounds the mint loop; K is the real ceiling)
+
+-- Offline relaxation: replay the shared step in fixed sub-steps so leaving and
+-- returning converges the colony toward carrying capacity instead of crashing.
+local OFFLINE_DT = 2 -- target sub-step seconds
+local OFFLINE_MAX_STEPS = 2000 -- cap the loop regardless of time away
 
 -- Deterministic [0,1) from an integer (the classic sin-fract hash). Pure, so a
--- given cell index always yields the same division spacing -- offline and load
+-- given cell index always yields the same division cost -- offline and load
 -- replay the exact same colony as the live tick.
 local function hash01(n)
   local h = math.sin(n * 12.9898 + 78.233) * 43758.5453
   return h - math.floor(h)
 end
 
--- Slow-start multiplier on division spacing: ~(1 + EARLY_SLOW) at the founder
--- (n=1), decaying exponentially toward 1 as the colony grows. This stretches the
--- first few divisions into a real solo-cell open and lets later ones accelerate.
+-- Slow-start multiplier on the division cost: ~(1 + EARLY_SLOW) at the founder
+-- (n=1), decaying exponentially toward 1 as the colony grows.
 local function early_scale(n)
   return 1 + EARLY_SLOW * math.exp(-(n - 1) / EARLY_TAU)
 end
 
--- Lifetime biomass the next division (reaching cell index n) costs: a jittered
--- base band scaled by the slow-start factor. Always > 0, so the running threshold
--- strictly increases; index-only, so offline/load stay closed-form.
-local function spacing(n)
-  return (DIV_BASE + DIV_RANGE * hash01(n)) * early_scale(n)
-end
-
--- Refresh lifetime-derived fields; queue a pulse for each newly crossed division.
--- next_div is the lifetime threshold of the NEXT cell; each crossing bumps the
--- population and advances the threshold by that new cell's jittered spacing (the
--- post-increment index), so the band keeps marching forward. Maturity is
--- colony-size driven: it tracks population, not raw lifetime.
-local function settle(state)
-  while state.lifetime >= state.next_div do
-    state.population = state.population + 1
-    state.pending_divisions = state.pending_divisions + 1
-    state.next_div = state.next_div + spacing(state.population)
-  end
-  state.maturity = clamp01(state.population / MATURITY_POP_TARGET)
-end
-
--- Apply a gain to biomass + lifetime. Mirrors economy.lua: only positive gains
--- count toward lifetime, so spending never lowers it.
-local function gain(state, amount)
-  state.biomass = state.biomass + amount
-  if amount > 0 then
-    state.lifetime = state.lifetime + amount
-  end
-  settle(state)
+-- Energy the next division (reaching cell index n) costs: a jittered base band
+-- scaled by the slow-start factor, then by the digestion div_mult (< 1 once the
+-- trait is leveled). Always > 0; index + a folded stat, so still closed-form.
+local function spacing(n, mult)
+  return (DIV_BASE + DIV_RANGE * hash01(n)) * early_scale(n) * (mult or 1)
 end
 
 function sim.new()
   return {
-    biomass = 0,
-    lifetime = 0, -- total ever gained; divisions + maturity derive from this
-    population = 1, -- the colony starts as a single founder cell
-    next_div = spacing(1), -- lifetime threshold of the next division
-    maturity = 1 / MATURITY_POP_TARGET, -- one cell's worth of the colony gate
-    pending_divisions = 0, -- new divisions awaiting a view pulse (founder fires none)
-    evolve_mult = 1, -- carried net multiplier from past evolves
-    generation = 0, -- evolves performed
+    biomass = 0, -- banked currency: minted per division, spent by traits, never lost to death
+    energy = 0, -- nutrient reserve: drives growth and starvation
+    population = 1, -- the colony starts as a single founder cell (floors here)
+    total_divisions = 0, -- lifetime divisions ever (gates endosymbiosis)
+    pending_divisions = 0, -- new divisions awaiting a view pulse
+    div_rate = 0, -- measured divisions/sec, EMA-smoothed over RATE_TAU (the panel readout)
+    organelles = {}, -- acquired organelle ids (id -> true); folded by organelles.lua
   }
 end
 
--- Passive accrual for one sim tick. net_rate is biomass/sec (folded outside).
-function sim.tick(state, dt, net_rate)
-  gain(state, net_rate * dt)
+-- The per-cell energy cost of the colony's NEXT division. Exposed for the panel's
+-- "energy toward the next division" bar. div_mult is the digestion discount.
+function sim.div_cost(population, div_mult)
+  return spacing(population or 1, div_mult)
 end
 
--- Manual nutrient-bloom feed; tap_mult is the folded feed channel (default 1).
-function sim.tap(state, tap_mult)
-  gain(state, TAP_BASE * (tap_mult or 1))
+-- Net energy/sec at a colony size, from the folded intake. Foraging saturates at
+-- forage_cap cells (a finite food supply); upkeep scales with every cell. Below
+-- the cap the colony grows; once upkeep outruns the saturated intake it starves.
+local function intake_rate(intake, population)
+  local photo = intake.photo or 0
+  local forage = intake.forage_per_cell or 0
+  local cap = intake.forage_cap or population
+  local upkeep = intake.upkeep_per_cell or 0
+  local mult = intake.mult or 1
+  return (photo + forage * math.min(population, cap)) * mult - upkeep * population
 end
 
--- A nutrient-bloom click credits a biomass burst -- one of the two real live
--- deltas over the cosmetic world sim. It is a real gain, so it advances the
--- colony. Returns the amount credited.
+function sim.net_energy(intake, population)
+  return intake_rate(intake, population or 1)
+end
+
+-- THE shared economy step, run by BOTH sim.tick and sim.offline so live and
+-- offline stay identical and deterministic. Folds dt of intake into the reserve,
+-- MINTS a division (banked biomass + a view pulse) for each cell the reserve can
+-- now afford, then STARVES cells when the reserve has gone negative (upkeep
+-- outran intake past carrying capacity). Biomass is never touched by starvation;
+-- population floors at 1 (the founder never fully dies).
+function sim.step(state, dt, intake)
+  local div_mult = intake.div_mult or 1
+  state.energy = state.energy + intake_rate(intake, state.population) * dt
+
+  local minted = 0
+  while state.energy >= spacing(state.population, div_mult) and state.population < HARD_CAP do
+    state.energy = state.energy - spacing(state.population, div_mult)
+    state.population = state.population + 1
+    state.biomass = state.biomass + DIV_YIELD
+    state.total_divisions = state.total_divisions + 1
+    state.pending_divisions = state.pending_divisions + 1
+    minted = minted + 1
+  end
+
+  if state.energy < 0 then
+    local deaths = math.min(state.population - 1, math.ceil(-state.energy / DEATH_RELEASE))
+    state.population = state.population - deaths
+    state.energy = math.max(0, state.energy + deaths * DEATH_RELEASE)
+  end
+
+  -- Fold this step's actual mints into the measured rate (divisions/sec). An
+  -- event-rate EMA: each division contributes ~1/RATE_TAU and decays over the
+  -- horizon, so the readout reflects real recent throughput -- stable near
+  -- carrying capacity where the instantaneous theoretical rate whipsaws.
+  if dt > 0 then
+    local alpha = 1 - math.exp(-dt / RATE_TAU)
+    state.div_rate = (state.div_rate or 0) + (minted / dt - (state.div_rate or 0)) * alpha
+  end
+end
+
+-- One sim tick (runs even while backgrounded). intake is the folded table the
+-- orchestrator assembles from metabolism + traits + organelles.
+function sim.tick(state, dt, intake)
+  sim.step(state, dt, intake)
+end
+
+-- A nutrient-bloom feed credits the energy reserve -- one of the real live deltas
+-- over the cosmetic world sim. Negatives clamp to zero. Returns the amount added.
 function sim.feed_burst(state, amount)
   amount = amount or 0
   if amount < 0 then
     amount = 0
   end
-  gain(state, amount)
+  state.energy = state.energy + amount
   return amount
 end
 
--- A live predator kill debits biomass -- the other real live delta. Lifetime is
--- left untouched (population/maturity never roll back), and the debit clamps so
--- biomass never goes negative. Live-only: never applied offline. Returns the
--- biomass actually lost.
-function sim.threat_loss(state, biomass_lost)
-  biomass_lost = biomass_lost or 0
-  local lost = math.min(math.max(biomass_lost, 0), state.biomass)
-  state.biomass = state.biomass - lost
+-- A live predator kill removes cells from the colony. Population floors at 1;
+-- biomass is untouched (a kill is a population setback the energy economy regrows,
+-- never a currency loss). Live-only: never applied offline. Returns cells lost.
+function sim.kill(state, n)
+  n = n or 0
+  local lost = math.min(math.max(math.floor(n), 0), state.population - 1)
+  state.population = state.population - lost
   return lost
 end
 
--- Lump-sum catch-up for time away; returns the biomass gained. Uses only the
--- closed-form rate -- no predators, no agent dependency, so offline stays pure.
-function sim.offline(state, seconds, net_rate)
-  local amount = net_rate * seconds
-  if amount < 0 then
-    amount = 0
+-- Lump-sum catch-up for time away: replay the shared step in fixed sub-steps so
+-- the colony relaxes toward carrying capacity (never a crash to zero). The
+-- sub-step count is capped, so any duration is covered in bounded work.
+function sim.offline(state, seconds, intake)
+  if seconds <= 0 then
+    return
   end
-  gain(state, amount)
-  return amount
+  local n = math.ceil(seconds / OFFLINE_DT)
+  if n > OFFLINE_MAX_STEPS then
+    n = OFFLINE_MAX_STEPS
+  end
+  local dt = seconds / n
+  for _ = 1, n do
+    sim.step(state, dt, intake)
+  end
 end
 
 function sim.can_spend(state, cost)
   return state.biomass >= cost
 end
 
--- Deduct an upgrade cost (lifetime untouched). Returns success.
+-- Deduct an upgrade cost from the banked biomass. Returns success.
 function sim.spend(state, cost)
   if state.biomass < cost then
     return false
@@ -158,107 +193,98 @@ function sim.spend(state, cost)
   return true
 end
 
--- Consume and return the count of divisions queued since the last call, so the
--- view can fire that many pulses without missing or repeating any.
+-- Consume and return the divisions queued since the last call, so the view can
+-- fire that many mitosis pulses without missing or repeating any.
 function sim.take_divisions(state)
   local n = state.pending_divisions
   state.pending_divisions = 0
   return n
 end
 
-function sim.can_evolve(state)
-  return state.maturity >= 1
-end
-
--- Prestige stub: bank the carried multiplier and reset the colony. No-op
--- (returns nil) unless mature; otherwise returns the new evolve_mult to toast.
-function sim.evolve(state)
-  if not sim.can_evolve(state) then
-    return nil
+-- Carrying capacity K: the colony size at which the saturated intake exactly
+-- meets upkeep -- the population the food supply can sustain. The 'cap K' HUD
+-- readout. Clamped to [1, HARD_CAP].
+function sim.capacity(intake)
+  local photo = intake.photo or 0
+  local forage = intake.forage_per_cell or 0
+  local cap = intake.forage_cap or 0
+  local upkeep = intake.upkeep_per_cell or 0
+  local mult = intake.mult or 1
+  if upkeep <= 0 then
+    return HARD_CAP
   end
-  state.evolve_mult = state.evolve_mult * EVOLVE_BONUS
-  state.generation = state.generation + 1
-  state.biomass = 0
-  state.lifetime = 0
-  state.population = 1
-  state.next_div = spacing(1)
-  state.maturity = 1 / MATURITY_POP_TARGET
-  state.pending_divisions = 0
-  return state.evolve_mult
+  local k = (photo + forage * cap) * mult / upkeep
+  if k < 1 then
+    return 1
+  elseif k > HARD_CAP then
+    return HARD_CAP
+  end
+  return k
 end
 
--- Divisions/sec at a given net rate and colony size; the readout the panel shows.
--- Keyed on the AVERAGE base spacing scaled by the population's slow-start factor,
--- so the readout honestly reflects slow early divisions accelerating as the
--- colony grows. population defaults to the founder.
-function sim.division_rate(net_rate, population)
-  return net_rate / ((DIV_BASE + DIV_RANGE / 2) * early_scale(population or 1))
+-- THEORETICAL divisions/sec at a folded intake and colony size: net energy
+-- divided by the AVERAGE division cost at this size. Zero once the colony is at
+-- or past its cap (net energy <= 0). The panel readout uses the MEASURED
+-- state.div_rate instead (this whipsaws near capacity as the integer population
+-- wobbles); kept for tests and as the closed-form reference curve.
+function sim.division_rate(intake, population)
+  local pop = population or 1
+  local net = intake_rate(intake, pop)
+  if net <= 0 then
+    return 0
+  end
+  return net / ((DIV_BASE + DIV_RANGE / 2) * early_scale(pop) * (intake.div_mult or 1))
 end
 
--- Colony size that fills the evolve gate (the maturity denominator).
-function sim.maturity_pop_target()
-  return MATURITY_POP_TARGET
-end
-
--- The division-spacing band across the whole colony: the floor is the asymptotic
--- base minimum (DIV_BASE); the ceiling is the founder's slow-started maximum
--- ((DIV_BASE + DIV_RANGE) * early_scale(1)). With the defaults this is (8, 112).
+-- The division-cost band across the colony: floor is the asymptotic base minimum
+-- (DIV_BASE); ceiling is the founder's slow-started maximum. With the defaults,
+-- (8, 112). Exposed for tests.
 function sim.div_bounds()
   return DIV_BASE, (DIV_BASE + DIV_RANGE) * early_scale(1)
 end
 
--- Replay the colony from the founder up to the persisted lifetime WITHOUT
--- queueing view pulses -- a fresh load has no pending mitosis to animate. Used
--- only when population/next_div are absent (a legacy save); otherwise load is
--- O(1). Deterministic spacing means this reproduces the live colony exactly.
-local function rebuild(state)
-  state.population = 1
-  state.next_div = spacing(1)
-  while state.lifetime >= state.next_div do
-    state.population = state.population + 1
-    state.next_div = state.next_div + spacing(state.population)
-  end
-  state.maturity = clamp01(state.population / MATURITY_POP_TARGET)
-end
-
--- Plain-data snapshot. population + next_div are persisted so load is O(1); the
--- rest (maturity, pending) is derived.
+-- Plain-data snapshot. Persists the banked currency, the reserve, the colony
+-- size, the lifetime division count, and the acquired organelles.
 function sim.serialize(state)
+  local organelles = {}
+  for id in pairs(state.organelles) do
+    organelles[id] = true
+  end
   return {
     biomass = state.biomass,
-    lifetime = state.lifetime,
+    energy = state.energy,
     population = state.population,
-    next_div = state.next_div,
-    evolve_mult = state.evolve_mult,
-    generation = state.generation,
+    total_divisions = state.total_divisions,
+    div_rate = state.div_rate,
+    organelles = organelles,
   }
 end
 
--- Rebuild from serialize() data, tolerant of missing/stale fields. When the
--- persisted colony cursor (population + next_div) is present we trust it (O(1));
--- a legacy save without it replays from lifetime via rebuild(). Either way no
--- pulses are queued.
+-- Rebuild from serialize() data, tolerant of missing/legacy fields. Legacy saves
+-- (lifetime/next_div/evolve_mult/generation) are simply ignored; a present
+-- population is trusted (floored at 1). No view pulses are queued.
 function sim.load(data)
   local state = sim.new()
   data = data or {}
   if type(data.biomass) == "number" then
     state.biomass = data.biomass
   end
-  if type(data.lifetime) == "number" then
-    state.lifetime = data.lifetime
+  if type(data.energy) == "number" then
+    state.energy = data.energy
   end
-  if type(data.evolve_mult) == "number" then
-    state.evolve_mult = data.evolve_mult
+  if type(data.population) == "number" and data.population >= 1 then
+    state.population = math.floor(data.population)
   end
-  if type(data.generation) == "number" then
-    state.generation = data.generation
+  if type(data.total_divisions) == "number" and data.total_divisions >= 0 then
+    state.total_divisions = math.floor(data.total_divisions)
   end
-  if type(data.population) == "number" and type(data.next_div) == "number" then
-    state.population = data.population
-    state.next_div = data.next_div
-    state.maturity = clamp01(state.population / MATURITY_POP_TARGET)
-  else
-    rebuild(state)
+  if type(data.div_rate) == "number" and data.div_rate >= 0 then
+    state.div_rate = data.div_rate
+  end
+  if type(data.organelles) == "table" then
+    for id in pairs(data.organelles) do
+      state.organelles[id] = true
+    end
   end
   return state
 end
