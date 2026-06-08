@@ -1,63 +1,72 @@
 -- Complex-cell view: programmatic, asset-free visuals for the INTERIOR of a single
 -- eukaryotic cell -- the phase-2 sibling of lib/layers/cell/view.lua. Same discipline:
 -- love.* is touched ONLY inside draw-time code (so a bare `require` loads headless),
--- there is a single generic entity draw path, transient beats compose through an
--- fx controller (lib/engine/fx.lua), and every color binds a GLOBAL token from
--- lib/engine/ui/colors -- no literal RGB, no per-layer palette. Where phase 1 framed
--- a dish of flat squares with a stepped fit-camera, this view frames the cytoplasm of
--- ONE cell and aims the swarm INWARD: organelle clusters, drifting vesicles, and a big
--- wobbling membrane. The orchestrator (complexcell.lua) draws the panel/HUD on top --
--- this file draws NOTHING of the UI.
+-- transient beats compose through an fx controller (lib/engine/fx.lua), and every
+-- color binds a GLOBAL token from lib/engine/ui/colors -- no literal RGB, no per-layer
+-- palette. Where phase 1 framed a dish of flat squares with a stepped fit-camera, this
+-- view frames the cytoplasm of ONE cell and aims a swarm INWARD: organelle clusters,
+-- and a teeming cloud of vesicles/cargo hauling between them, inside a big wobbling
+-- membrane. The orchestrator (complexcell.lua) draws the panel/HUD on top -- this file
+-- draws NOTHING of the UI.
+--
+-- THE SWARM IS GPU-INSTANCED (the upgrade from the first CPU-primitive draft). The
+-- interior cloud is lib/layers/complexcell/interior_swarm.lua -- the SOLAR layer's
+-- proven instanced-mesh technique (lib/swarm.lua) pointed inward: a fixed, large
+-- instance buffer filled ONCE at load with stateless vesicle routes, each vesicle's
+-- position a CLOSED-FORM function of (per-instance attributes, time, endpoint uniforms)
+-- in the vertex shader. The CPU does ~zero per-instance work; per frame this view ships
+-- only a handful of uniforms (the organelle endpoint positions, the per-segment flow
+-- readouts, and the global flow scalars) and raises the live instance count. The
+-- membrane + nucleus + rim stay CPU primitives FRAMING that instanced cloud.
 --
 -- READING STATE THROUGH FLOW (the core ask -- docs/PHASE_2.md "Reading state through
 -- flow"). Every visual is a CONTINUOUS response to a snapshot field, never a discrete
--- state machine:
+-- state machine. The mapping is unchanged from the first draft; it now drives UNIFORMS
+-- instead of CPU primitives:
 --   * MEMBRANE -- a soft circle/blob filling most of the screen with a bright rim,
 --     gently wobbling. Its rim brightness eases with `output` (a lively cell glows).
+--     [CPU primitive, framing the swarm.]
 --   * NUCLEUS -- once the `nucleus` stage is unlocked, a distinct inner compartment
---     near the centre, its detail filling in with that stage's level.
---   * STAGE CLUSTERS -- each UNLOCKED stage gets an organelle cluster at a STABLE
---     position on a loose pipeline ring (ribosomes -> nucleus -> er -> golgi ->
---     transport -> membrane). The element COUNT/DENSITY scales with level/cap, so
---     leveling a stage visibly fills it in ("growth is detail"). Counts are a
---     logarithmic SAMPLE (like phase 1) and hard-capped -- never the literal `built`.
---   * CONGESTION (per-stage 0..1) -- a backed-up stage CLUMPS: its elements pull
---     toward the cluster centre (crowding) and a few stalled cargo motes pile up on
---     it. High congestion = a visible jam.
---   * BOTTLENECK (`is_bottleneck` / `bottleneck_id`) -- the pinning stage reads as a
---     CONSTRICTION: its cluster tightens and a faint pinch ring marks it. Cargo on the
---     pipeline slows as it passes the bottleneck (the choke point).
---   * VACANCY -- stages DOWNSTREAM of the bottleneck are starved: their clusters thin
---     out (fewer elements drawn) and their highways carry less cargo -- sparse, idle.
---   * VESICLES/CARGO -- drifting interior particles hauled along the ring. Their count
---     and liveliness scale with `output` (the teeming swarm): busy when output is high,
---     sparse when low. They slow and dim downstream of the bottleneck.
---   * BROWNOUT (`brownout`) -- an energy deficit DIMS the whole interior and SLOWS the
---     drift (motors walk sluggishly). Eased smoothly via a dim factor so it reads as a
---     fade, not a flick. The on-theme tell for "complexity you can't power."
---   * Balanced (low congestion, not brownout) = calm, even flow.
---   * `fuel_factor` -- a subtle whole-interior TINT hook: >1 (plant) eases toward the
---     green token, <1 (animal) toward the warm token. Neutral 1.0 = baseline now; the
---     hook is wired but barely visible at the neutral value.
+--     near the centre, its detail filling in with that stage's level. [CPU primitive.]
+--   * ENDPOINTS = organelle clusters -- each UNLOCKED stage is one endpoint at a STABLE
+--     position on a loose pipeline path (ribosomes -> nucleus -> er -> golgi ->
+--     transport -> membrane). Mitochondria add extra emitter endpoints scaled by
+--     `mito`. Uploaded as the swarm's `endpoints` uniform each frame (cheap, like
+--     lib/bodies.lua). Vesicles haul along the SEGMENTS between consecutive endpoints.
+--   * LIVE COUNT -- a logarithmic SAMPLE of the cell's scale (`built` + `output`),
+--     hard-capped, raised as the swarm's instance count so the interior visibly fills
+--     as the cell grows ("growth is detail") -- never the literal `built`, never a CPU
+--     per-instance cost.
+--   * CONGESTION (per-stage 0..1) -- a backed-up stage's SEGMENT clumps + slows: its
+--     vesicles bunch toward the leg middle and crawl (the `segments[].x` readout).
+--   * BOTTLENECK (`is_bottleneck` / `bottleneck_id`) -- the pinning stage's segment
+--     CONSTRICTS: a tighter lane, vesicles bunch into a thread (`segments[].y`).
+--   * VACANCY -- segments DOWNSTREAM of the bottleneck thin out: a fraction of their
+--     vesicles are parked off-screen, so the highway runs sparse (`segments[].z`).
+--   * OUTPUT -- overall liveliness: it drives the global `speed` + `brightness`
+--     uniforms (high output = a busy, bright interior) AND the live vesicle count.
+--   * BROWNOUT (`brownout`) -- an energy deficit DIMS + SLOWS the whole swarm via the
+--     global `brightness`/`slow` uniforms, eased over time (a fade, not a flick) -- the
+--     on-theme tell for "complexity you can't power".
+--   * `fuel_factor` -- a subtle whole-interior TINT (the swarm's `tint` uniform): >1
+--     (plant) eases toward the green token, <1 (animal) toward the warm token; neutral
+--     1.0 = baseline. The hook is wired but barely visible at the neutral value.
 -- Red-pulsing is deliberately NOT used here -- it is held in reserve as an
 -- accessibility accent only (per the design brief), so the default language stays flow.
 --
--- CHEAP SIM, ALIVE VISUALS. This first draft renders the interior on the CPU with
--- love.graphics primitives: organelle elements and cargo are positioned by closed-form
--- drift (a cheap sin/cos hash of a per-element phase + time), so update() only advances
--- a clock and eases the brownout/tint factors -- there is no per-particle simulation.
--- Element and cargo counts are hard-capped (see MAX_*), so the cost is bounded and
--- legible regardless of how astronomically large `built` grows.
+-- CHEAP SIM, EXPENSIVE-LOOKING VISUALS. update() only advances a clock and eases the
+-- brownout dim/slow + fuel tint; there is no per-particle simulation anywhere -- the
+-- vesicle motion is closed-form in the GPU vertex shader, and the framing primitives
+-- are a handful of circles/polygons. The cost is bounded and legible regardless of how
+-- astronomically large `built` grows.
 --
--- DEFERRED: the GPU-instanced swarm renderer (lib/swarm.lua + lib/bodies.lua, validated
--- at ~millions of stateless instances via a closed-form vertex shader) is the intended
--- LATER upgrade for true teeming density -- pointed INWARD here, with the organelle
--- clusters as the "bodies" (route endpoints) and vesicles as the instanced "drones"
--- hauling between them. This draft keeps a clean programmatic interior instead; the
--- closed-form per-element drift below is deliberately shaped like that shader's route
--- model so the swap stays mechanical. See lib/swarm.lua's VERTEX_SHADER_TEMPLATE.
+-- HEADLESS-SAFE LOAD. Like lib/swarm.lua, ALL GPU work is deferred: this module and
+-- interior_swarm bare-`require` without touching love.* or FFI. The swarm lazily
+-- initializes its mesh/shader on first draw (interior_swarm.draw calls .load if the
+-- host didn't), so a bare require under plain Lua loads clean for the test harness.
 local fx = require("lib.engine.fx")
 local colors = require("lib.engine.ui.colors")
+local interior_swarm = require("lib.layers.complexcell.interior_swarm")
 
 local view = {}
 
@@ -71,40 +80,49 @@ local MEMBRANE_WOBBLE = 0.018 -- rim wobble as a fraction of the cell radius
 local MEMBRANE_WOBBLE_FREQ = 0.6 -- wobble cycles/sec (gentle)
 local RIM_WIDTH = 3 -- membrane rim line width in screen px
 
--- Pipeline ring: unlocked stages sit at STABLE angles around this fraction of the
--- cell radius, in pipeline order, so leveling never reshuffles the layout.
-local RING_FRAC = 0.6 -- cluster ring radius as a fraction of the cell radius
-local CLUSTER_SPREAD = 0.16 -- a cluster's element scatter, as a fraction of cell radius
+-- Pipeline path: unlocked stages sit at STABLE angles around this fraction of the
+-- cell radius, in pipeline order, so leveling never reshuffles the layout. The swarm
+-- hauls vesicles along the SEGMENTS connecting consecutive endpoints in this ring.
+local RING_FRAC = 0.6 -- endpoint ring radius as a fraction of the cell radius
 
--- Element-count sampling: logarithmic, like phase 1's swarm sampling -- a stage's
--- drawn element count is BASE + SCALE*log(1+level), hard-capped. Never literal.
-local ELEM_BASE = 3
-local ELEM_SCALE = 9
-local MAX_ELEMENTS = 60 -- per-stage hard cap (keeps it cheap + legible)
-local ELEM_SIZE = 3 -- base element size in screen px
+-- Mitochondria emitters: extra endpoints (power plants) scattered on an inner ring,
+-- a logarithmic SAMPLE of `mito` (capped). They append after the stage endpoints so
+-- the swarm hauls some cargo to/from them too -- power feeding the line.
+local MITO_RING_FRAC = 0.32 -- mito emitter ring radius as a fraction of cell radius
+local MITO_BASE = 1
+local MITO_SCALE = 2.2
+local MAX_MITO_EMITTERS = 6 -- hard cap on mito endpoints (keeps the uniform array sane)
 
--- Cargo (vesicles drifting the ring): count scales with `output`, hard-capped.
-local CARGO_BASE = 4
-local CARGO_SCALE = 26
-local MAX_CARGO = 140
-local CARGO_SIZE = 2.4
-local CARGO_SPEED = 0.10 -- ring laps/sec at full liveliness (slowed by brownout)
+-- Live vesicle count: a logarithmic SAMPLE of the cell's scale, hard-capped well
+-- below the swarm's instance ceiling. Built drives the bulk fill ("growth is detail")
+-- and output adds liveliness on top. NEVER the literal `built`.
+local COUNT_BASE = 400
+local COUNT_BUILT_SCALE = 9000 -- multiplies log(1 + built)
+local COUNT_OUTPUT_SCALE = 1800 -- multiplies log(1 + output)
+local MAX_LIVE_VESICLES = 120000 -- the view's hard cap (the GPU could do far more)
 
--- Flow-readout shaping.
-local CONGEST_PULL = 0.45 -- how far congestion pulls elements toward cluster centre
-local CONGEST_PILE = 6 -- max extra stalled cargo motes piled on a jammed stage
-local VACANCY_THIN = 0.55 -- max fraction of elements a fully-starved stage sheds
-local BOTTLENECK_PINCH = 0.30 -- how much the bottleneck cluster tightens
+-- Output -> global liveliness. Output is mapped through a soft saturating curve to a
+-- speed + brightness multiplier so a busy cell runs faster + brighter without ever
+-- blowing out. OUTPUT_REF is the output at which liveliness is ~half-saturated.
+local OUTPUT_REF = 40
+local SPEED_MIN = 0.55 -- base swarm speed at zero output (still drifts, just calm)
+local SPEED_MAX = 1.6 -- speed at full saturation (a teeming, busy interior)
+local BRIGHT_MIN = 0.55 -- swarm brightness floor at zero output
+local BRIGHT_MAX = 1.15 -- brightness at full saturation
 
--- Brownout: the whole interior eases toward this dim and this drift-slowdown.
-local BROWNOUT_DIM = 0.42 -- interior alpha multiplier at full brownout
-local BROWNOUT_SLOW = 0.30 -- drift-speed multiplier at full brownout
+-- Brownout: the whole swarm eases toward this brightness + this speed slowdown.
+local BROWNOUT_DIM = 0.42 -- swarm brightness multiplier at full brownout
+local BROWNOUT_SLOW = 0.30 -- swarm speed multiplier at full brownout
 local DIM_EASE = 2.5 -- per-second lerp rate toward the brownout target
 
 -- fuel_factor tint hook: how far a full plant/animal lean colors the interior.
 local FUEL_TINT = 0.18
 
--- The fixed pipeline order (matches the sim's stage ids). The view lays clusters
+-- Membrane / nucleus framing alpha (CPU primitives around the swarm).
+local CYTOPLASM_ALPHA = 0.5
+local NUCLEUS_R_FRAC = 0.30 -- nucleus radius as a fraction of cell radius
+
+-- The fixed pipeline order (matches the sim's stage ids). The view lays endpoints
 -- out in THIS order around the ring, and uses the index to judge up/downstream of
 -- the bottleneck for the vacancy readout.
 local STAGE_ORDER = {
@@ -133,23 +151,23 @@ local function clamp01(v)
   return v
 end
 
--- A cheap deterministic 0..1 hash from an integer seed -- the per-element "rng"
--- that scatters clusters and phases cargo without storing any per-element state.
--- (Stateless by design, mirroring the swarm shader's per-instance attributes.)
+-- A cheap deterministic 0..1 hash from an integer seed -- used only for the framing
+-- primitives' nucleus speckles + mito emitter placement (the swarm itself is fully
+-- self-contained, its scatter baked into the instance buffer). Stateless by design.
 local function hash01(n)
   local s = math.sin(n * 12.9898) * 43758.5453
   return s - math.floor(s)
 end
 
--- Logarithmic element sample: BASE + SCALE*log(1+level), capped. The drawn count is
--- a READABLE SAMPLE of the stage, never the literal level/built (scale-of-numbers
--- honesty, as in phase 1's logarithmic swarm sampling).
-local function sample_count(level, base, scale, cap)
-  level = level or 0
-  if level < 0 then
-    level = 0
+-- Logarithmic sample: BASE + SCALE*log(1+value), capped. The drawn/live count is a
+-- READABLE SAMPLE of a sim quantity, never the literal value (scale-of-numbers honesty,
+-- as in phase 1's logarithmic swarm sampling).
+local function sample_count(value, base, scale, cap)
+  value = value or 0
+  if value < 0 then
+    value = 0
   end
-  local n = base + scale * math.log(1 + level)
+  local n = base + scale * math.log(1 + value)
   n = math.floor(n + 0.5)
   if n > cap then
     n = cap
@@ -157,31 +175,48 @@ local function sample_count(level, base, scale, cap)
   return n
 end
 
+-- Soft saturating 0..1 curve: value/(value+ref). Maps an unbounded sim quantity onto
+-- a bounded liveliness without a hard clip (half-saturated at value == ref).
+local function saturate(value, ref)
+  value = value or 0
+  if value < 0 then
+    value = 0
+  end
+  return value / (value + ref)
+end
+
 -- ============================================================================
 -- View lifecycle.
 -- ============================================================================
 
 function view.new()
-  -- dim/tint are EASED cosmetic state (brownout fade, fuel tint), so update()
-  -- has continuous values to lerp toward each frame; fx is the shared effects
-  -- controller for spawn/animation beats the orchestrator can compose.
+  -- dim/speed are EASED cosmetic state (brownout fade, fuel tint), so update() has
+  -- continuous values to lerp toward each frame; fx is the shared effects controller
+  -- for spawn/animation beats the orchestrator can compose. The swarm itself is
+  -- stateless GPU machinery -- the only per-view state is these eased cosmetics.
   return {
     time = 0,
     fx = fx.new(),
     dim = 1, -- 1 = full brightness; eases toward BROWNOUT_DIM under brownout
-    drift = 1, -- 1 = full drift speed; eases toward BROWNOUT_SLOW under brownout
+    drift = 1, -- 1 = full speed; eases toward BROWNOUT_SLOW under brownout
     tint = { 1, 1, 1 }, -- eased fuel tint multiplier (neutral white at fuel 1.0)
+    -- Reused scratch arrays so draw allocates nothing per frame for the uniforms.
+    endpoints_x = {},
+    endpoints_y = {},
+    segments = {},
   }
 end
 
--- Cosmetic animation only -- advance the clock, the fx controller, and ease the
--- brownout dim/slow + fuel tint toward their targets. No game state lives here.
+-- Cosmetic animation only -- advance the clock, the fx controller, the swarm clock,
+-- and ease the brownout dim/slow + fuel tint toward their targets. No game state lives
+-- here, and no GPU work: the swarm clock is a single scalar accumulate.
 function view.update(state, dt)
   state.time = state.time + dt
   fx.update(state.fx, dt)
+  interior_swarm.update(dt)
 
-  -- The brownout target is held on the view between draws (set from the snapshot
-  -- in draw); ease toward it so the dimming reads as a smooth fade, not a flick.
+  -- The brownout target is held on the view between draws (set from the snapshot in
+  -- draw); ease toward it so the dimming reads as a smooth fade, not a flick.
   local dim_target = state.dim_target or 1
   local drift_target = state.drift_target or 1
   local k = clamp01(dt * DIM_EASE)
@@ -200,6 +235,7 @@ end
 -- Spawn a composable effect onto this view's fx controller; returns it. The
 -- orchestrator builds effects (fx.flash/fx.pulse/...) and adds them here, e.g. an
 -- fx.implode on a freshly-bought organelle to read as it "snapping into place".
+-- (Kept exactly as the public interface the orchestrator depends on.)
 function view.spawn(state, effect) return fx.add(state.fx, effect) end
 
 -- ============================================================================
@@ -207,8 +243,8 @@ function view.spawn(state, effect) return fx.add(state.fx, effect) end
 -- ============================================================================
 
 -- Resolve the fuel tint target from fuel_factor: >1 leans toward the green token
--- (plant), <1 toward the warm sand token (animal), 1.0 = neutral white. The lean
--- is subtle (FUEL_TINT) and barely visible at the neutral baseline -- just the hook.
+-- (plant), <1 toward the warm sand token (animal), 1.0 = neutral white. The lean is
+-- subtle (FUEL_TINT) and barely visible at the neutral baseline -- just the hook.
 local function fuel_tint_target(fuel)
   fuel = fuel or 1
   local lean = clamp01(math.abs(fuel - 1)) * FUEL_TINT
@@ -220,7 +256,9 @@ local function fuel_tint_target(fuel)
   }
 end
 
--- Apply the eased interior dim + fuel tint on top of a token color, then set it.
+-- Apply the eased interior dim + fuel tint on top of a token color, then set it. Used
+-- by the framing primitives so the membrane/nucleus dim + tint in lockstep with the
+-- swarm (the whole interior reads as one cell under brownout / fuel lean).
 local function set_interior_color(state, token, alpha)
   local t = state.tint
   love.graphics.setColor(
@@ -231,21 +269,21 @@ local function set_interior_color(state, token, alpha)
   )
 end
 
--- The big membrane: a filled soft body disk under a brighter rim that gently
--- wobbles. The rim brightens with `output` so a lively cell glows; the body is a
--- dim fill that reads as cytoplasm. Drawn as a many-segment polygon so the wobble
--- is visible without an art pipeline (a simple SDF/metaball is the later upgrade).
+-- The big membrane: a filled soft body disk under a brighter rim that gently wobbles.
+-- The rim brightens with `output` so a lively cell glows; the body is a dim fill that
+-- reads as cytoplasm framing the instanced swarm. A many-segment polygon so the wobble
+-- is visible without an art pipeline.
 local function draw_membrane(state, cx, cy, r, output)
   local t = state.time
   local segs = 64
   -- Soft cytoplasm fill (a plain disk -- the wobble lives in the rim line).
-  set_interior_color(state, colors.surface, 0.5)
+  set_interior_color(state, colors.surface, CYTOPLASM_ALPHA)
   love.graphics.circle("fill", cx, cy, r)
   set_interior_color(state, colors.primary, 0.06)
   love.graphics.circle("fill", cx, cy, r * 0.96)
 
-  -- Wobbling bright rim. A blended sum of two low-frequency sines per vertex gives
-  -- an organic, non-circular edge that breathes over time.
+  -- Wobbling bright rim. A blended sum of two low-frequency sines per vertex gives an
+  -- organic, non-circular edge that breathes over time.
   local pts = {}
   for i = 0, segs - 1 do
     local a = (i / segs) * 2 * math.pi
@@ -264,152 +302,45 @@ end
 
 -- The nucleus: a distinct inner compartment near the centre, its speckled chromatin
 -- detail filling in with the nucleus stage's level. Only drawn once that stage is
--- unlocked (the caller checks). Sits slightly off-centre so clusters can ring it.
+-- unlocked (the caller checks).
 local function draw_nucleus(state, cx, cy, r, level)
-  local nr = r * 0.30
-  local nx, ny = cx, cy
+  local nr = r * NUCLEUS_R_FRAC
   set_interior_color(state, colors.primary_dark, 0.55)
-  love.graphics.circle("fill", nx, ny, nr)
+  love.graphics.circle("fill", cx, cy, nr)
   love.graphics.setLineWidth(2)
   set_interior_color(state, colors.primary, 0.6)
-  love.graphics.circle("line", nx, ny, nr)
+  love.graphics.circle("line", cx, cy, nr)
   love.graphics.setLineWidth(1)
   -- Chromatin speckles: a logarithmic sample of the level, scattered inside.
   local n = sample_count(level, 4, 7, 40)
   for i = 1, n do
     local a = hash01(i * 1.7) * 2 * math.pi
     local rad = math.sqrt(hash01(i * 2.3)) * nr * 0.82
-    local px = nx + math.cos(a) * rad
-    local py = ny + math.sin(a) * rad
+    local px = cx + math.cos(a) * rad
+    local py = cy + math.sin(a) * rad
     set_interior_color(state, colors.primary, 0.5)
-    love.graphics.circle("fill", px, py, ELEM_SIZE * 0.45)
+    love.graphics.circle("fill", px, py, 1.4)
   end
 end
 
--- One organelle cluster for an UNLOCKED stage. The element count is a log sample of
--- level/cap; CONGESTION pulls elements inward (a jam clumps); the BOTTLENECK tightens
--- the whole cluster (a constriction); VACANCY (being downstream of the bottleneck)
--- sheds elements (starved/sparse). `token` colors the cluster (varied per stage so
--- the pipeline reads), all within the 2-3 color palette via the global tokens.
-local function draw_cluster(state, stage, x, y, r, downstream_vac)
-  local level = stage.level or 0
-  local cap = stage.cap or 0
-  -- Fuller clusters near cap: blend the level sample with how close to cap it is, so
-  -- a maxed stage visibly "fills in". (cap 0 -> just the level sample.)
-  local fill = cap > 0 and clamp01(level / cap) or 0
-  local base_n = sample_count(level, ELEM_BASE, ELEM_SCALE, MAX_ELEMENTS)
-  local n = math.floor(base_n * (0.6 + 0.4 * fill) + 0.5)
+-- Stable angle for a pipeline stage by its FIXED order index (start at top, clockwise).
+local function stage_angle(order) return -math.pi / 2 + (order - 1) / #STAGE_ORDER * 2 * math.pi end
 
-  -- Vacancy: a starved DOWNSTREAM stage sheds elements (thinner cluster).
-  n = math.floor(n * (1 - VACANCY_THIN * clamp01(downstream_vac)) + 0.5)
-  if n < 1 then
-    n = 1
-  end
-
-  local congestion = clamp01(stage.congestion or 0)
-  local spread = r * CLUSTER_SPREAD
-  -- The bottleneck tightens the cluster; congestion pulls each element inward.
-  local tighten = stage.is_bottleneck and (1 - BOTTLENECK_PINCH) or 1
-  local inward = 1 - CONGEST_PULL * congestion
-
-  local t = state.time
-  local token = state.cluster_token or colors.primary
-  for i = 1, n do
-    local seed = i + (stage.seed or 0)
-    local a = hash01(seed * 1.3) * 2 * math.pi
-    local rad = math.sqrt(hash01(seed * 2.1)) * spread * tighten * inward
-    -- Gentle per-element drift (closed form, slowed by brownout via state.drift).
-    local wob = 0.12 * spread * math.sin(t * state.drift * (0.7 + hash01(seed * 3.7)) + seed)
-    local px = x + math.cos(a) * rad + math.cos(a + 1.6) * wob
-    local py = y + math.sin(a) * rad + math.sin(a + 1.6) * wob
-    -- Crowded elements read a touch brighter (the clump catches the eye).
-    set_interior_color(state, token, 0.6 + 0.25 * congestion)
-    love.graphics.circle("fill", px, py, ELEM_SIZE * (0.8 + 0.4 * fill))
-  end
-
-  -- Congestion pile-up: a few stalled cargo motes bunch on a jammed stage.
-  local pile = math.floor(CONGEST_PILE * congestion + 0.5)
-  for i = 1, pile do
-    local a = hash01(i * 5.1 + (stage.seed or 0)) * 2 * math.pi
-    local rad = spread * (0.4 + 0.5 * hash01(i * 6.3))
-    local px = x + math.cos(a) * rad
-    local py = y + math.sin(a) * rad
-    set_interior_color(state, colors.secondary, 0.7)
-    love.graphics.circle("fill", px, py, CARGO_SIZE)
-  end
-
-  -- Bottleneck pinch ring: a faint constriction marker so the choke point reads.
-  if stage.is_bottleneck then
-    love.graphics.setLineWidth(1)
-    set_interior_color(state, colors.tertiary, 0.5)
-    love.graphics.circle("line", x, y, spread * tighten * 1.15)
-  end
-end
-
--- Drifting cargo (vesicles) hauled around the pipeline ring. Count + liveliness
--- scale with `output` (the teeming swarm). Each mote is closed-form: its angle is a
--- per-mote phase + time*speed (the swarm shader's route model in miniature), so
--- there is zero per-particle state. Brownout slows the lap speed (state.drift). A
--- mote passing the bottleneck arc slows + dims (the choke), and motes downstream of
--- the bottleneck are thinned (vacancy on the highways).
-local function draw_cargo(state, cx, cy, ring_r, output, bottleneck_frac)
-  local n = sample_count(output, CARGO_BASE, CARGO_SCALE, MAX_CARGO)
-  local t = state.time
-  for i = 1, n do
-    local phase = hash01(i * 7.7)
-    local lane = (hash01(i * 9.1) - 0.5) * CLUSTER_SPREAD * 0.8 * ring_r
-    -- Base lap progress (0..1) for this mote.
-    local prog = (phase + t * CARGO_SPEED * state.drift) % 1
-    -- Choke at the bottleneck: motes crawl through a window around bottleneck_frac,
-    -- so cargo visibly bunches just before the constriction (and thins after it).
-    local slow, dimmed = 1, 1
-    if bottleneck_frac then
-      local d = math.abs(((prog - bottleneck_frac + 0.5) % 1) - 0.5) -- ring distance
-      if d < 0.12 then
-        local closeness = 1 - d / 0.12
-        slow = 1 - 0.6 * closeness -- crawl through the choke
-        prog = prog - 0.04 * closeness * (1 - phase)
-      end
-      -- Vacancy: just PAST the bottleneck the highway runs sparse -- drop some motes.
-      local past = ((prog - bottleneck_frac) % 1)
-      if past > 0 and past < 0.4 then
-        dimmed = 0.35 + 0.65 * (past / 0.4)
-      end
-    end
-    local a = prog * 2 * math.pi
-    local rr = ring_r + lane
-    local px = cx + math.cos(a) * rr
-    local py = cy + math.sin(a) * rr
-    set_interior_color(state, colors.secondary, 0.55 * dimmed * (0.6 + 0.4 * slow))
-    love.graphics.circle("fill", px, py, CARGO_SIZE * (0.8 + 0.3 * clamp01((output or 0) / 40)))
-  end
-end
-
--- Render the cell interior to the screen from a read-only snapshot (the orchestrator
--- builds it fresh each frame; see the EXACT shape in this module's header). Draws
--- nothing of the panel/HUD -- the orchestrator layers that on top. Graphics state is
--- reset at the end so the UI inherits clean defaults.
-function view.draw(state, snapshot)
-  snapshot = snapshot or {}
-  local win_w, win_h = love.graphics.getDimensions()
-  local cx, cy = win_w * 0.5, win_h * 0.5
-  local r = math.min(win_w, win_h) * CELL_FILL
-
-  -- Stash the brownout + fuel targets for update()'s easing (continuous, not a flag
-  -- flip): a brownout eases the interior toward dim + slow drift; fuel sets the tint.
-  if snapshot.brownout then
-    state.dim_target = BROWNOUT_DIM
-    state.drift_target = BROWNOUT_SLOW
-  else
-    state.dim_target = 1
-    state.drift_target = 1
-  end
-  state.tint_target = fuel_tint_target(snapshot.fuel_factor)
-
+-- Build the swarm's endpoint + segment arrays from the snapshot, in place on the
+-- view's scratch tables, and return the live endpoint/segment counts. This is the
+-- whole bridge from the snapshot CONTRACT to the GPU uniforms:
+--   * endpoints = one per UNLOCKED stage at its stable ring position, in pipeline
+--     order, then up to MAX_MITO_EMITTERS mitochondria emitters on an inner ring.
+--   * segments  = one per gap between consecutive endpoints, carrying the flow
+--     readouts { congestion, is_bottleneck, vacancy, density } that the shader reads.
+-- All cheap: a few dozen table writes, no per-vesicle work.
+local function build_routes(state, snapshot, cx, cy, r)
   local stages = snapshot.stages or {}
+  local xs, ys, segs = state.endpoints_x, state.endpoints_y, state.segments
+  local ring_r = r * RING_FRAC
 
-  -- Find the bottleneck's pipeline INDEX so clusters/cargo downstream of it can read
-  -- as vacant. Prefer the explicit bottleneck_id, else the flagged stage.
+  -- Find the bottleneck's pipeline INDEX so segments downstream of it read as vacant.
+  -- Prefer the explicit bottleneck_id, else the flagged stage.
   local bn_index
   if snapshot.bottleneck_id and STAGE_INDEX[snapshot.bottleneck_id] then
     bn_index = STAGE_INDEX[snapshot.bottleneck_id]
@@ -421,11 +352,110 @@ function view.draw(state, snapshot)
     end
   end
 
+  -- Gather the UNLOCKED stages in fixed pipeline order, each as one endpoint. We keep
+  -- the per-stage rows alongside so the segment between endpoint k and k+1 can read
+  -- the DOWNSTREAM stage's congestion/bottleneck/vacancy (cargo entering a stage feels
+  -- that stage's state -- a jam at stage k+1 backs up the segment feeding it).
+  local ep_count = 0
+  local ordered = {} -- the stage row at each endpoint slot (nil for mito emitters)
+  for order = 1, #STAGE_ORDER do
+    local id = STAGE_ORDER[order]
+    local row
+    for i = 1, #stages do
+      if stages[i].id == id then
+        row = stages[i]
+        break
+      end
+    end
+    if row and row.unlocked then
+      ep_count = ep_count + 1
+      local a = stage_angle(order)
+      xs[ep_count] = cx + math.cos(a) * ring_r
+      ys[ep_count] = cy + math.sin(a) * ring_r
+      ordered[ep_count] = row
+    end
+  end
+
+  -- Mitochondria emitters: a logarithmic sample of `mito`, appended as extra endpoints
+  -- on an inner ring so some vesicles haul to/from the power plants. Scaled by mito so
+  -- a more-powered cell visibly grows its emitter network (capped).
+  local mito_n = sample_count(snapshot.mito, MITO_BASE, MITO_SCALE, MAX_MITO_EMITTERS)
+  local mito_ring = r * MITO_RING_FRAC
+  for m = 1, mito_n do
+    ep_count = ep_count + 1
+    local a = hash01(m * 4.7) * 2 * math.pi
+    xs[ep_count] = cx + math.cos(a) * mito_ring
+    ys[ep_count] = cy + math.sin(a) * mito_ring
+    ordered[ep_count] = nil -- emitter, not a pipeline stage
+  end
+
+  -- Segments: one per gap between consecutive endpoints (ep_count - 1). Each carries
+  -- the flow readout the shader applies to vesicles hauling along it. The readout is
+  -- taken from the DOWNSTREAM endpoint's stage (the segment feeds into it); mito
+  -- emitter segments are calm neutral lanes.
+  local seg_count = math.max(ep_count - 1, 0)
+  for k = 1, seg_count do
+    local row = ordered[k + 1]
+    local seg = segs[k]
+    if not seg then
+      seg = { 0, 0, 0, 0 }
+      segs[k] = seg
+    end
+    if row then
+      local congestion = clamp01(row.congestion or 0)
+      local is_bn = row.is_bottleneck and 1 or 0
+      -- Vacancy: how far downstream of the bottleneck the DOWNSTREAM stage is (0 =
+      -- at/upstream, 1 = far downstream) -- starved segments thin their highway.
+      local vac = 0
+      if bn_index then
+        local d = (STAGE_INDEX[row.id] or k) - bn_index
+        if d > 0 then
+          vac = clamp01(d / (#STAGE_ORDER - bn_index + 0.001))
+        end
+      end
+      -- Density: how "full" the segment runs, from the stage's level/cap fill -- a
+      -- maxed stage's lane reads a touch brighter (the shader uses .w for brightness).
+      local cap = row.cap or 0
+      local fill = cap > 0 and clamp01((row.level or 0) / cap) or 0
+      seg[1], seg[2], seg[3], seg[4] = congestion, is_bn, vac, 0.4 + 0.6 * fill
+    else
+      -- Mito emitter lane: calm, neutral, moderately bright (power is flowing).
+      seg[1], seg[2], seg[3], seg[4] = 0, 0, 0, 0.6
+    end
+  end
+
+  return ep_count, seg_count
+end
+
+-- Render the cell interior to the screen from a read-only snapshot (the orchestrator
+-- builds it fresh each frame; see the EXACT shape in this module's header). Draws
+-- nothing of the panel/HUD. Graphics state is reset at the end so the UI inherits clean
+-- defaults. Order: membrane fill + rim (CPU) -> nucleus (CPU) -> the GPU-instanced
+-- vesicle swarm (additive cloud) -> fx, all framed by the membrane.
+function view.draw(state, snapshot)
+  snapshot = snapshot or {}
+  local win_w, win_h = love.graphics.getDimensions()
+  local cx, cy = win_w * 0.5, win_h * 0.5
+  local r = math.min(win_w, win_h) * CELL_FILL
+
+  -- Stash the brownout + fuel targets for update()'s easing (continuous, not a flag
+  -- flip): a brownout eases the swarm toward dim + slow; fuel sets the tint.
+  if snapshot.brownout then
+    state.dim_target = BROWNOUT_DIM
+    state.drift_target = BROWNOUT_SLOW
+  else
+    state.dim_target = 1
+    state.drift_target = 1
+  end
+  state.tint_target = fuel_tint_target(snapshot.fuel_factor)
+
   love.graphics.push()
 
+  -- 1) The membrane frames the interior (cytoplasm fill + wobbling bright rim).
   draw_membrane(state, cx, cy, r, snapshot.output)
 
-  -- Nucleus compartment (only once its stage is unlocked).
+  -- 2) The nucleus compartment (only once its stage is unlocked).
+  local stages = snapshot.stages or {}
   for i = 1, #stages do
     local s = stages[i]
     if s.id == "nucleus" and s.unlocked then
@@ -433,43 +463,44 @@ function view.draw(state, snapshot)
     end
   end
 
-  -- Lay unlocked stages out at STABLE angles around the pipeline ring, in fixed
-  -- pipeline order, so leveling never reshuffles the layout. Each cluster gets a
-  -- per-stage color token (cycling the 2-3 palette tokens) so the line reads.
-  local ring_r = r * RING_FRAC
-  local cluster_tokens = { colors.primary, colors.tertiary, colors.secondary }
-  for i = 1, #stages do
-    local s = stages[i]
-    if s.unlocked and s.id ~= "nucleus" then
-      local order = STAGE_INDEX[s.id] or i
-      -- Angle from the FIXED pipeline order (start at top, go clockwise).
-      local a = -math.pi / 2 + (order - 1) / #STAGE_ORDER * 2 * math.pi
-      local x = cx + math.cos(a) * ring_r
-      local y = cy + math.sin(a) * ring_r
-      -- Vacancy: how far downstream of the bottleneck this stage is (0 = at/upstream,
-      -- 1 = far downstream) -- starved stages thin out.
-      local vac = 0
-      if bn_index then
-        local d = order - bn_index
-        if d > 0 then
-          vac = clamp01(d / (#STAGE_ORDER - bn_index + 0.001))
-        end
-      end
-      state.cluster_token = cluster_tokens[((order - 1) % #cluster_tokens) + 1]
-      s.seed = order * 100 -- stable per-stage scatter seed
-      draw_cluster(state, s, x, y, r, vac)
-    end
-  end
+  -- 3) The GPU-INSTANCED vesicle swarm -- the teeming interior cloud. Build the
+  -- endpoint + segment uniforms from the snapshot, set the live count from a log
+  -- sample of the cell's scale, map the global flow scalars, and draw the live prefix.
+  local ep_count, seg_count = build_routes(state, snapshot, cx, cy, r)
 
-  -- Drifting cargo around the ring (the teeming swarm), scaled by live output. The
-  -- bottleneck's ring fraction drives the choke/vacancy window on the highways.
-  local bn_frac
-  if bn_index then
-    bn_frac = (-0.25 + (bn_index - 1) / #STAGE_ORDER) % 1 -- match cluster angle start
+  -- LIVE COUNT: a log sample of built (the bulk fill -- "growth is detail") plus an
+  -- output term (extra liveliness), hard-capped. Never the literal built; no per-
+  -- instance CPU cost (this is just the prefix length passed to drawInstanced).
+  local count = COUNT_BASE
+    + COUNT_BUILT_SCALE * math.log(1 + (snapshot.built or 0))
+    + COUNT_OUTPUT_SCALE * math.log(1 + (snapshot.output or 0))
+  if count > MAX_LIVE_VESICLES then
+    count = MAX_LIVE_VESICLES
   end
-  draw_cargo(state, cx, cy, ring_r, snapshot.output, bn_frac)
+  interior_swarm.set_count(count)
 
-  -- World-space fx (spawn beats, organelle implodes) ride above the interior.
+  -- OUTPUT -> global liveliness: a saturating curve drives both swarm speed and
+  -- brightness so a busy cell runs faster + brighter. The eased brownout state then
+  -- multiplies in (dim + slow), so the two readouts compose smoothly.
+  local live = saturate(snapshot.output, OUTPUT_REF)
+  local out_speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * live
+  local out_bright = BRIGHT_MIN + (BRIGHT_MAX - BRIGHT_MIN) * live
+
+  interior_swarm.draw({
+    endpoints_x = state.endpoints_x,
+    endpoints_y = state.endpoints_y,
+    endpoint_count = ep_count,
+    segments = state.segments,
+    segment_count = seg_count,
+    -- BROWNOUT eases the swarm: `slow` drags speed, the dim multiplies brightness.
+    -- (state.drift / state.dim are the eased brownout factors from update().)
+    speed = out_speed, -- output liveliness (brownout applied via `slow`)
+    slow = state.drift, -- brownout speed multiplier, eased
+    brightness = out_bright * state.dim, -- output brightness * eased brownout dim
+    tint = state.tint, -- eased fuel_factor tint
+  })
+
+  -- 4) World-space fx (spawn beats, organelle implodes) ride above the interior.
   fx.draw_world(state.fx)
 
   love.graphics.pop()
