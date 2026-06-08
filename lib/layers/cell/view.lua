@@ -22,6 +22,7 @@
 -- held mitochondrion stamps a tiny inner mark on every cell.
 local fx = require("lib.engine.fx")
 local colors = require("lib.engine.ui.colors")
+local cell_batch = require("lib.layers.cell.cell_batch")
 
 local view = {}
 
@@ -325,24 +326,16 @@ local function draw_list(list, t, zoom)
   end
 end
 
--- A tiny darker inner square stamped on a cell once the colony holds the
--- mitochondrion -- the organelle that was once a separate cell, made visible. It
--- rides the cell's mitosis pop-in scale so it grows in with the daughter.
+-- The half-size of the tiny darker inner square stamped on a cell once the colony
+-- holds the mitochondrion -- the organelle that was once a separate cell, made
+-- visible. It rides the cell's mitosis pop-in scale so it grows in with the
+-- daughter. Pushed per cell into the instanced mark pass (cell_batch); 0 collapses
+-- the quad to a point (invisible), matching the old draw's size<=0 skip.
 local MITO_COLOR = colors.primary_dark -- inner-detail shade of the cell's token
-local function draw_mito_mark(e)
+local function mito_half(e)
   local rc = e.render
-  if not rc or rc.kind ~= "cell" then
-    return
-  end
   local scale = rc.pop_in and clamp01((e.age or POP_IN) / POP_IN) or 1
-  local s = (rc.size or SIZE.cell or CELL_SIZE) * 0.34 * scale
-  if s <= 0 then
-    return
-  end
-  local half = s * 0.5
-  love.graphics.setColor(MITO_COLOR[1], MITO_COLOR[2], MITO_COLOR[3], 0.9)
-  love.graphics.rectangle("fill", e.x - half, e.y - half, s, s)
-  love.graphics.setColor(1, 1, 1, 1)
+  return (rc.size or SIZE.cell or CELL_SIZE) * 0.34 * scale * 0.5
 end
 
 -- Render the whole world. The camera fits snap.field into the window (stepped,
@@ -442,22 +435,25 @@ function view.draw_world(state, snap, opts)
   draw_list(snap.blooms, t, cam.zoom)
   draw_list(snap.prey, t, cam.zoom)
 
-  -- Draw every cell. MAX_AGENTS already caps the swarm at 300, and 300 flat
-  -- squares is trivially cheap — so order-independent rendering costs nothing.
-  -- Drawing all cells means list mutations (predator kills, reconcile) can no
-  -- longer remap which dots appear and snap the visible swarm.
+  -- Draw every cell through ONE GPU-instanced pass. The swarm is the only list
+  -- that grows large (up to world.MAX_AGENTS), and the old per-cell
+  -- setColor+rectangle path issued a draw call per cell -- every alpha change
+  -- (hunger/fed/pop-in) flushed LÖVE's auto-batch, so a full swarm cost thousands
+  -- of draws a frame. Here the CPU only resolves each cell's size/alpha (the same
+  -- resolve() the immediate path used, so visuals are identical) and pushes it
+  -- into the instance buffer; cell_batch.draw uploads the prefix once and draws
+  -- the whole swarm -- body, plus the mito mark when held -- in one (or two) calls.
+  -- Order-independent as before: drawing every cell means list mutations (predator
+  -- kills, reconcile) can't remap which dots appear and snap the visible swarm.
   local cells = snap.cells
   local n = #cells
-  if mito then
-    for i = 1, n do
-      draw_entity(cells[i], t, cam.zoom)
-      draw_mito_mark(cells[i])
-    end
-  else
-    for i = 1, n do
-      draw_entity(cells[i], t, cam.zoom)
-    end
+  cell_batch.begin()
+  for i = 1, n do
+    local e = cells[i]
+    local size, _, alpha = resolve(e, t)
+    cell_batch.push(e.x, e.y, size * 0.5, alpha, mito and mito_half(e) or 0)
   end
+  cell_batch.draw(PALETTE.cell, mito and MITO_COLOR or nil)
 
   draw_list(snap.predators, t, cam.zoom)
 
