@@ -63,40 +63,51 @@ plus pass-through constants `WASTE_COEF`, `E_PER_OUTPUT`, `BUFFER_MAX`.
 through the whole phase; the end-of-phase fork slams it to a pole. One economy to
 tune; the fork is one knob on top.
 
-## The step (the closed form)
+## The step (the closed form) — as built & tuned
 
 ```
 avail = power - upkeep - WASTE_COEF * excess      -- ATP/sec free to run the line
-T     = throughput
-e     = E_PER_OUTPUT
-cost_full = e * T
-if avail >= cost_full then            -- fully powered: surplus banks
+T     = throughput ;  e = E_PER_OUTPUT ; cost_full = e * T
+if avail >= cost_full then            -- fully powered: O = T, the surplus banks
   O = T
-elseif state.energy > 0 then          -- draw the buffer to sustain (brownout pending)
-  O = T
-else                                  -- buffer empty: power-limited
-  O = max(0, avail / e)
+elseif avail > 0 then                 -- underpowered: THROTTLE (brownout), but hold
+  O = (avail / e) * (1 - BROWNOUT_RESERVE)   -- back a reserve so net stays POSITIVE
+else                                  -- power can't cover upkeep: line stops
+  O = 0
 end
-N = avail - e * O                     -- net ATP/sec
+N = avail - e * O                     -- net ATP/sec (>0 in a reserved brownout)
 state.energy = clamp(state.energy + N*dt, 0, BUFFER_MAX)
 state.built  = state.built + O*dt
 state.output = O                      -- readout for the view (swarm intensity)
 state.brownout = (O < T - 1e-9)       -- power deficit tell
 ```
 
+**The buffer is a pure SAVINGS account** — it grows from net ATP and shrinks only
+when the orchestrator spends it on upgrades; it is *never* drained to prop up an
+over-built line. **A brownout reserves a slice of power** (`BROWNOUT_RESERVE`) for
+the buffer, so net stays positive in a deficit and the cell always banks its way
+back to the mitochondrion that fixes it. (Two earlier models — draining the buffer
+to sustain over-capacity, and running output at exactly `avail/e` — both pinned net
+energy at zero and created an *unrecoverable death-spiral*; that broke the
+forgiveness pillar, so both were removed in favor of the savings + reserve model.)
+
 The **surplus** you spend on upgrades is `avail - e*T` when fully powered. To make
-progress you need surplus > 0 → power must exceed upkeep + waste + assembly cost.
-More machines → more upkeep → less surplus → must build more mitochondria. That
-is the energy-per-gene self-regulation, stated as math.
+progress, power must exceed upkeep + assembly cost. More machines → more upkeep →
+less surplus → must build more mitochondria. **That power-vs-throughput balance is
+the verb** — the energy-per-gene self-regulation, stated as math.
 
-**Self-defeating overbuild:** leveling a non-bottleneck stage raises `excess` →
-raises `waste` → cuts surplus, with no gain to `T`. Linear benefit (only the
-bottleneck stage raises T), super-linear-feeling cost (waste compounds with every
-mismatched level). The phase-1 dial trap, re-shaped as flow balance.
+**Self-defeating overbuild = idle-machine upkeep.** Over-level a non-bottleneck
+stage and you pay its buy-cost *and* ongoing upkeep for **zero** throughput gain
+(it's above the bottleneck) — pure loss, dominated by feeding the bottleneck or
+buying power. This carries the penalty without an explicit waste term: `WASTE_COEF`
+is shipped at **0** because measuring excess against the global bottleneck made it
+spike catastrophically at every gate-unlock (a new level-1 stage briefly makes all
+prior capacity "excess"). The sim still supports `waste_coef` for a future,
+non-spiking imbalance penalty if playtest wants more bite.
 
-**Readouts** map straight to the doc's flow language: `excess>0` on a stage =
-**congestion**; a stage at capacity below another's = **vacancy** downstream;
-`brownout` = the dimming power deficit.
+**Readouts** still map to the flow language: `excess>0` on a stage = **congestion**;
+a stage below another's cap = **vacancy** downstream; `brownout` = the dimming power
+deficit (now meaningful — see the `throughput!` trap below).
 
 ## Costs (spending energy) — orchestrator/catalog, not sim
 
@@ -107,31 +118,45 @@ Geometric, like phase 1 (`COST_GROWTH`):
 The self-revealing catalog (reveal at ~50% banked) is **UI only** — it does not
 touch the economy. The lab ignores it.
 
-## First-guess constants (the lab pins these)
+## LOCKED constants (tuned in the lab, 2026-06-08)
+
+These live in `tools/phase2_lab.lua` DEFAULTS and are the values the first-draft
+orchestrator should fold from:
 
 ```
-POWER_PER_MITO    = 10        E_PER_OUTPUT   = 1.0
-UPKEEP_PER_MACHINE= 0.5       WASTE_COEF     = 0.3
-BUFFER_MAX        = 200       fuel_factor    = 1.0 (neutral)
-stage_rate (all)  = 5         STAGE_BASE=20  STAGE_GROWTH=1.5
-mito start        = 1         MITO_BASE =30  MITO_GROWTH =1.6
+POWER_PER_MITO    = 10        E_PER_OUTPUT     = 1.0
+UPKEEP_PER_MACHINE= 0.25      WASTE_COEF       = 0.0   (penalty carried by upkeep)
+BUFFER_MAX        = 5000      BROWNOUT_RESERVE = 0.3
+fuel_factor       = 1.0 (neutral)
+stage_rate (all)  = 5         STAGE_BASE = 20  STAGE_GROWTH = 1.12
+mito start        = 1         MITO_BASE  = 25  MITO_GROWTH  = 1.12
 ```
-`built` gate thresholds (unlock order, first guess):
-`nucleus 50 · er 200 · golgi 200 · transport 600 · membrane 1500 · FORK 4000`.
+`built` gate thresholds (unlock order): `nucleus 50 · er 200 · golgi 200 ·
+transport 600 · membrane 1500 · FORK 50000`.
 
-## What the lab must answer (tuning goals)
+Gentle (×1.12) cost growth is deliberate: it makes the phase a long climb of *many*
+small purchases (a deep catalog, ~300 buys) with numbers that keep rising, instead
+of a geometric wall after a handful of buys.
 
-1. **Skill is rewarded:** a *feed-the-bottleneck* buyer reaches the FORK gate
-   meaningfully faster than a *max-everything* buyer.
-2. **Forgiving / clearable without the panel:** the naive max-everything buyer
-   still reaches FORK — slower (target ~1.5–2×), never hard-stuck. (The
-   anti-overwhelm hard rule: any phase clearable without tuning.)
-3. **Length:** a competent player reaches FORK in ~**10–15 min** active (phase 2
-   is deeper than phase-1's ~5-min sprint), and idle (positive surplus, walk
-   away) keeps `built` climbing.
-4. **Brownout is reachable and recoverable:** overbuilding into a power deficit
-   triggers `brownout`, and buying mitochondria pulls back out.
+## What the lab found (goals → results)
 
-The lab simulates buyer **policies** against the real `sim.step` and prints
-time-to-each-gate, final built, peak output, and brownout incidence per policy —
-then sweeps the constants above to hit the goals.
+| goal | result |
+|---|---|
+| **Length** ~10–15 min competent | `balanced` reaches FORK in **10.3 min** ✅ |
+| **Forgiving / no brick** | `maxall` floor also clears (~10.3 min); even the `throughput!` trap never bricks ✅ |
+| **The verb matters** | `throughput!` (chase output, ignore power) sinks to **99% brownout** and never reaches FORK — power-vs-throughput balance is load-bearing ✅ |
+| **Deep catalog, climbing numbers** | ~**300** purchases; throughput climbs past **145**, built ~275k by 30 min ✅ |
+| **Brownout reachable & recoverable** | trips on under-power, recovers via the reserve; sensible play sits ~0–1% ✅ |
+| **Legible knobs** | `UPKEEP 0.15→0.45` ⇒ FORK 9.4→13.2 min; `POWER 8→14` ⇒ FORK 15.9→7.3 min (monotone) ✅ |
+
+The lab drives buyer **policies** against the real `sim.step`: `balanced` (good
+play), `throughput!` (the trap), `maxall` (the floor). Run `lua tools/phase2_lab.lua`.
+
+## Known open tuning task (post-first-draft)
+
+With **uniform** stage rates/costs, the only load-bearing decision is power vs.
+throughput; "buy the cheapest" already keeps the pipeline balanced, so reading
+*which stage* is the bottleneck doesn't yet matter. **Differentiating stage rates
+and/or costs** (a real ER ≠ a real ribosome) would make inter-stage bottleneck
+reading a genuine decision and deepen the verb. Deferred — it's a depth refinement,
+not a blocker for a playable first draft.
