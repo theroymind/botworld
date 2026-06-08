@@ -129,7 +129,7 @@ local quiet = {
   threats_enabled = false,
 }
 world.update(w, FRAME, quiet)
-check(#w.cells <= 4, "births are rate-limited (no flurry on a jump)")
+check(#w.cells <= 40, "births are rate-limited (no flurry on a jump)")
 check(#w.cells > 0, "the colony starts filling immediately")
 for _ = 1, 60 do
   world.update(w, FRAME, quiet)

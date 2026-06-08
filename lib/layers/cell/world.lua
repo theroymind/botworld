@@ -49,7 +49,12 @@ local RENDER_KNEE = 250 -- show 1:1 up to here, then go logarithmic
 -- colony, so a 10x cap on its own would never be approached. At 1500 the swarm
 -- climbs to the new ceiling on the same colony sizes the old one filled at.
 local RENDER_LOG_SLOPE = 1500 -- agents added per natural-log e-fold of colony size past the knee
-local MAX_BORN_PER_UPDATE = 4 -- smooth fill-in; no flurry on offline return
+-- Cosmetic fill rate ONLY (caps how many rendered dots bud in per update so a
+-- load/offline catch-up animates over a second or two instead of popping in all at
+-- once). NOT an economy/progression limit -- the colony size is whatever the sim
+-- says, instantly. Scaled up with the 10x MAX_AGENTS so the larger swarm still
+-- fills in roughly the same wall-clock time the old 1500 ceiling did.
+local MAX_BORN_PER_UPDATE = 40 -- smooth fill-in; no flurry on offline return
 
 -- Colony size -> number of agents to actually draw. Rises forever (slowly) but
 -- saturates at MAX_AGENTS, so a 90-cell dish and a 5-million-cell dish both read.
