@@ -69,6 +69,12 @@ local view_state
 local save_accum = 0
 local toast_text
 local toast_timer = 0
+-- SEAM INTRO: phase 1's endosymbiosis dive ends on a full-screen teal flood (the cell's
+-- own colour, as the camera plunges inside). enter_from_seam arms this brief teal sheet
+-- that fades OUT over INTRO_FADE seconds, so phase 2 opens straight out of that same teal
+-- -- the hand-off is one continuous teal, no flash and no black gap. Zero in normal play.
+local INTRO_FADE = 0.6
+local intro_fade = 0
 -- The end-of-phase-2 transition cinematic (armed when `built` first crosses the
 -- FORK gate). While active the orchestrator FREEZES the live sim and hands the
 -- frame to it -- exactly as cell.lua does at the endosymbiosis finale.
@@ -143,6 +149,7 @@ local function reset_fork_runtime()
 end
 
 function complexcell.load()
+  intro_fade = 0 -- a resumed/loaded cell opens normally (only the seam plays the teal intro)
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
   local data = DEV_FRESH_START and {} or (save.read(SAVE_NAME) or {})
   complexcell.state = build_state(data)
@@ -171,6 +178,7 @@ function complexcell.enter_from_seam(opts)
   complexcell.state = build_state({ carry = opts.stats })
   reset_fork_runtime()
   view_state = view.new()
+  intro_fade = INTRO_FADE -- open out of phase 1's teal flood, fading in over INTRO_FADE
   persist()
 end
 
@@ -255,6 +263,11 @@ end
 function complexcell.update(dt)
   if not complexcell.state then
     return
+  end
+  -- Drain the seam intro fade regardless of the cinematic/fork guards below, so the
+  -- teal hand-off sheet always lifts (it's pure cosmetics over a freshly-seeded cell).
+  if intro_fade > 0 then
+    intro_fade = math.max(0, intro_fade - dt)
   end
   tween.update(dt) -- advance the UI kit's hover/press lighten transitions
   view.update(view_state, dt) -- the interior keeps animating beneath the overlay
@@ -541,6 +554,20 @@ local function draw_toast(width)
   })
 end
 
+-- The seam intro sheet: a full-screen teal (the cell's own primary token) that fades
+-- out over INTRO_FADE, so phase 2 opens straight out of phase 1's teal plunge. Drawn
+-- LAST (over the interior + panel) so the whole screen lifts as one. No-op once drained.
+local function draw_intro()
+  if intro_fade <= 0 then
+    return
+  end
+  local w, h = love.graphics.getDimensions()
+  local prim = colors.primary
+  love.graphics.setColor(prim[1], prim[2], prim[3], math.min(1, intro_fade / INTRO_FADE))
+  love.graphics.rectangle("fill", 0, 0, w, h)
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 function complexcell.draw()
   local s = complexcell.state.sim
   local width = love.graphics.getWidth()
@@ -597,6 +624,7 @@ function complexcell.draw()
 
   draw_help(width)
   draw_toast(width)
+  draw_intro() -- the teal seam sheet lifts over everything as phase 2 opens
 end
 
 function complexcell.keypressed(key)

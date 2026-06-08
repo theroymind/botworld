@@ -48,7 +48,7 @@ local RENDER_KNEE = 250 -- show 1:1 up to here, then go logarithmic
 -- REACHABLE: with the old 150 slope the curve only crept to ~1500 around a 1M
 -- colony, so a 10x cap on its own would never be approached. At 1500 the swarm
 -- climbs to the new ceiling on the same colony sizes the old one filled at.
-local RENDER_LOG_SLOPE = 1500 -- agents added per natural-log e-fold of colony size past the knee
+local RENDER_LOG_SLOPE = 900 -- agents added per natural-log e-fold of colony size past the knee. Lowered from 1500: with the field now extending to the millions, a gentler count growth keeps the swarm SPREAD (readable spacing) instead of cramming -- density = drawn cells / field area, and we want it to hold as both rise.
 -- Cosmetic fill rate ONLY (caps how many rendered dots bud in per update so a
 -- load/offline catch-up animates over a second or two instead of popping in all at
 -- once). NOT an economy/progression limit -- the colony size is whatever the sim
@@ -102,18 +102,44 @@ local FED_PULSE = 0.6 -- post-meal swell countdown stamped on the cell when a me
 -- colony's exponential growth, so the zoom-outs feel evenly paced in time rather
 -- than bunched into the early game. A pullback then reads as the realm opening up --
 -- the colony spacing out, food thinning (see food_target) -- earned by a packed dish.
+-- Extended PAST 100k all the way to the millions: the colony climbs to ~1-3M before
+-- the endosymbiosis exit, so the field must keep OPENING UP across that whole range --
+-- the old top tier (100k/3600) left the entire 100k->millions late game with NO
+-- zoom-out, so the swarm crammed into a frozen dish (extreme density; reach traits
+-- stopped mattering). Tier WIDTHS now HOLD a readable density as the drawn-cell count
+-- grows (see sample_count): area scales ~with drawn cells, so spacing stays around the
+-- separation radius and the colony reads as SPREADING into new territory rather than
+-- overpopulating. Widths are by-eye -- expect to nudge denser/sparser in playtest.
+-- Widths are density-matched: width ~= 60*sqrt(drawn cells at that pop) holds a
+-- CONSTANT ~50px average spacing (just above the 42px separation radius) at every
+-- tier, so the swarm stays comfortably spread the whole way up instead of cramming
+-- (the old table ran ~16-23px spacing -- packed solid -- and froze at 100k). The
+-- founder tier stays a cozy 440 on purpose; the first step to ~1360 is the "the
+-- colony established, now it spreads" beat.
+-- The thresholds double as DIFFICULTY thresholds: each one crossed is a "you've
+-- grown more, so more risk" beat (see tier_rank/menace below -- predators thicken
+-- as the colony climbs the tiers). Two extra steps were added in the busy mid-late
+-- band -- 50k (10s-of-thousands) and 500k (hundreds-of-thousands) -- so the long
+-- 30k->100k and 300k->1M stretches each get an intermediate zoom-out + menace bump
+-- instead of holding one frozen tier across a 3x population climb. Their widths
+-- follow the same density law as their neighbours (width ~= 66.7*sqrt(drawn cells)).
 local FIELD_TIERS = {
   { 1, 440 },
-  { 300, 700 },
-  { 1000, 1040 },
-  { 3000, 1520 },
-  { 10000, 2150 },
-  { 30000, 2900 },
-  { 100000, 3600 },
+  { 300, 1360 },
+  { 1000, 2580 },
+  { 3000, 3330 },
+  { 10000, 3980 },
+  { 30000, 4500 },
+  { 50000, 4720 },
+  { 100000, 5010 },
+  { 300000, 5430 },
+  { 500000, 5620 },
+  { 1000000, 5860 },
+  { 3000000, 6220 },
 }
 local BASE_FIELD = 440 -- starting field side (tier 1); square-root aspect on h.
 -- A roomier tier 1 opens the camera a touch wider on the solo founder.
-local MAX_FIELD = 3600 -- top tier / hard cap
+local MAX_FIELD = 6220 -- top tier / hard cap (millions-scale realm)
 
 -- Render components: world tags each entity with a lightweight, color-free
 -- descriptor; the view owns the palette/sizes and draws every entity as a flat
@@ -124,13 +150,16 @@ local RENDER_CELL = { kind = "cell", pop_in = true }
 local RENDER_FOOD = { kind = "food" }
 local RENDER_PREY = { kind = "prey" }
 local RENDER_PREDATOR = { kind = "predator" }
+-- Neutral competitor microbes share one frozen, color-free descriptor (mirrors
+-- RENDER_PREY): the view binds a rival color/size to this `kind`; world sets none.
+local RENDER_COMPETITOR = { kind = "competitor" }
 
 -- Ambient food density expressed as motes per pixel (calibrated to 44 motes on
 -- a 1280x720 canvas). The target count is recomputed from the live field area
 -- each frame, staying density-constant as the field expands.
 local FOOD_DENSITY = 44 / (1280 * 720)
 local FOOD_MIN = 8 -- never starve a tiny colony
-local FOOD_MAX = 140 -- cap so even a full-sized field stays readable
+local FOOD_MAX = 220 -- cap so even a full-sized field stays readable (raised with the millions-scale field so the vast late realm isn't food-barren; the sqrt density-thinning still keeps motes SPARSE per area, so Chemotaxis/reach keeps paying off)
 
 local FOOD_DRIFT = 12 -- mote brownian speed, world units/sec
 local CONSUME_RADIUS = 9 -- a cell this close to its target eats it
@@ -138,6 +167,13 @@ local CONSUME_RADIUS = 9 -- a cell this close to its target eats it
 local CELL_DRIFT = 26 -- wander acceleration when nothing is sensed
 local CELL_DAMPING = 1.6 -- velocity bleed per second
 local STEER_GAIN = 4.0 -- how hard a cell accelerates toward sensed food
+-- Per-cell speed VARIETY: each cell draws a private speed multiplier at birth, so
+-- the swarm isn't a uniform shoal moving in lockstep -- some cells are visibly
+-- friskier, some sluggish, even at the same motility level. Drawn in [LO, HI]
+-- around 1.0, so the colony's MEAN swim speed still tracks the motility stat
+-- (the upgrade still reads); only the per-cell spread is randomized.
+local SPEED_VAR_LO = 0.6 -- slowest cell is 60% of the trait speed
+local SPEED_VAR_HI = 1.4 -- fastest cell is 140% of the trait speed
 -- Organic wander: each cell random-walks a PRIVATE heading and is nudged along it
 -- every frame -- even while steering toward food. Without it a saturated colony
 -- locks into a separation-spaced lattice that just pulses toward the nearest motes
@@ -170,12 +206,56 @@ local BURST_DAMPING = 1.6 -- velocity damping coefficient during burst phase (ge
 local PREY_TARGET = 16 -- prey microbes maintained once predation is unlocked
 local PREY_DRIFT = 16
 
-local PREDATOR_INTERVAL = 4.0 -- seconds between predator incursions (live-only)
-local PREDATOR_LIFE = 8.0 -- a predator leaves after this long
-local PREDATOR_SPEED = 78
+-- Neutral COMPETITOR cells: other-colored microbes that drift through the dish as
+-- the visual SKIN of the closed-form nutrient competition (which already throttles
+-- the economy in sim.lua/cell.lua). They are PURELY decorative: not eaten by your
+-- cells, they eat nothing of yours, predators ignore them, and they feed NOTHING
+-- back into world.update's economy-routed returns. They just wander and wrap the
+-- toroidal field, selling "a contested, crowded dish."
+--
+-- The maintained count scales on two axes (mirroring how food/prey targets read):
+--   * opts.competition (0..1, the closed-form competition ramp) -- 0 keeps none,
+--     1 fills the dish with a meaningful but not overwhelming rival crowd;
+--   * field area / sqrt(field scale) -- the SAME density law food_target uses, so
+--     a wider realm holds more competitors yet stays consistent per area as it
+--     tiers out (rivals don't suddenly vanish or swamp the view at a step).
+-- COMPETITOR_DENSITY is the per-pixel rival rate at FULL competition (calibrated to
+-- COMPETITOR_FULL motes on a 1280x720 canvas); the live target multiplies it by the
+-- competition intensity. COMPETITOR_MAX caps the crowd so even a vast, fully
+-- contested field stays readable.
+local COMPETITOR_FULL = 110 -- rival microbes on a 1280x720 canvas at competition = 1 (raised from 70: a busier, more contested dish)
+local COMPETITOR_DENSITY = COMPETITOR_FULL / (1280 * 720)
+local COMPETITOR_MAX = 340 -- readability cap on the rival crowd at any field size (raised from 200 with the denser crowd)
+local COMPETITOR_DRIFT = 14 -- rival brownian speed, world units/sec (their own gentle wander)
+
+-- Per-instance SIZE VARIETY for the non-player actors (predators + competitors): each
+-- one draws a private size scale at spawn so the dish shows a real spread of body
+-- sizes -- from small darting microbes to looming giants -- instead of a uniform stamp.
+-- The scale is COLOR/UNIT-free here (just a multiplier); the view multiplies it by its
+-- own CELL_SIZE basis, so "0.5x..5x the cell" is honored wherever the view sets that.
+local ACTOR_SIZE_MIN = 0.5 -- smallest body: half a cell
+local ACTOR_SIZE_MAX = 5.0 -- largest body: five cells (a looming giant)
+
+-- Predators are the visible THREAT, and they are PERSISTENT roaming enemies: once
+-- the colony is worth hunting a standing pack is MAINTAINED that prowls the dish
+-- indefinitely (they do NOT expire on a life timer -- the scene always has enemies
+-- on patrol). Each predator only FEEDS occasionally: between feeds it wanders, and
+-- when its feed cooldown elapses it darts at the nearest cell, strikes once, then
+-- breaks off and prowls again -- so combat stays an intermittent scare, not a wipe.
+-- The pack THICKENS with the difficulty tier (the menace 0..1 from tier_rank below):
+-- a founder dish has a small patrol, a millions-scale colony is harried by a denser,
+-- hungrier pack -- "you've grown more, more risk." Both the standing count and the
+-- feed frequency rise with menace.
+local PREDATOR_REPLENISH = 2.0 -- seconds between bringing one more predator in toward the target
+local PREDATOR_SPEED = 84 -- chase speed during a feed lunge
+local PREDATOR_ROAM_SPEED = 30 -- idle prowl speed (slower, menacing drift)
+local PREDATOR_TURN = 2.0 -- prowl heading random-walk rate (rad/s)
 local PREDATOR_KILL_RADIUS = 11
-local PREDATOR_MAX_KILLS = 6 -- cap kills per incursion -- combat is a scare
-local PREDATOR_MAX = 5 -- simultaneous predators
+local PREDATOR_FEED_COOLDOWN = 6.0 -- base seconds a predator prowls between feeds (shortens with menace)
+local PREDATOR_FEED_MENACE = 0.5 -- fraction the feed cooldown shrinks at full menace (=> ~3s at the top tier)
+local PREDATOR_HUNT_TIME = 3.5 -- max seconds a predator commits to a lunge before giving up and prowling
+local PREDATOR_MAX = 6 -- base standing pack size at tier 1
+local PREDATOR_MAX_MENACE = 5 -- extra predators in the pack at full menace (=> 11 at the top tier)
 local PREDATOR_MIN_CELLS = 6 -- no predators until the colony is worth hunting
 
 -- Starvation (cosmetic, low-cadence): on a fixed STARVE_TICK timer the swarm
@@ -232,6 +312,27 @@ local function field_for_population(pop)
   return w
 end
 
+-- The DIFFICULTY tier the colony has reached: the index of the largest FIELD_TIERS
+-- threshold crossed (1 at the founder, #FIELD_TIERS at the top). The field tiers ARE
+-- the difficulty thresholds, so risk steps in lockstep with the zoom-outs.
+local function tier_rank(pop)
+  local rank = 1
+  for i = 1, #FIELD_TIERS do
+    if pop >= FIELD_TIERS[i][1] then
+      rank = i
+    else
+      break
+    end
+  end
+  return rank
+end
+
+-- The MENACE scalar: tier rank mapped to 0..1 (0 at the founder tier, 1 at the top).
+-- Predator density/cadence ramp on this, so "grown more = more risk" reads on screen.
+local function menace_for_population(pop)
+  return (tier_rank(pop) - 1) / (#FIELD_TIERS - 1)
+end
+
 -- How many ambient food motes to keep at the current field size. NOT constant
 -- density: the base motes-per-pixel rate (44 on a 1280x720 canvas) is divided
 -- by sqrt(field scale), so nutrient density THINS as the realm tiers out --
@@ -243,6 +344,24 @@ local function food_target(state)
   local scale = state.field_w / BASE_FIELD
   local target = FOOD_DENSITY * state.field_w * state.field_h / math.sqrt(scale)
   return clamp(math.floor(target + 0.5), FOOD_MIN, FOOD_MAX)
+end
+
+-- How many neutral competitor microbes to keep at the current competition
+-- intensity and field size. Mirrors food_target's density law so the rival crowd
+-- reads consistent as the realm tiers out: the per-pixel rate (COMPETITOR_DENSITY,
+-- the full-competition rate) is scaled by the live competition intensity (0..1) and
+-- by field area / sqrt(field scale), then clamped to COMPETITOR_MAX. Competition 0
+-- yields a target of 0 (no rivals), and the count rises with a wider field yet
+-- stays sparse-per-area on the larger tiers -- so density never swamps the view.
+-- Purely cosmetic: this count feeds NOTHING back into the economy.
+local function competitor_target(state, competition)
+  competition = clamp(competition or 0, 0, 1)
+  if competition <= 0 then
+    return 0
+  end
+  local scale = state.field_w / BASE_FIELD
+  local target = COMPETITOR_DENSITY * competition * state.field_w * state.field_h / math.sqrt(scale)
+  return clamp(math.floor(target + 0.5), 0, COMPETITOR_MAX)
 end
 
 -- Initialize a new world state. opts:
@@ -264,8 +383,9 @@ function world.new(opts)
     blooms = {},
     prey = {},
     predators = {},
+    competitors = {}, -- neutral rival microbes (cosmetic skin of nutrient competition)
     bloom_timer = BLOOM_INTERVAL,
-    predator_timer = PREDATOR_INTERVAL,
+    predator_timer = PREDATOR_REPLENISH,
     starve_timer = STARVE_TICK,
   }
 end
@@ -329,6 +449,7 @@ end
 local function new_cell(state, x, y, ox, oy)
   local seed = rnd(state) -- per-cell wobble phase; drawn before need for determinism
   local need = div_need(state)
+  local speed_mult = rand_range(state, SPEED_VAR_LO, SPEED_VAR_HI) -- private swim-speed spread
   local birthing = ox ~= nil
   state.cells[#state.cells + 1] = {
     x = birthing and ox or x, -- start on the parent while emerging
@@ -342,6 +463,7 @@ local function new_cell(state, x, y, ox, oy)
     vy = 0,
     age = 0, -- drives the mitosis pop-in (runs in lockstep with the emerge)
     seed = seed,
+    speed_mult = speed_mult, -- per-cell swim-speed multiplier (the variety; ~[0.6, 1.4])
     wander = seed * 2 * math.pi, -- private wander heading (random-walks each frame)
     eaten = 0, -- morsels engulfed toward `need`
     need = need, -- quota to reach before splitting
@@ -511,6 +633,26 @@ local function ensure_field(state, list, target, drift, render)
       vx = rsign(state) * drift,
       vy = rsign(state) * drift,
       render = render,
+    }
+  end
+end
+
+-- Top up the neutral-competitor crowd, stamping each new rival with a per-instance
+-- `tint` in [0,1) -- a COLOR-FREE species seed (world owns no palette). The view
+-- buckets that scalar into one of its vibrant rival colors, so the dish reads as
+-- several distinct rival SPECIES jostling for the same food rather than one grey
+-- mass. Mirrors ensure_field otherwise (uniform spawn + the shared frozen render
+-- component); the tint is the only per-instance addition.
+local function ensure_competitors(state, target)
+  while #state.competitors < target do
+    state.competitors[#state.competitors + 1] = {
+      x = rand_range(state, 0, state.field_w),
+      y = rand_range(state, 0, state.field_h),
+      vx = rsign(state) * COMPETITOR_DRIFT,
+      vy = rsign(state) * COMPETITOR_DRIFT,
+      tint = rnd(state), -- color-free species seed; the view maps it to a rival hue
+      size_scale = rand_range(state, ACTOR_SIZE_MIN, ACTOR_SIZE_MAX), -- private body-size spread (0.5x..5x a cell)
+      render = RENDER_COMPETITOR,
     }
   end
 end
@@ -756,12 +898,14 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
       c.vx = c.vx + px * SEPARATION_GAIN * dt
       c.vy = c.vy + py * SEPARATION_GAIN * dt
 
-      -- Damp and clamp to the cell's swim speed.
+      -- Damp and clamp to the cell's swim speed -- scaled by its PRIVATE speed_mult
+      -- so the swarm shows a spread of paces instead of one uniform top speed.
       local damp = math.max(0, 1 - CELL_DAMPING * dt)
       c.vx, c.vy = c.vx * damp, c.vy * damp
+      local cell_speed = speed * (c.speed_mult or 1)
       local sp = math.sqrt(c.vx * c.vx + c.vy * c.vy)
-      if sp > speed then
-        c.vx, c.vy = c.vx / sp * speed, c.vy / sp * speed
+      if sp > cell_speed then
+        c.vx, c.vy = c.vx / sp * cell_speed, c.vy / sp * cell_speed
       end
 
       c.x = c.x + c.vx * dt
@@ -841,17 +985,35 @@ local function step_blooms(state, dt, exclude)
   end
 end
 
--- Live-only predators. Returns (killed, kill_points): the number of cells killed
--- this update so the orchestrator can debit the colony (sim.kill), AND the {x,y}
--- positions of those kills so the view can burst each into RED particles (distinct
--- from the cell-colored starvation burst). Evasion lets a cell flee a strike, so
--- the evasion trait visibly matters.
-local function step_predators(state, dt, evasion)
+-- Persistent, live-only predators. Returns (killed, kill_points): the number of
+-- cells killed this update so the orchestrator can debit the colony (sim.kill), AND
+-- the {x,y} positions of those kills so the view can burst each into RED particles
+-- (distinct from the cell-colored starvation burst). Evasion lets a cell flee a
+-- strike, so the evasion trait visibly matters.
+--
+-- The pack is MAINTAINED rather than spawned-then-expired: once the colony is worth
+-- hunting, predators drift in from the edges to fill a menace-scaled target and then
+-- PROWL the dish indefinitely (random-walking their heading, wrapping the torus) so
+-- the scene always has roaming enemies. Each predator only FEEDS occasionally: a
+-- per-predator feed cooldown ticks down while it prowls, and when it elapses the
+-- predator commits to a brief LUNGE -- chasing the nearest cell at full speed until
+-- it strikes once (a kill, or a dodge if the cell evades) or the hunt window lapses
+-- -- then breaks off, resets its cooldown, and prowls again. More menace = a bigger
+-- pack AND a shorter cooldown (it feeds more often), so threat reads on screen.
+local function step_predators(state, dt, evasion, menace)
+  menace = clamp(menace or 0, 0, 1)
+  local huntable = #state.cells >= PREDATOR_MIN_CELLS
+  -- Menace scales the standing pack size and how often each predator feeds.
+  local target = PREDATOR_MAX + math.floor(PREDATOR_MAX_MENACE * menace + 0.5)
+  local feed_cd = PREDATOR_FEED_COOLDOWN * (1 - PREDATOR_FEED_MENACE * menace)
+
+  -- Replenish the pack toward the target: bring one predator in from a random edge
+  -- per replenish tick (gradual, so they don't all pop in at once). No life timer --
+  -- predators persist until predation is dropped (world.update clears them then).
   state.predator_timer = state.predator_timer - dt
   if state.predator_timer <= 0 then
-    state.predator_timer = PREDATOR_INTERVAL + rand_range(state, -2, 2)
-    if #state.predators < PREDATOR_MAX and #state.cells >= PREDATOR_MIN_CELLS then
-      -- Drift in from a random field edge.
+    state.predator_timer = PREDATOR_REPLENISH + rand_range(state, -0.5, 0.5)
+    if huntable and #state.predators < target then
       local edge = rint(state, 4)
       local x, y
       if edge == 1 then
@@ -863,49 +1025,83 @@ local function step_predators(state, dt, evasion)
       else
         x, y = rand_range(state, 0, state.field_w), state.field_h
       end
-      state.predators[#state.predators + 1] =
-        { x = x, y = y, life = PREDATOR_LIFE, kills = 0, seed = rnd(state), render = RENDER_PREDATOR }
+      state.predators[#state.predators + 1] = {
+        x = x,
+        y = y,
+        seed = rnd(state),
+        size_scale = rand_range(state, ACTOR_SIZE_MIN, ACTOR_SIZE_MAX), -- private body-size spread (0.5x..5x a cell)
+        render = RENDER_PREDATOR,
+        heading = rnd(state) * 2 * math.pi, -- prowl direction (random-walked)
+        feed_cd = rand_range(state, feed_cd * 0.4, feed_cd), -- desync the first feeds
+        hunt_t = 0, -- > 0 while committed to a lunge
+      }
     end
+  end
+
+  -- Trim if the target dropped below the live pack (menace ratchets up with the
+  -- tiers, so this is rare -- it just keeps the count honest). Remove from the tail.
+  while #state.predators > target do
+    table.remove(state.predators)
   end
 
   local killed = 0
   local kill_points = {}
+  local w, h = state.field_w, state.field_h
   for pi = #state.predators, 1, -1 do
     local p = state.predators[pi]
-    p.life = p.life - dt
-    -- Chase the nearest cell.
-    local best, target = math.huge, nil
-    for ci = 1, #state.cells do
-      local c = state.cells[ci]
-      local dx, dy = c.x - p.x, c.y - p.y
-      local d2 = dx * dx + dy * dy
-      if d2 < best then
-        best, target = d2, ci
-      end
+    p.feed_cd = (p.feed_cd or 0) - dt
+    -- Commit to a feed lunge once the cooldown elapses and there's a colony to hit.
+    if (not p.hunt_t or p.hunt_t <= 0) and huntable and p.feed_cd <= 0 then
+      p.hunt_t = PREDATOR_HUNT_TIME
     end
-    if target then
-      local c = state.cells[target]
-      local dx, dy = c.x - p.x, c.y - p.y
-      local d = math.sqrt(dx * dx + dy * dy) + 1e-6
-      p.x = p.x + (dx / d) * PREDATOR_SPEED * dt
-      p.y = p.y + (dy / d) * PREDATOR_SPEED * dt
-      if d <= PREDATOR_KILL_RADIUS then
-        if rnd(state) >= evasion then -- evasion is the flee/dodge chance
-          -- Free any morsel the victim was engulfing so it rejoins the drifting
-          -- field (an orphaned claim would otherwise freeze the mote forever).
-          if c.feed_target then
-            c.feed_target.claimed = nil
-          end
-          kill_points[#kill_points + 1] = { x = c.x, y = c.y }
-          table.remove(state.cells, target)
-          killed = killed + 1
-          p.kills = p.kills + 1
+
+    if p.hunt_t and p.hunt_t > 0 then
+      -- === FEEDING: chase the nearest cell and strike on contact ===
+      p.hunt_t = p.hunt_t - dt
+      local best, target_ci = math.huge, nil
+      for ci = 1, #state.cells do
+        local c = state.cells[ci]
+        local dx, dy = c.x - p.x, c.y - p.y
+        local d2 = dx * dx + dy * dy
+        if d2 < best then
+          best, target_ci = d2, ci
         end
       end
+      if target_ci then
+        local c = state.cells[target_ci]
+        local dx, dy = c.x - p.x, c.y - p.y
+        local d = math.sqrt(dx * dx + dy * dy) + 1e-6
+        p.x = p.x + (dx / d) * PREDATOR_SPEED * dt
+        p.y = p.y + (dy / d) * PREDATOR_SPEED * dt
+        if d <= PREDATOR_KILL_RADIUS then
+          if rnd(state) >= evasion then -- evasion is the flee/dodge chance
+            -- Free any morsel the victim was engulfing so it rejoins the drifting
+            -- field (an orphaned claim would otherwise freeze the mote forever).
+            if c.feed_target then
+              c.feed_target.claimed = nil
+            end
+            kill_points[#kill_points + 1] = { x = c.x, y = c.y }
+            table.remove(state.cells, target_ci)
+            killed = killed + 1
+          end
+          -- A completed strike (hit OR dodge) ends the lunge: break off, reset the
+          -- cooldown with jitter, and prowl again -- each predator feeds occasionally
+          -- rather than mowing through the colony.
+          p.hunt_t = 0
+          p.feed_cd = feed_cd + rand_range(state, -1.0, 1.5)
+        end
+      else
+        p.hunt_t = 0 -- nothing to hunt; back to prowling
+      end
+    else
+      -- === PROWLING: random-walk the heading and drift slowly across the dish ===
+      p.heading = (p.heading or 0) + rsign(state) * PREDATOR_TURN * dt
+      p.x = p.x + math.cos(p.heading) * PREDATOR_ROAM_SPEED * dt
+      p.y = p.y + math.sin(p.heading) * PREDATOR_ROAM_SPEED * dt
     end
-    if p.life <= 0 or p.kills >= PREDATOR_MAX_KILLS then
-      table.remove(state.predators, pi)
-    end
+    -- Toroidal wrap so a prowling predator endlessly roams instead of leaving.
+    p.x = p.x % w
+    p.y = p.y % h
   end
   return killed, kill_points
 end
@@ -961,6 +1157,7 @@ function world.update(state, dt, opts)
     shift(state.blooms)
     shift(state.prey)
     shift(state.predators)
+    shift(state.competitors) -- rivals recentre with the realm like every other entity
     for i = 1, #state.cells do
       local c = state.cells[i]
       c.x, c.y = c.x + dx, c.y + dy
@@ -1010,6 +1207,24 @@ function world.update(state, dt, opts)
     state.prey = {}
   end
 
+  -- Neutral competitor microbes: maintain a target count that scales with the
+  -- closed-form competition ramp (opts.competition, nil-safe -> 0) AND the field
+  -- size, then drift them with the shared drift_field wander so they wrap the
+  -- toroidal realm like every other entity. They are spawned through the same
+  -- ensure_field path (an entity + a frozen render component), NOT fed to
+  -- step_cells (cells never forage them) and NOT seen by step_predators (which only
+  -- iterates state.cells), so they neither eat nor are eaten nor are hunted. When
+  -- competition is 0/absent the target is 0; clear any existing crowd outright, the
+  -- way prey is cleared when predation is off -- so dialing competition back to 0
+  -- empties the rivals rather than freezing a stale crowd.
+  local comp_target = competitor_target(state, opts.competition)
+  if comp_target > 0 then
+    ensure_competitors(state, comp_target) -- per-instance species tint (the view colors it)
+    drift_field(state, state.competitors, dt, COMPETITOR_DRIFT)
+  elseif #state.competitors > 0 then
+    state.competitors = {}
+  end
+
   local engulfs, engulf_points = step_cells(state, dt, stats, tempo, predation, births)
   -- Keep the ambient field replenished after consumption.
   ensure_field(state, state.foods, food_target(state), FOOD_DRIFT, RENDER_FOOD)
@@ -1018,7 +1233,7 @@ function world.update(state, dt, opts)
   local killed = 0
   local kill_points
   if opts.threats_enabled and predation then
-    killed, kill_points = step_predators(state, dt, stats.evasion or 0)
+    killed, kill_points = step_predators(state, dt, stats.evasion or 0, menace_for_population(pop))
   elseif #state.predators > 0 then
     state.predators = {}
   end
@@ -1093,6 +1308,7 @@ function world.snapshot(state)
     blooms = state.blooms,
     prey = state.prey,
     predators = state.predators,
+    competitors = state.competitors, -- neutral rival microbes (cosmetic drift)
     field = { w = state.field_w, h = state.field_h },
     action = { x = ax, y = ay },
   }

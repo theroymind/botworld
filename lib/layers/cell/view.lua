@@ -31,12 +31,24 @@ local CELL_SIZE = 6 -- the founder is a chunky pixel; pop-in scales young cells 
 local FOOD_SIZE = 2 -- a ~1.5-2px nutrient dot
 local PREY_SIZE = 4
 local PREDATOR_SIZE = 9 -- a distinctly larger, menacing square
+local COMPETITOR_SIZE = 5 -- a neutral rival cell: between prey and our own founder
 local POP_IN = 0.5 -- mitosis pop-in duration, seconds
 local ENDO_LIFE = 1.2 -- endosymbiosis-beat duration, seconds
 local HUNGER_DIM = 8 -- seconds of hunger that fully dims a starving cell
 local HUNGER_FADE = 0.7 -- how far a fully starved cell fades (alpha *= 1 - this)
 local FED_PULSE = 0.6 -- seconds of the post-meal swell (matches the world's `fed` stamp)
 local FED_SWELL = 0.35 -- peak extra size of the just-fed pulse (a satisfied gulp)
+
+-- Clamp to [0,1]; defined up here so the trait-fold helper below (and everything
+-- after) can share the one definition.
+local function clamp01(v)
+  if v < 0 then
+    return 0
+  elseif v > 1 then
+    return 1
+  end
+  return v
+end
 
 -- The GPU swarm field's response to the world's actors. Radius is the reach (world
 -- units). The bloom pull is a FRACTION of the remaining distance a fully-engaged
@@ -45,11 +57,85 @@ local FED_SWELL = 0.35 -- peak extra size of the just-fed pulse (a satisfied gul
 local BLOOM_ATTRACT_R = 280
 local BLOOM_ATTRACT_S = 0.6
 local PRED_REPEL_R = 190
-local PRED_REPEL_S = 70
+local PRED_REPEL_S = 54 -- softened (was 70): with the shader's per-cell jitter this
+-- averages a gentler lean-away, so cells avoid the predator without carving a clean ring
 -- Seconds a bloom's pull eases in after it spawns and out before it expires, so the
 -- swarm's rush toward food ramps smoothly instead of popping the instant a bloom
 -- appears/vanishes (the attractor turning on/off in one frame).
 local BLOOM_FADE = 0.4
+
+-- Trait -> GPU-field response. opts.stats (cell.lua passes traits.stats here) drives
+-- a handful of CHEAP GLOBAL uniforms so leveling a trait visibly shifts EVERY cell
+-- in the overflow field at once -- no per-cell features, no new art. All knobs sit
+-- at their neutral value when stats are absent (tests / other callers), so the look
+-- is unchanged. Each is gently saturated/clamped so a deep build reads without the
+-- field going garish or jittery.
+--
+-- Photosynthesis -> pigment: blend the cell token toward a green pigment as
+-- photo_mult climbs above 1 (a photosynthetic colony greens up). PHOTO_TINT is the
+-- pigment target (the nourishment green token feel); PHOTO_TINT_MAX caps the blend
+-- so the protagonist teal is tinted, never fully replaced.
+local PHOTO_TINT = colors.secondary -- green pigment target (nourishment hue)
+local PHOTO_TINT_MAX = 0.5 -- max blend toward green (keeps the teal identity)
+local PHOTO_TINT_K = 0.35 -- blend per unit of (photo_mult - 1)
+-- Motility -> swim/weave rate: scale the field's fine-weave rate from stats.speed
+-- relative to the founding SPEED_BASE (30 u/s in traits). A motile colony darts;
+-- a sluggish one drifts. Clamped so a maxed swimmer stays lively, not frantic.
+local SPEED_BASE_REF = 30 -- traits.SPEED_BASE: speed at motility 0 (the neutral 1.0x)
+local SWIM_SCALE_MAX = 2.2 -- cap on the weave-rate multiplier
+-- Evasion -> firmness: a higher evade chance (stats.evasion, ~0..0.2) firms the
+-- body a touch (slightly larger, sturdier squares). Small, legible, not a balloon.
+local EVASION_SIZE_K = 1.2 -- size grows by this * evasion (so ~+24% at evasion 0.2)
+-- Chemotaxis -> sense halo: a faint additive shimmer scaled by how far stats.
+-- sense_range sits above the founding SENSE_BASE (70 in traits). A keen-sensing
+-- colony glows faintly as it "feels" the dish. Capped low so it lifts, not blares.
+local SENSE_BASE_REF = 70 -- traits.SENSE_BASE: range at sensing 0
+local SENSE_HALO_PER = 0.18 -- halo per unit of (sense_range/SENSE_BASE_REF - 1)
+local SENSE_HALO_MAX = 0.35 -- cap on the additive shimmer
+
+-- Fold opts.stats into the field's trait knobs: a tinted body color plus the swim/
+-- size/halo scalars the shader reads. nil-safe: with no stats it returns the
+-- neutral look (base color, 1, 1, 0) so the field renders exactly as before.
+local function field_traits(base_color, stats)
+  if not stats then
+    return base_color, 1, 1, 0
+  end
+  -- Photosynthesis: blend base -> green pigment by (photo_mult - 1).
+  local color = base_color
+  local photo = stats.photo_mult
+  if photo and photo > 1 then
+    local m = clamp01((photo - 1) * PHOTO_TINT_K)
+    if m > PHOTO_TINT_MAX then
+      m = PHOTO_TINT_MAX
+    end
+    color = {
+      base_color[1] + (PHOTO_TINT[1] - base_color[1]) * m,
+      base_color[2] + (PHOTO_TINT[2] - base_color[2]) * m,
+      base_color[3] + (PHOTO_TINT[3] - base_color[3]) * m,
+    }
+  end
+  -- Motility: weave-rate multiplier from speed / SPEED_BASE_REF, clamped.
+  local swim = 1
+  if stats.speed and stats.speed > 0 then
+    swim = stats.speed / SPEED_BASE_REF
+    if swim > SWIM_SCALE_MAX then
+      swim = SWIM_SCALE_MAX
+    elseif swim < 0 then
+      swim = 0
+    end
+  end
+  -- Evasion: a touch firmer/larger body.
+  local size = 1 + EVASION_SIZE_K * (stats.evasion or 0)
+  -- Chemotaxis: additive sense shimmer from sense_range above the base, capped.
+  local halo = 0
+  if stats.sense_range and stats.sense_range > SENSE_BASE_REF then
+    halo = SENSE_HALO_PER * (stats.sense_range / SENSE_BASE_REF - 1)
+    if halo > SENSE_HALO_MAX then
+      halo = SENSE_HALO_MAX
+    end
+  end
+  return color, swim, size, halo
+end
 
 local VIEW_FRAC = 0.9 -- field fills this fraction of the window; the rest is the
 -- off-screen margin that hides the wrap seam (tz divides by it, so the field
@@ -95,7 +181,18 @@ local PALETTE = {
   bloom = colors.secondary_bright,
   prey = colors.tertiary,
   predator = colors.quaternary,
+  -- Competitor cells are OTHER life, not ours -- and now a CONTESTED dish of several
+  -- vibrant rival species (see COMPETITOR_SPECIES below). The muted grey is only the
+  -- fallback for a tint-less rival (legacy saves / tests); a live competitor carries a
+  -- `tint` seed the resolve() path buckets into a bright species hue. Drawn through
+  -- the same generic flat path.
+  competitor = colors.muted,
 }
+
+-- The vibrant rival-species hues (owned by colors.lua). Each competitor's color-free
+-- `tint` seed in [0,1) is bucketed into this list, so the rival crowd shows distinct
+-- orange/gold/pink/purple/violet microbes rather than one uniform color.
+local COMPETITOR_SPECIES = colors.competitor_species
 
 -- Default flat-square size per kind (a render component may override via size).
 local SIZE = {
@@ -103,21 +200,13 @@ local SIZE = {
   food = FOOD_SIZE,
   prey = PREY_SIZE,
   predator = PREDATOR_SIZE,
+  competitor = COMPETITOR_SIZE,
 }
 
 -- Per-kind alpha overrides for the flat primitives (none needed currently --
 -- the bloom carries its own shape). Overridable per entity via render.alpha.
 local ALPHA = {}
 local ALPHA_DEFAULT = 0.92
-
-local function clamp01(v)
-  if v < 0 then
-    return 0
-  elseif v > 1 then
-    return 1
-  end
-  return v
-end
 
 function view.new()
   -- camera: smoothed fit-camera that frames snap.field into the window.
@@ -226,12 +315,30 @@ end
 
 -- Resolve the common flat-primitive params (size/color/alpha + the data-driven
 -- pop_in/pulse modifiers) from an entity's render component. Shared by the flat
--- primitive shapes so they stay DRY.
-local function resolve(e, t)
+-- primitive shapes so they stay DRY. `amul` (default 1) is a final alpha multiplier
+-- the end-of-phase-1 dive uses to FADE everything but the winning cell out.
+local function resolve(e, t, amul)
   local rc = e.render
   local size = rc.size or SIZE[rc.kind] or CELL_SIZE
   local color = rc.color or PALETTE[rc.kind] or PALETTE.cell
   local alpha = rc.alpha or ALPHA[rc.kind] or ALPHA_DEFAULT
+  -- A competitor microbe picks its vibrant species hue from its color-free `tint`
+  -- seed (set at spawn): bucket [0,1) across the species list. Falls back to the
+  -- muted competitor token when tint-less (legacy/test entities).
+  if rc.kind == "competitor" and e.tint and #COMPETITOR_SPECIES > 0 then
+    local idx = math.floor(e.tint * #COMPETITOR_SPECIES) + 1
+    if idx > #COMPETITOR_SPECIES then
+      idx = #COMPETITOR_SPECIES
+    end
+    color = COMPETITOR_SPECIES[idx]
+  end
+  -- Per-instance body-size variety (predators + competitors carry a `size_scale`
+  -- in [0.5, 5] from world.lua): size becomes that multiple of the CELL_SIZE basis,
+  -- so the non-player actors range from half-a-cell darters to 5x looming giants.
+  -- Overrides the kind's default flat size; absent on cells/food/prey/blooms.
+  if e.size_scale then
+    size = CELL_SIZE * e.size_scale
+  end
   if rc.pop_in then
     size = size * clamp01((e.age or POP_IN) / POP_IN) -- mitosis pop-in
   end
@@ -255,12 +362,15 @@ local function resolve(e, t)
   if e.hunger and e.hunger > 0 then
     alpha = alpha * (1 - HUNGER_FADE * clamp01(e.hunger / HUNGER_DIM))
   end
+  if amul then
+    alpha = alpha * amul
+  end
   return size, color, alpha
 end
 
-local function draw_square(e, t)
-  local size, color, alpha = resolve(e, t)
-  if size <= 0 then
+local function draw_square(e, t, zoom, amul)
+  local size, color, alpha = resolve(e, t, amul)
+  if size <= 0 or alpha <= 0 then
     return
   end
   local half = size * 0.5
@@ -268,9 +378,9 @@ local function draw_square(e, t)
   love.graphics.rectangle("fill", e.x - half, e.y - half, size, size)
 end
 
-local function draw_circle(e, t)
-  local size, color, alpha = resolve(e, t)
-  if size <= 0 then
+local function draw_circle(e, t, zoom, amul)
+  local size, color, alpha = resolve(e, t, amul)
+  if size <= 0 or alpha <= 0 then
     return
   end
   love.graphics.setColor(color[1], color[2], color[3], alpha)
@@ -283,19 +393,23 @@ end
 -- the whole affordance -- disk, glow, rim, bar -- holds a steady UI size across
 -- field tiers instead of scaling with the in-game zoom. Reads timer/life off the
 -- entity for the countdown.
-local function draw_bloom(e, t, zoom)
+local function draw_bloom(e, t, zoom, amul)
   local col = PALETTE.bloom
+  local a = amul or 1
+  if a <= 0 then
+    return
+  end
   local r = BLOOM_SCREEN_R / zoom
   local frac = clamp01((e.timer or 1) / (e.life or 1)) -- countdown remaining
   local pulse = 1 + 0.06 * math.sin(t * 6)
   -- Soft outer glow (the pulse), then the body disk.
-  love.graphics.setColor(col[1], col[2], col[3], 0.10)
+  love.graphics.setColor(col[1], col[2], col[3], 0.10 * a)
   love.graphics.circle("fill", e.x, e.y, r * 1.7 * pulse)
-  love.graphics.setColor(col[1], col[2], col[3], 0.18)
+  love.graphics.setColor(col[1], col[2], col[3], 0.18 * a)
   love.graphics.circle("fill", e.x, e.y, r)
   -- Bright "click me" rim, a constant screen-pixel width.
   love.graphics.setLineWidth(2 / zoom)
-  love.graphics.setColor(col[1], col[2], col[3], 0.85)
+  love.graphics.setColor(col[1], col[2], col[3], 0.85 * a)
   love.graphics.circle("line", e.x, e.y, r * pulse)
   love.graphics.setLineWidth(1 / zoom)
   -- Little countdown timer bar beneath the bloom (depletes over the ~3s window).
@@ -303,9 +417,9 @@ local function draw_bloom(e, t, zoom)
   local bh = 3 / zoom
   local bx = e.x - bw * 0.5
   local by = e.y + r * 1.25
-  love.graphics.setColor(1, 1, 1, 0.18)
+  love.graphics.setColor(1, 1, 1, 0.18 * a)
   love.graphics.rectangle("fill", bx, by, bw, bh)
-  love.graphics.setColor(col[1], col[2], col[3], 0.9)
+  love.graphics.setColor(col[1], col[2], col[3], 0.9 * a)
   love.graphics.rectangle("fill", bx, by, bw * frac, bh)
   love.graphics.setColor(1, 1, 1, 1)
 end
@@ -320,18 +434,18 @@ local SHAPES = {
   bloom = draw_bloom,
 }
 
-local function draw_entity(e, t, zoom)
+local function draw_entity(e, t, zoom, amul)
   local rc = e.render
   if not rc then
     return
   end
   local drawer = SHAPES[rc.shape or "square"] or draw_square
-  drawer(e, t, zoom)
+  drawer(e, t, zoom, amul)
 end
 
-local function draw_list(list, t, zoom)
+local function draw_list(list, t, zoom, amul)
   for i = 1, #list do
-    draw_entity(list[i], t, zoom)
+    draw_entity(list[i], t, zoom, amul)
   end
 end
 
@@ -341,9 +455,13 @@ end
 -- scale); the overflow field gets the same colour as its mark pass, which the
 -- shader sizes from the cell body (MARK_SCALE) so it rides each instance's size.
 local MITO_COLOR = colors.primary_dark -- inner-detail shade of the cell's token
-local function draw_mito_mark(e)
+local function draw_mito_mark(e, amul)
   local rc = e.render
   if not rc or rc.kind ~= "cell" then
+    return
+  end
+  local a = 0.9 * (amul or 1)
+  if a <= 0 then
     return
   end
   local scale = rc.pop_in and clamp01((e.age or POP_IN) / POP_IN) or 1
@@ -352,7 +470,7 @@ local function draw_mito_mark(e)
     return
   end
   local half = s * 0.5
-  love.graphics.setColor(MITO_COLOR[1], MITO_COLOR[2], MITO_COLOR[3], 0.9)
+  love.graphics.setColor(MITO_COLOR[1], MITO_COLOR[2], MITO_COLOR[3], a)
   love.graphics.rectangle("fill", e.x - half, e.y - half, s, s)
   love.graphics.setColor(1, 1, 1, 1)
 end
@@ -450,9 +568,35 @@ function view.draw_world(state, snap, opts)
   love.graphics.translate(cam.x + ox, cam.y + oy)
   love.graphics.scale(cam.zoom)
 
-  draw_list(snap.foods, t, cam.zoom)
-  draw_list(snap.blooms, t, cam.zoom)
-  draw_list(snap.prey, t, cam.zoom)
+  -- ISOLATE (the end-of-phase-1 dive): everything but the winning cell DISSOLVES.
+  -- opts.isolate = { x, y, fade } -- as `fade` ramps 0->1 across the cinematic the whole
+  -- dish (other cells, the overflow field, food/blooms/prey/rivals/predators) fades to
+  -- nothing, leaving only the triggering cell -- the nearest boid to (x, y) -- which
+  -- holds full alpha as the camera plunges into it. `world_amul` is the surviving alpha
+  -- of everything else; `hero_i` is the boid index spared the fade. Absent -> 1 / nil
+  -- (normal play and phase 2 are byte-identical to before).
+  local iso = opts and opts.isolate
+  local world_amul = 1
+  local hero_i = nil
+  if iso then
+    world_amul = clamp01(1 - (iso.fade or 0))
+    local best = math.huge
+    for i = 1, #snap.cells do
+      local c = snap.cells[i]
+      local dx, dy = c.x - iso.x, c.y - iso.y
+      local d2 = dx * dx + dy * dy
+      if d2 < best then
+        best, hero_i = d2, i
+      end
+    end
+  end
+
+  draw_list(snap.foods, t, cam.zoom, world_amul)
+  draw_list(snap.blooms, t, cam.zoom, world_amul)
+  draw_list(snap.prey, t, cam.zoom, world_amul)
+  -- Neutral rival microbes: ambient background life (cosmetic skin of the closed-form
+  -- nutrient competition), drawn beneath the player's swarm via the generic flat path.
+  draw_list(snap.competitors, t, cam.zoom, world_amul)
 
   -- HYBRID swarm render. snap.cells is world.lua's small SIMULATED set -- the cells
   -- that actually sense motes, chase, engulf and get hunted -- so drawing them as
@@ -500,32 +644,43 @@ function view.draw_world(state, snap, opts)
       local p = snap.predators[i]
       repulsors[i] = { x = p.x, y = p.y, radius = PRED_REPEL_R, strength = PRED_REPEL_S }
     end
+    -- Fold the colony's trait stats (opts.stats, from cell.lua's traits.stats) into
+    -- the field's cheap global knobs so leveling a trait visibly shifts the whole
+    -- overflow mass: green pigment (photosynthesis), swim/weave rate (motility),
+    -- body firmness (evasion) and a faint sense shimmer (chemotaxis). nil-safe:
+    -- with no stats this returns the neutral look and the field is unchanged.
+    local body_color, swim_scale, size_scale, sense_halo =
+      field_traits(PALETTE.cell, opts and opts.stats)
     cell_field.draw({
       field_w = f.w,
       field_h = f.h,
       base_half = CELL_SIZE * 0.5,
-      color = PALETTE.cell,
+      color = body_color,
       attractors = attractors,
       repulsors = repulsors,
       mito = mito,
       mark_color = MITO_COLOR,
+      swim_scale = swim_scale,
+      size_scale = size_scale,
+      sense_halo = sense_halo,
+      -- The overflow swarm dissolves with the rest of the dish under the dive.
+      opacity = world_amul,
     })
   end
 
   -- The simulated boids, drawn on top of the overflow field. A held mitochondrion
-  -- stamps the inner mark on each (riding its mitosis pop-in scale).
-  if mito then
-    for i = 1, n do
-      draw_entity(cells[i], t, cam.zoom)
-      draw_mito_mark(cells[i])
-    end
-  else
-    for i = 1, n do
-      draw_entity(cells[i], t, cam.zoom)
+  -- stamps the inner mark on each (riding its mitosis pop-in scale). Under the dive
+  -- every boid fades with the dish EXCEPT the winner (hero_i), which stays full alpha
+  -- so it's the one cell left as the camera plunges in.
+  for i = 1, n do
+    local amul = (hero_i and i ~= hero_i) and world_amul or 1
+    draw_entity(cells[i], t, cam.zoom, amul)
+    if mito then
+      draw_mito_mark(cells[i], amul)
     end
   end
 
-  draw_list(snap.predators, t, cam.zoom)
+  draw_list(snap.predators, t, cam.zoom, world_amul)
 
   -- World-space effects (feed ripples, death bursts, the endosymbiosis beat) sit
   -- above the entities, inside the camera transform so they track world coords.

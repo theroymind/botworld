@@ -34,6 +34,18 @@ local BLAST = 1.1 -- the white-out wipe; the level resets at its peak
 local RESET_FRAC = 0.46 -- fraction of BLAST at which the white peaks and reset fires
 
 local ZOOM_MULT = 3.4 -- how far past the settled fit-zoom the focus pushes in
+-- The "dive" style (phase 1) plunges INTO the winning cell -- the zoom itself is the
+-- bridge into phase 2, not a white-out cut. Its SECOND HALF (charge + the pre-reset
+-- plunge) runs LONGER than the shared white-style timeline so the descent is unhurried,
+-- and the zoom keeps DEEPENING continuously the whole way (re-aimed every update in
+-- transition.update, never lerped to a fixed target that then sits still). focus leaves
+-- the camera at ZOOM_MULT; from there it climbs to DIVE_ZOOM_END right at the hand-off.
+-- (The "white" style -- phase 2's fork -- ignores all of this: its on_focus has no
+-- camera and it keeps the short shared durations.)
+local DIVE_CHARGE = 3.0 -- the build-up + descent (was 1.8): slower, the dish dissolving
+local DIVE_BLAST = 2.6 -- the plunge into the cell (was 1.1): the long final push-in
+local DIVE_ZOOM_START = ZOOM_MULT -- where the focus push-in left the camera
+local DIVE_ZOOM_END = 80 -- the deep target the camera is still climbing toward at handoff
 
 -- The words stamped over the cell that evolved. The kicker names the trigger,
 -- the title marks the run's culmination, the line underneath gives it weight.
@@ -63,6 +75,25 @@ local function smoothstep(k)
   return k * k * (3 - 2 * k)
 end
 
+-- Per-style phase durations. The "dive" (phase 1) stretches its second half so the
+-- descent into phase 2 is slow; "white" (phase 2's fork) keeps the short shared
+-- timeline. dur_for is the SINGLE source the timeline walk, the world fade, the
+-- continuous zoom, and the overlay all read, so the longer dive stays consistent.
+local DIVE_DUR = { freeze = FREEZE, focus = FOCUS, charge = DIVE_CHARGE, blast = DIVE_BLAST }
+local function dur_for(t, name)
+  if t.style == "dive" then
+    return DIVE_DUR[name]
+  end
+  if name == "freeze" then
+    return FREEZE
+  elseif name == "focus" then
+    return FOCUS
+  elseif name == "charge" then
+    return CHARGE
+  end
+  return BLAST
+end
+
 -- A fresh, INERT timeline. begin() arms it; until then active() is false and the
 -- orchestrator runs the layer normally.
 function transition.new()
@@ -82,6 +113,11 @@ function transition.begin(t, opts)
   t.phase = "freeze"
   t.phase_i = 1
   t.elapsed = 0 -- seconds inside the current phase
+  -- Style selects the FINALE language. "white" (default, phase 2's fork) is the classic
+  -- dim-wash + white-out wipe. "dive" (phase 1's endosymbiosis) instead DISSOLVES the
+  -- dish to isolate the winning cell, brightens it into a hero, and plunges the camera
+  -- into it -- a teal flood, never a white flash -- handing straight off to phase 2.
+  t.style = opts.style or "white"
   t.x = opts.x
   t.y = opts.y
   t.title = opts.title or transition.TITLE
@@ -104,12 +140,17 @@ local function enter_phase(t)
       t.on_shake(3, 0.5, t.x + t.y) -- a small settle bump as the camera takes hold
     end
   elseif t.phase == "charge" then
+    -- The dive's deepening zoom is driven CONTINUOUSLY in update() (not a step here);
+    -- the white style holds its single focus zoom. This opens the rising rumble.
     if t.on_shake then
-      t.on_shake(5, CHARGE * 0.9, t.x) -- the rising rumble through the build-up
+      t.on_shake(5, dur_for(t, "charge") * 0.9, t.x) -- rumble across the build-up
     end
   elseif t.phase == "blast" then
     if t.on_shake then
-      t.on_shake(14, 0.7, t.y) -- the detonation kick
+      -- A softer settle for the dive (no detonation -- we're gliding inside the cell);
+      -- the full kick stays for the white-out blast.
+      local kick = t.style == "dive" and 6 or 14
+      t.on_shake(kick, 0.7, t.y)
     end
   end
 end
@@ -123,16 +164,17 @@ function transition.update(t, dt)
   end
   t.elapsed = t.elapsed + dt
 
-  -- The reset fires once, as the white-out peaks -- so the wipe is hidden behind
-  -- full white and the fade-out reveals the reset level.
-  if t.phase == "blast" and not t.reset_done and t.elapsed >= BLAST * RESET_FRAC then
+  -- The reset fires once, at the peak -- the white style hides its wipe behind full
+  -- white; the dive hands off behind its full teal engulf. Keyed on the style's blast
+  -- duration so the longer dive holds the descent before crossing into phase 2.
+  if t.phase == "blast" and not t.reset_done and t.elapsed >= dur_for(t, "blast") * RESET_FRAC then
     t.reset_done = true
     if t.on_reset then
       t.on_reset()
     end
   end
 
-  local dur = PHASES[t.phase_i][2]
+  local dur = dur_for(t, PHASES[t.phase_i][1])
   while t.elapsed >= dur do
     if t.phase_i >= #PHASES then
       t.active = false -- blast complete: the cinematic is over
@@ -142,8 +184,41 @@ function transition.update(t, dt)
     t.phase_i = t.phase_i + 1
     t.phase = PHASES[t.phase_i][1]
     enter_phase(t)
-    dur = PHASES[t.phase_i][2]
+    dur = dur_for(t, t.phase)
   end
+
+  -- The dive keeps DEEPENING the zoom continuously across its second half (charge ->
+  -- the pre-reset plunge): re-aim the focus a little further in every update, so the
+  -- camera never reaches its target and sits -- it's still descending as we cross into
+  -- phase 2. `into/span` runs 0->1 from the charge start to the hand-off; smoothstep
+  -- eases the climb. (The white style holds its single focus zoom -- nothing here.)
+  if t.style == "dive" and t.on_focus and (t.phase == "charge" or t.phase == "blast") then
+    local charge_d = dur_for(t, "charge")
+    local span = charge_d + dur_for(t, "blast") * RESET_FRAC -- charge start -> hand-off
+    local into = (t.phase == "charge") and t.elapsed or (charge_d + t.elapsed)
+    local k = smoothstep(into / span)
+    t.on_focus(t.x, t.y, DIVE_ZOOM_START + (DIVE_ZOOM_END - DIVE_ZOOM_START) * k)
+  end
+end
+
+-- How far the dish has DISSOLVED (0 = full dish, 1 = only the winner left), for the
+-- orchestrator to hand to view.draw_world as the isolation fade. The siblings start
+-- fading the moment the camera takes hold (focus), are mostly gone by the end of the
+-- build-up (charge), and fully gone through the plunge (blast) -- so the lone hero cell
+-- is all that remains as the camera dives in. Pure (no love.*); 0 when inert or for the
+-- white style (only phase 1 reads it, but it stays well-defined everywhere).
+function transition.world_fade(t)
+  if not t.active then
+    return 0
+  end
+  if t.phase == "freeze" then
+    return 0
+  elseif t.phase == "focus" then
+    return smoothstep(t.elapsed / dur_for(t, "focus")) * 0.6
+  elseif t.phase == "charge" then
+    return 0.6 + 0.4 * smoothstep(t.elapsed / dur_for(t, "charge"))
+  end
+  return 1 -- blast: the dish is gone; only the hero remains under the plunge
 end
 
 -- ============================================================================
@@ -243,9 +318,87 @@ local function draw_blast(sx, sy, k)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- The HERO core (dive style): the winning cell's own teal core gathers + brightens as
+-- the dish dissolves around it, swelling toward white-teal so the lone survivor reads
+-- as the chosen one. Same gather-and-collapse language as draw_core, but in the cell's
+-- colour (no dim wash behind it -- the world fade does the isolating).
+local function draw_hero_core(sx, sy, intensity)
+  if intensity <= 0 then
+    return
+  end
+  local prim = colors.primary
+  -- Outer glow in the cell's hue.
+  love.graphics.setColor(prim[1], prim[2], prim[3], 0.22 * intensity)
+  love.graphics.circle("fill", sx, sy, 30 + 90 * intensity)
+  -- Bright core, whitening toward 1 as it heroes (teal -> bright teal-white).
+  local cw = intensity
+  local cr = prim[1] + (1 - prim[1]) * cw
+  local cg = prim[2] + (1 - prim[2]) * cw
+  local cb = prim[3] + (1 - prim[3]) * cw
+  love.graphics.setColor(cr, cg, cb, 0.9 * intensity)
+  love.graphics.circle("fill", sx, sy, 8 + 30 * intensity)
+  -- Collapsing ring, drawn inward as the charge completes (energy gathering in).
+  love.graphics.setLineWidth(2)
+  love.graphics.setColor(prim[1], prim[2], prim[3], 0.55 * intensity)
+  love.graphics.circle("line", sx, sy, 170 * (1 - intensity) + 16)
+  love.graphics.setLineWidth(1)
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- The ENGULF (dive style, replacing the white-out): the hero cell's teal body floods
+-- out from itself to fill the frame -- we are diving INSIDE the cell. `cover` (0..1)
+-- reaches 1 at the hand-off, so the screen is solidly the cell's colour exactly as the
+-- layer switches behind it (phase 2 opens out of the same teal, so there's no flash and
+-- no cut). A touch of whitening keeps it reading as the cell's bright interior, never a
+-- flat sheet.
+local function draw_engulf(sx, sy, cover)
+  if cover <= 0 then
+    return
+  end
+  local w, h = love.graphics.getDimensions()
+  local diag = math.sqrt(w * w + h * h)
+  local prim = colors.primary
+  local wb = 0.25 * cover
+  local r = prim[1] + (1 - prim[1]) * wb
+  local g = prim[2] + (1 - prim[2]) * wb
+  local b = prim[3] + (1 - prim[3]) * wb
+  -- An expanding disk blooms from the cell while a teal sheet ramps to full, so the
+  -- frame is wholly the cell's colour at the peak (masking the seam into phase 2).
+  love.graphics.setColor(r, g, b, cover)
+  love.graphics.circle("fill", sx, sy, diag * 1.15 * cover)
+  love.graphics.setColor(r, g, b, cover)
+  love.graphics.rectangle("fill", 0, 0, w, h)
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- Phase 1's "dive" overlay: no dark wash (view.draw_world dissolves the dish via the
+-- world fade), a teal hero core riding the lone winner, and a teal engulf that floods
+-- the frame as the camera plunges in -- the continuous zoom IS the bridge to phase 2.
+local function draw_dive(t, sx, sy, ay)
+  if t.phase == "freeze" then
+    return -- held frame: the endosymbiosis beat (owned by the view) plays
+  elseif t.phase == "focus" then
+    local p = clamp01(t.elapsed / dur_for(t, "focus"))
+    draw_hero_core(sx, sy, 0.25 + 0.35 * smoothstep(p))
+    draw_text_block(t, sx, ay, p, 1)
+  elseif t.phase == "charge" then
+    local p = clamp01(t.elapsed / dur_for(t, "charge"))
+    draw_hero_core(sx, sy, 0.6 + 0.4 * (p * p)) -- gathers to full by the plunge
+    draw_text_block(t, sx, ay, 1, 1)
+  elseif t.phase == "blast" then
+    local p = clamp01(t.elapsed / dur_for(t, "blast"))
+    draw_hero_core(sx, sy, 1)
+    -- The text blows out fast as the engulf floods up.
+    draw_text_block(t, sx, ay, 1, 1 - smoothstep(p / 0.25))
+    -- Cover reaches full at RESET_FRAC -- exactly when the hand-off into phase 2 fires.
+    draw_engulf(sx, sy, smoothstep(clamp01(p / RESET_FRAC)))
+  end
+end
+
 -- Draw the cinematic overlay. (sx, sy) is the triggering cell projected to the
 -- screen (the orchestrator computes it via view.world_to_screen each frame, so
--- the core + text ride the cell as the camera moves). No-op when inactive.
+-- the core + text ride the cell as the camera moves). No-op when inactive. Dispatches
+-- on style: "dive" (phase 1's zoom-into-the-cell) vs the classic "white" wipe.
 function transition.draw(t, sx, sy)
   if not t.active then
     return
@@ -253,6 +406,10 @@ function transition.draw(t, sx, sy)
   local w, h = love.graphics.getDimensions()
   -- Anchor the text near the cell but clamp it on-screen so it never sails off.
   local ay = math.max(h * 0.24, math.min(sy, h * 0.8))
+
+  if t.style == "dive" then
+    return draw_dive(t, sx, sy, ay)
+  end
 
   if t.phase == "freeze" then
     -- Held frame: the endosymbiosis beat (owned by the view) plays; nothing here.

@@ -17,7 +17,7 @@ local VARIANTS = {
   },
   content = {
     color = colors.ui.bg_panel,
-    opacity = 0.35,
+    opacity = 1,
     radius = 4,
     border = colors.ui.border_dim,
   },

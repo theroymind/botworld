@@ -76,6 +76,13 @@ uniform vec2  field;        // current field extent (world units): run scale + t
 uniform vec3  body_color;    // cell token (body pass) or mito token (mark pass)
 uniform float base_half;     // cell body half-size in world units
 uniform float pass_mode;     // 0 = cell body, 1 = mito mark
+// Trait-driven look. All neutral at their defaults (the field renders exactly as
+// before when stats are absent): swim_scale 1 (motility -> dart vs drift on the
+// fine weave), size_scale 1 (evasion -> a firmer, slightly larger body + mark),
+// sense_halo 0 (chemotaxis -> a faint additive twinkle lift, a "sensing" shimmer).
+uniform float swim_scale;    // motility: scales the fine-weave angular rate
+uniform float size_scale;    // evasion: scales the body/mark half-size
+uniform float sense_halo;    // chemotaxis: 0..~1 additive alpha shimmer (sense glow)
 uniform int   attractor_count;
 uniform vec4  attractors[%d]; // .xy world pos, .z radius, .w pull fraction (blooms)
 uniform int   repulsor_count;
@@ -133,8 +140,10 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   }
   vec2 pos = home + walk * (RUN_LEN * run_jit) * field;
 
-  // Gentle fine weave on top so each cell wriggles as it swims.
-  float ang = time * WEAVE_RATE + phase * two_pi;
+  // Gentle fine weave on top so each cell wriggles as it swims. swim_scale
+  // (motility) drives the weave's angular RATE: a leveled, motile colony darts/
+  // wriggles faster, a sluggish one drifts. Defaults to WEAVE_RATE (swim_scale 1).
+  float ang = time * (WEAVE_RATE * swim_scale) + phase * two_pi;
   pos += vec2(cos(ang), sin(ang * 1.3)) * InstanceJit.x;
 
   // Attractors (nutrient blooms): EASE toward the food by a fraction of the
@@ -147,22 +156,39 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
     float w = smoothstep(attractors[i].z, 0.0, dist);
     pos += to * (w * attractors[i].w);
   }
-  // Repulsors (predators): a capped push directly away (world units, modest), so a
-  // flee reads as a lean-away rather than a teleport.
+  // Repulsors (predators): a capped push away (world units, modest), so a flee
+  // reads as a lean-away rather than a teleport. The push is PER-CELL irregular so
+  // the avoided zone is a ragged, living gap instead of a perfect circle stamped
+  // out of the swarm: each cell has its OWN flee radius (so the boundary frays),
+  // leans away at a slightly rotated, time-wavering angle (so cells scatter rather
+  // than all sliding radially outward), and flees with its own strength.
   for (int i = 0; i < %d; i++) {
     if (i >= repulsor_count) break;
     vec2 away = pos - repulsors[i].xy;
     float dist = length(away) + 1e-3;
-    float w = smoothstep(repulsors[i].z, 0.0, dist);
-    pos += (away / dist) * (w * repulsors[i].w);
+    // Stable per-(cell,predator) hash drives all three perturbations.
+    float jit = fract(sin(seed * 53.7 + float(i) * 19.3) * 43758.5453);
+    float rad = repulsors[i].z * (0.68 + 0.64 * jit);    // own flee radius -> frayed edge
+    float w = smoothstep(rad, 0.0, dist);
+    float ang = (jit - 0.5) * 1.3                         // fixed per-cell skew
+              + 0.30 * sin(time * 1.6 + seed * two_pi);   // slow shimmer so the gap breathes
+    float ca = cos(ang); float sa = sin(ang);
+    vec2 dir = vec2(away.x * ca - away.y * sa, away.x * sa + away.y * ca) / dist;
+    float strength = repulsors[i].w * (0.5 + 1.0 * jit);  // own flee strength
+    pos += dir * (w * strength);
   }
 
   bool body = pass_mode < 0.5;
-  float half_size = base_half * InstanceJit.y * (body ? 1.0 : MARK_SCALE);
+  // size_scale (evasion) firms up the body a touch: a higher-evasion colony reads
+  // as slightly larger, sturdier squares (and the mito mark rides the same scale).
+  float half_size = base_half * InstanceJit.y * size_scale * (body ? 1.0 : MARK_SCALE);
   // Gentle per-cell twinkle so the field shimmers like living matter, not a flat
-  // stipple; the mark pass uses its own constant alpha.
+  // stipple; the mark pass uses its own constant alpha. sense_halo (chemotaxis)
+  // adds a faint, desynced additive shimmer on top -- a "sensing" glow that lifts
+  // the body alpha legibly without a separate halo pass. Zero -> the old twinkle.
   float twinkle = 0.85 + 0.15 * sin(time * 2.0 + phase * 10.0);
-  float alpha = body ? (InstanceJit.z * twinkle) : MARK_ALPHA;
+  float halo = sense_halo * (0.5 + 0.5 * sin(time * 3.0 + phase * two_pi));
+  float alpha = body ? (InstanceJit.z * twinkle + halo) : MARK_ALPHA;
   cell_color = vec4(body_color, alpha);
   return transform_projection * vec4(vertex_position.xy * half_size + pos, 0.0, 1.0);
 }
@@ -310,9 +336,18 @@ end
 -- Draw the live prefix of the swarm. params:
 --   field_w / field_h      -- current field extent (meander scale + current tier)
 --   base_half              -- cell body half-size in world units
---   color                  -- cell token { r, g, b } (body pass)
+--   color                  -- cell token { r, g, b } (body pass; may be trait-tinted)
 --   attractors / repulsors -- arrays of { x, y, radius, strength } (blooms/predators)
 --   mito / mark_color      -- when held, a second pass stamps the inner mito mark
+--   swim_scale             -- motility: fine-weave rate multiplier (default 1)
+--   size_scale             -- evasion: body/mark size multiplier (default 1)
+--   sense_halo             -- chemotaxis: additive alpha shimmer 0..~1 (default 0)
+--   opacity                -- whole-field alpha multiplier 0..1 (default 1): the vertex
+--                             color the fragment multiplies into every cell, so the
+--                             end-of-phase-1 dive can FADE the overflow swarm out in
+--                             lockstep with the simulated boids (1 = unchanged).
+-- The three trait knobs are OPTIONAL and default to the neutral look, so callers
+-- (tests, other paths) that omit them get the field exactly as it was before.
 -- Drawn inside the view's camera transform; restores the previous shader so the
 -- immediate-mode actors after it render normally.
 function cell_field.draw(params)
@@ -327,6 +362,10 @@ function cell_field.draw(params)
   shader:send("time", elapsed)
   shader:send("field", { params.field_w, params.field_h })
   shader:send("base_half", params.base_half)
+  -- Trait knobs, nil-safe: omitted -> the neutral look (1/1/0).
+  shader:send("swim_scale", params.swim_scale or 1)
+  shader:send("size_scale", params.size_scale or 1)
+  shader:send("sense_halo", params.sense_halo or 0)
   shader:send("attractor_count", attractor_count)
   shader:send("attractors", unpack(attractor_uniform, 1, MAX_ATTRACTORS))
   shader:send("repulsor_count", repulsor_count)
@@ -334,7 +373,10 @@ function cell_field.draw(params)
 
   local prev = love.graphics.getShader()
   love.graphics.setShader(shader)
-  love.graphics.setColor(1, 1, 1, 1)
+  -- The fragment multiplies cell_color by this vertex color, so an opacity < 1 fades
+  -- the WHOLE field uniformly -- the hook the dive uses to dissolve the overflow swarm.
+  local opacity = params.opacity or 1
+  love.graphics.setColor(1, 1, 1, opacity)
 
   shader:send("body_color", params.color)
   shader:send("pass_mode", 0)

@@ -36,6 +36,11 @@ local function intake(o)
     forage_cap = o.forage_cap or 6,
     upkeep_per_cell = o.upkeep_per_cell or 2,
     mult = o.mult or 1,
+    -- Toxicity model fields (optional; absent by default so the pre-toxicity specs
+    -- stay inert). Forwarded only when a test supplies them.
+    tox_prod = o.tox_prod,
+    tox_clear = o.tox_clear,
+    tox_half = o.tox_half,
   }
 end
 
@@ -135,6 +140,73 @@ local pop0, bm0 = s.population, s.biomass
 sim.step(s, 1 / 30, intake())
 check(s.population > pop0, "fed energy converts into divisions")
 check(s.biomass > bm0, "those divisions mint banked biomass")
+
+-- TOXICITY / health (the failure pressure). With NO tox fields the system is inert
+-- (toxicity stays 0, health is 1), so the bare intake above behaves exactly as the
+-- pre-toxicity economy -- the specs that came before are unaffected.
+check(approx(sim.health(0, 14), 1), "health is 1 in a clean dish (toxicity 0)")
+check(approx(sim.health(14, 14), 0.5), "health is 0.5 at tox_half")
+check(sim.health(100, 14) < 0.2, "health collapses toward 0 as waste piles up")
+check(approx(sim.health(50, nil), 1), "no tox_half -> health 1 (model off)")
+do
+  local inert = sim.new()
+  for _ = 1, 50 do
+    sim.step(inert, 0.1, intake()) -- intake() has no tox_prod/tox_clear
+  end
+  check(inert.toxicity == 0, "intake without a tox model never accrues toxicity")
+end
+-- tox_prod beyond tox_clear makes waste climb; clearance >= production holds at 0.
+do
+  local fouling = sim.new()
+  local I = intake({ tox_prod = 1, tox_clear = 0.2, tox_half = 14 })
+  for _ = 1, 50 do
+    sim.step(fouling, 0.1, I)
+  end
+  check(fouling.toxicity > 0, "production above clearance accrues toxicity")
+  -- net (prod - clear) = 0.8/s over 5s -> ~4.0.
+  check(fouling.toxicity > 3.5 and fouling.toxicity < 4.5, "toxicity tracks net (prod-clear)*t")
+  local clean = sim.new()
+  local J = intake({ tox_prod = 0.2, tox_clear = 1, tox_half = 14 })
+  for _ = 1, 50 do
+    sim.step(clean, 0.1, J)
+  end
+  check(clean.toxicity == 0, "clearance at/above production keeps the dish clean (toxicity 0)")
+end
+-- A fouled dish chokes a colony that a clean dish would sustain: same intake, but
+-- high toxicity throttles the intake side below upkeep and the population collapses.
+do
+  local choked = sim.new()
+  choked.population = 30
+  -- forage-only intake (capacity 18) plus relentless fouling, no clearance.
+  local foul = intake({ tox_prod = 2, tox_clear = 0, tox_half = 10 })
+  for _ = 1, 1500 do
+    sim.step(choked, 0.1, foul)
+  end
+  check(choked.toxicity > 0, "the choked colony accumulated waste")
+  check(choked.population == 1, "a fouled, uncleared dish collapses the colony to the founder floor")
+end
+-- feed_burst's optional tox_clear scrubs waste (the feeding survival lever).
+do
+  local d = sim.new()
+  d.toxicity = 20
+  sim.feed_burst(d, 40, 5)
+  check(approx(d.toxicity, 15), "a feed with tox_clear flushes that much waste")
+  check(approx(d.energy, 40), "the feed still credits energy")
+  sim.feed_burst(d, 0, 1000)
+  check(d.toxicity == 0, "tox_clear floors waste at 0 (no negative toxicity)")
+  local e = sim.new()
+  e.toxicity = 8
+  sim.feed_burst(e, 40) -- no tox_clear arg
+  check(approx(e.toxicity, 8), "a feed without tox_clear leaves waste untouched")
+end
+-- Toxicity round-trips through serialize/load.
+do
+  local t = sim.new()
+  t.toxicity = 12.5
+  local loaded = sim.load(sim.serialize(t))
+  check(approx(loaded.toxicity, 12.5), "serialize/load preserves toxicity")
+  check(sim.load({}).toxicity == 0, "load defaults toxicity to 0")
+end
 
 -- Starvation: a population past carrying capacity STARVES down toward the cap.
 -- Biomass is never touched by death (kept, even climbing as the capped colony
