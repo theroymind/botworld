@@ -38,14 +38,18 @@ local HUNGER_FADE = 0.7 -- how far a fully starved cell fades (alpha *= 1 - this
 local FED_PULSE = 0.6 -- seconds of the post-meal swell (matches the world's `fed` stamp)
 local FED_SWELL = 0.35 -- peak extra size of the just-fed pulse (a satisfied gulp)
 
--- The GPU swarm field's response to the world's actors, in WORLD units: how far a
--- nutrient bloom pulls cells in to feed (the swarm rushing food) and how far a
--- predator scatters them (the flee). Radius is the reach; strength is how far a
--- fully-engaged cell is displaced toward/away. Tuned by eye for a legible react.
-local BLOOM_ATTRACT_R = 260
-local BLOOM_ATTRACT_S = 200
+-- The GPU swarm field's response to the world's actors. Radius is the reach (world
+-- units). The bloom pull is a FRACTION of the remaining distance a fully-engaged
+-- cell eases toward the food each frame (in [0,1] -- never overshoots); the
+-- predator push is a modest world-unit shove away. Tuned by eye for a legible react.
+local BLOOM_ATTRACT_R = 280
+local BLOOM_ATTRACT_S = 0.6
 local PRED_REPEL_R = 190
-local PRED_REPEL_S = 170
+local PRED_REPEL_S = 70
+-- Seconds a bloom's pull eases in after it spawns and out before it expires, so the
+-- swarm's rush toward food ramps smoothly instead of popping the instant a bloom
+-- appears/vanishes (the attractor turning on/off in one frame).
+local BLOOM_FADE = 0.4
 
 local VIEW_FRAC = 0.9 -- field fills this fraction of the window; the rest is the
 -- off-screen margin that hides the wrap seam (tz divides by it, so the field
@@ -136,9 +140,7 @@ end
 -- Spawn a composable effect entity onto this view's fx controller; returns it.
 -- The orchestrator builds effects (fx.flash/fx.shake/fx.pulse) and adds them
 -- here, e.g. on a bloom feed.
-function view.spawn(state, effect)
-  return fx.add(state.fx, effect)
-end
+function view.spawn(state, effect) return fx.add(state.fx, effect) end
 
 -- Inverse of the translate-then-scale transform: world = (screen - cam) / zoom.
 -- Uses the STEADY camera (no transient shake offset), so bloom-click hit-testing
@@ -161,21 +163,15 @@ end
 -- zoom: draw_world drives its lerp toward this target instead of the field fit,
 -- so the camera smoothly pans + pushes in (the end-of-phase-1 transition's move
 -- onto the cell that triggered). clear_focus returns the camera to the field fit.
-function view.focus(state, wx, wy, zoom)
-  state.focus = { x = wx, y = wy, zoom = zoom }
-end
+function view.focus(state, wx, wy, zoom) state.focus = { x = wx, y = wy, zoom = zoom } end
 
-function view.clear_focus(state)
-  state.focus = nil
-end
+function view.clear_focus(state) state.focus = nil end
 
 -- The bloom's world-space radius at the current zoom: its constant on-screen UI
 -- size (BLOOM_SCREEN_R px) projected back into world units, so the orchestrator's
 -- world-space click hit-test matches the disk the view draws. Uses the steady
 -- camera zoom (same basis as screen_to_world), so the two stay consistent.
-function view.bloom_radius(state)
-  return BLOOM_SCREEN_R / state.camera.zoom
-end
+function view.bloom_radius(state) return BLOOM_SCREEN_R / state.camera.zoom end
 
 -- The endosymbiosis beat: an engulfed-prey square SPIRALS inward and shrinks into
 -- the host cell, then a bright flash blooms as the organelle is KEPT -- the moment
@@ -222,7 +218,10 @@ end
 function view.endosymbiosis_beat(state, pos)
   fx.add(state.fx, endosymbiosis_effect(pos.x, pos.y))
   fx.add(state.fx, fx.flash({ color = { 1, 1, 0.8 }, alpha = 0.2, life = 0.4 }))
-  fx.add(state.fx, fx.pulse({ x = pos.x, y = pos.y, color = { 1, 0.95, 0.6 }, alpha = 0.7, life = 0.7 }))
+  fx.add(
+    state.fx,
+    fx.pulse({ x = pos.x, y = pos.y, color = { 1, 0.95, 0.6 }, alpha = 0.7, life = 0.7 })
+  )
 end
 
 -- Resolve the common flat-primitive params (size/color/alpha + the data-driven
@@ -452,7 +451,12 @@ function view.draw_world(state, snap, opts)
   local attractors = {}
   for i = 1, #snap.blooms do
     local b = snap.blooms[i]
-    attractors[i] = { x = b.x, y = b.y, radius = BLOOM_ATTRACT_R, strength = BLOOM_ATTRACT_S }
+    -- Ease the pull in/out over the bloom's life so the rush ramps smoothly: fade
+    -- in for BLOOM_FADE after spawn, fade out for BLOOM_FADE before it expires.
+    local age = (b.life or 1) - (b.timer or 0)
+    local fade = clamp01(math.min(age, b.timer or 0) / BLOOM_FADE)
+    attractors[i] =
+      { x = b.x, y = b.y, radius = BLOOM_ATTRACT_R, strength = BLOOM_ATTRACT_S * fade }
   end
   local repulsors = {}
   for i = 1, #snap.predators do

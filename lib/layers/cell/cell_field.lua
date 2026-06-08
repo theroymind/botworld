@@ -55,13 +55,18 @@ local SWIM_RATE_MIN, SWIM_RATE_MAX = 0.35, 1.7 -- personal swim-loop angular spe
 local WOBBLE_MIN, WOBBLE_MAX = 5, 20 -- swim-loop radius (world units)
 local SIZE_JITTER_MIN, SIZE_JITTER_MAX = 0.7, 1.3 -- per-cell size variation
 local ALPHA_JITTER_MIN, ALPHA_JITTER_MAX = 0.62, 0.95 -- per-cell brightness variation
+-- Homes are inset this fraction from each field edge. The shader does NOT wrap the
+-- swarm (a fixed-home cell oscillating across 0 would teleport to the far edge via
+-- modulo); instead the inset keeps the (small) wander safely inside the field, and
+-- the view frames the field with its own off-screen margin anyway.
+local HOME_MARGIN = 0.06
 
 -- BLOOM_MAX / PRED_MAX are baked into the shader so the attractor/repulsor loops
 -- have constant bounds (required by GLSL ES on the iOS build) while the live count
 -- gates them with a conditional break.
 local VERTEX_SHADER_TEMPLATE = [[
 uniform float time;
-uniform vec2  field;        // current field extent (world units), for wrap + scale
+uniform vec2  field;        // current field extent (world units): home placement + scale
 uniform vec3  body_color;    // cell token (body pass) or mito token (mark pass)
 uniform float base_half;     // cell body half-size in world units
 uniform float pass_mode;     // 0 = cell body, 1 = mito mark
@@ -112,36 +117,37 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   // wriggle), desynced by its phase so the swarm never pulses in lockstep.
   float ang = time * swim + phase * two_pi;
   vec2 loop = vec2(cos(ang), sin(ang * 1.3)) * InstanceJit.x;
-  // Dart: an occasional lunge along the loop tangent -- a sharp pow() spike so
-  // most of the time it glides and now and then it shoots, reading as a survival
-  // twitch rather than smooth drift.
-  float dart = pow(fract(time * 0.5 + InstanceJit.w), 6.0);
-  loop += vec2(-sin(ang), cos(ang * 1.3)) * dart * InstanceJit.x * 1.5;
+  // Dart: a SMOOTH periodic lunge along the loop tangent -- a sin pulse raised to a
+  // high power, so most of the cycle glides and it surges now and then, with NO
+  // sawtooth snap (the old fract() jumped 1->0 and teleported the cell each cycle).
+  float dart = pow(0.5 + 0.5 * sin(time * 0.9 + InstanceJit.w * two_pi), 8.0);
+  loop += vec2(-sin(ang), cos(ang * 1.3)) * dart * InstanceJit.x;
 
   vec2 pos = home + sway + loop;
 
-  // Attractors (nutrient blooms): cells within radius STREAM toward the food, the
-  // pull easing in as they near it -- the swarm visibly rushing a bloom.
+  // Attractors (nutrient blooms): EASE toward the food by a fraction of the
+  // remaining distance (w * strength, strength in [0,1]) -- strongest right at the
+  // bloom and never overshooting, so cells settle onto it instead of oscillating
+  // across it (a normalize()*strength pull jumped past the target and jittered).
   for (int i = 0; i < %d; i++) {
     if (i >= attractor_count) break;
-    vec2 d = attractors[i].xy - pos;
-    float dist = length(d) + 1e-3;
+    vec2 to = attractors[i].xy - pos;
+    float dist = length(to) + 1e-3;
     float w = smoothstep(attractors[i].z, 0.0, dist);
-    pos += (d / dist) * w * attractors[i].w;
+    pos += to * (w * attractors[i].w);
   }
-  // Repulsors (predators): cells within radius FLEE, sharpest right at the strike.
+  // Repulsors (predators): a capped push directly away (strength in world units,
+  // kept modest so a flee reads as a lean-away, not a teleport).
   for (int i = 0; i < %d; i++) {
     if (i >= repulsor_count) break;
-    vec2 d = pos - repulsors[i].xy;
-    float dist = length(d) + 1e-3;
+    vec2 away = pos - repulsors[i].xy;
+    float dist = length(away) + 1e-3;
     float w = smoothstep(repulsors[i].z, 0.0, dist);
-    pos += (d / dist) * w * repulsors[i].w;
+    pos += (away / dist) * (w * repulsors[i].w);
   }
 
-  // Toroidal wrap: keep every cell inside the field (the view's margin hides the
-  // seam), so drift/flee never walks the swarm off the realm.
-  pos = mod(pos, field);
-
+  // No wrap: inset homes (HOME_MARGIN) + small wander keep cells inside the field,
+  // so there is no modulo seam to flicker edge cells across.
   bool body = pass_mode < 0.5;
   float half_size = base_half * InstanceJit.y * (body ? 1.0 : float(%f));
   // Gentle per-cell twinkle so the field shimmers like living matter, not a flat
@@ -170,9 +176,10 @@ local function build_instance_data()
   local random = love.math.random
 
   -- Generate, then sort centre-outward (instance 1 pinned to the centre).
+  local span = 1 - 2 * HOME_MARGIN
   local homes = {}
   for i = 1, MAX_CELLS do
-    local nx, ny = random(), random()
+    local nx, ny = HOME_MARGIN + random() * span, HOME_MARGIN + random() * span
     if i == 1 then
       nx, ny = 0.5, 0.5
     end
