@@ -5,6 +5,7 @@ local clock = require("lib.engine.clock")
 local layers = require("lib.engine.layers")
 local touch = require("lib.engine.touch")
 local cell = require("lib.layers.cell")
+local complexcell = require("lib.layers.complexcell")
 local solar = require("lib.layers.solar")
 
 local music
@@ -16,6 +17,7 @@ function love.load()
   music:setVolume(0.75)
   music:play()
   layers.register("cell", cell)
+  layers.register("complexcell", complexcell)
   layers.register("solar", solar)
   layers.load_all()
   layers.switch("cell")
@@ -56,26 +58,14 @@ function love.keypressed(key)
   end
 end
 
-function love.mousepressed(x, y, button)
-  layers.mousepressed(x, y, button)
-end
+function love.mousepressed(x, y, button) layers.mousepressed(x, y, button) end
 
-function love.mousemoved(x, y, dx, dy)
-  layers.mousemoved(x, y, dx, dy)
-end
+function love.mousemoved(x, y, dx, dy) layers.mousemoved(x, y, dx, dy) end
 
-function love.wheelmoved(dx, dy)
-  layers.wheelmoved(dx, dy)
-end
+function love.wheelmoved(dx, dy) layers.wheelmoved(dx, dy) end
 
-function love.touchpressed(id, x, y)
-  touch.pressed(id, x, y)
-end
+function love.touchpressed(id, x, y) touch.pressed(id, x, y) end
 
-function love.touchmoved(id, x, y)
-  touch.moved(id, x, y)
-end
+function love.touchmoved(id, x, y) touch.moved(id, x, y) end
 
-function love.touchreleased(id)
-  touch.released(id)
-end
+function love.touchreleased(id) touch.released(id) end

@@ -23,6 +23,10 @@ local organelles = require("lib.layers.cell.organelles")
 local world = require("lib.layers.cell.world")
 local view = require("lib.layers.cell.view")
 local transition = require("lib.layers.cell.transition")
+-- Phase-2 seam: the endosymbiosis finale no longer restarts phase 1 -- it zooms
+-- INTO the cell and hands off to the complex-cell layer (see begin_lineage_transition).
+local layers = require("lib.engine.layers")
+local complexcell = require("lib.layers.complexcell")
 
 -- Canonical UI kit (lib/engine/ui): retained-mode layout tree + renderer, themed
 -- primitives, fonts, interaction. The panel below is a declarative node tree.
@@ -142,9 +146,7 @@ end
 -- The drawn swarm is a logarithmic SAMPLE of the (now millions-scale) colony, so
 -- the dish keeps visibly filling without ever becoming an unreadable blur. The
 -- mapping + its tuning knobs live in world.sample_count.
-local function target_population(state)
-  return world.sample_count(state.sim.population)
-end
+local function target_population(state) return world.sample_count(state.sim.population) end
 
 -- The panel hugs its content and rides the RIGHT edge: cell.draw stamps the
 -- resolved tree height and the frame's computed left x here so the hit-test region
@@ -154,7 +156,10 @@ cell._panel_h = PANEL_H
 cell._panel_x = PANEL_MARGIN
 
 local function in_panel(x, y)
-  return x >= cell._panel_x and x < cell._panel_x + PANEL_W and y >= PANEL_Y and y < PANEL_Y + cell._panel_h
+  return x >= cell._panel_x
+    and x < cell._panel_x + PANEL_W
+    and y >= PANEL_Y
+    and y < PANEL_Y + cell._panel_h
 end
 
 local function set_toast(message)
@@ -204,27 +209,33 @@ end
 -- Arm the end-of-phase-1 transition cinematic on the cell at (cx, cy) -- the one
 -- whose engulf triggered endosymbiosis, the culminating beat of the cell layer.
 -- The timeline owns the clock and the overlay; we bind its three side effects
--- here: the camera push-in onto the cell, the build-up/detonation shakes, and the
--- level RESET at the white peak (wipe the save + reload a fresh founder -- a new
--- lineage; phase 1 has no next scale to advance into yet). base_zoom is captured
--- NOW so the focus pushes in relative to the camera's current settled fit.
+-- here: the camera push-in onto the cell, the build-up/detonation shakes, and -- at
+-- the white peak -- the HAND-OFF INTO PHASE 2. Instead of restarting phase 1, the
+-- reset punches through the white-out into the cytoplasm: the engulfed bacterium
+-- becomes the first mitochondrion, the colony carries forward as a single statistic,
+-- and we switch to the complex-cell layer. The colony population is captured NOW
+-- (before the reset fires) so it survives the cinematic. base_zoom is captured NOW
+-- so the focus pushes in relative to the camera's current settled fit.
 local function begin_lineage_transition(cx, cy)
   local base_zoom = view_state.camera.zoom
+  local colony = cell.state.sim.population -- the population that "becomes a statistic"
   transition.begin(transition_state, {
     x = cx,
     y = cy,
-    on_focus = function(x, y, mult)
-      view.focus(view_state, x, y, base_zoom * mult)
-    end,
+    -- Phase-2 seam text: the zoom-into-the-cell, not a fresh soup.
+    title = "A CELL WITHIN A CELL",
+    kicker = "endosymbiosis",
+    subtitle = "zoom in",
+    on_focus = function(x, y, mult) view.focus(view_state, x, y, base_zoom * mult) end,
     on_shake = function(mag, life, seed)
       view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
     end,
     on_reset = function()
-      -- New lineage: same wipe-and-reload as [r], reached through the cinematic.
-      -- cell.load rebuilds world_state/view_state fresh, so the camera snaps to the
-      -- new field and the founder emerges as the white-out fades.
-      save.remove(SAVE_NAME)
-      cell.load()
+      -- Cross the seam into phase 2: initialize a fresh complex cell (the engulfed
+      -- bacterium is its first mitochondrion), carrying the collapsed colony as a
+      -- single number, then switch layers behind the white-out.
+      complexcell.enter_from_seam({ colony = colony })
+      layers.switch("complexcell")
     end,
   })
 end
@@ -292,9 +303,7 @@ function cell.load()
     width, height = love.graphics.getDimensions()
   end
   world_state = world.new({
-    rng = function()
-      return love.math.random()
-    end,
+    rng = function() return love.math.random() end,
     aspect = width / height,
   })
 
@@ -385,7 +394,10 @@ function cell.update(dt)
   if deaths then
     for i = 1, #deaths do
       local p = deaths[i]
-      view.spawn(view_state, fx.burst({ x = p.x, y = p.y, color = colors.primary, seed = p.x + p.y }))
+      view.spawn(
+        view_state,
+        fx.burst({ x = p.x, y = p.y, color = colors.primary, seed = p.x + p.y })
+      )
     end
   end
   -- A predator KILL bursts the victim into RED particles -- a violent death,
@@ -393,7 +405,10 @@ function cell.update(dt)
   if kill_points then
     for i = 1, #kill_points do
       local p = kill_points[i]
-      view.spawn(view_state, fx.burst({ x = p.x, y = p.y, color = colors.quaternary, seed = p.x + p.y }))
+      view.spawn(
+        view_state,
+        fx.burst({ x = p.x, y = p.y, color = colors.quaternary, seed = p.x + p.y })
+      )
     end
   end
   -- Any cell death this frame -- starvation or kill -- gets ONE pop (not one per
@@ -409,7 +424,10 @@ function cell.update(dt)
   if engulf_points then
     for i = 1, #engulf_points do
       local p = engulf_points[i]
-      view.spawn(view_state, fx.implode({ x = p.x, y = p.y, color = colors.tertiary, seed = p.x + p.y }))
+      view.spawn(
+        view_state,
+        fx.implode({ x = p.x, y = p.y, color = colors.tertiary, seed = p.x + p.y })
+      )
     end
   end
   -- Phase 1's climax: a prey engulf may keep the partner (endo_chance ramps with
@@ -463,7 +481,11 @@ local function action_button_node(opts)
         opacity = enabled and nil or 0.18,
       })
       local label_y = r.y + math.max(2, math.floor((r.h - 28) / 2))
-      text(rect(r.x, label_y, r.w, 14), opts.label, { font = "hud", color = tcol, align = "center" })
+      text(
+        rect(r.x, label_y, r.w, 14),
+        opts.label,
+        { font = "hud", color = tcol, align = "center" }
+      )
       if opts.sublabel then
         text(rect(r.x, r.y + r.h - 16, r.w, 12), opts.sublabel, {
           font = "hud_small",
@@ -565,14 +587,14 @@ local function build_panel(state)
   local header = {}
   table.insert(
     header,
-    layout.text("biomass  " .. format.number(state.sim.biomass), { size = "lg", color = colors.ui.text })
+    layout.text(
+      "biomass  " .. format.number(state.sim.biomass),
+      { size = "lg", color = colors.ui.text }
+    )
   )
   table.insert(
     header,
-    layout.text(
-      string.format("colony  %d", pop),
-      { color = colors.ui.text_dim }
-    )
+    layout.text(string.format("colony  %d", pop), { color = colors.ui.text_dim })
   )
   table.insert(
     header,
