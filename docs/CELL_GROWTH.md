@@ -5,11 +5,12 @@ Covers why the colony stalls at ~91, a headless harness for testing balance chan
 and two levers — **trait synergy** (now shipped) and a **biofilm network stage**
 (proposed) — to push the cell layer from a loose swarm into a dense, busy network.
 
-**Scope note:** the game currently has **phase 1 only**. There is no phase 2 /
-multicellular layer yet, so phase 1 *ends* when an endosymbiosis proc fires the
-new-lineage finale (`transition.lua`). Earlier drafts framed that beat as a bridge
-into multicellular prestige; that framing is removed to avoid confusion. The
-multicellular merge stays a future vision in `GAME_PLAN.md`, not a current mechanic.
+**Scope note:** **phase 1 (this doc) is built; phase 2 — the *complex cell* — is now in
+design** (`docs/PHASE_2.md`). The endosymbiosis proc that ends phase 1 (`transition.lua`)
+is the **seam into phase 2** (zoom inside one cell); until phase 2 ships it still resets
+into a new lineage as a placeholder. Note phase 2 is a *complex single cell*, **not**
+multicellular — going multicellular is a later phase whose mechanics are open
+(`GAME_PLAN.md`).
 
 All numbers below come from `tools/sim_lab.lua`, which runs the *real* economy
 modules headless. Run it yourself: `lua tools/sim_lab.lua` (or `luajit`, same as the
@@ -190,8 +191,8 @@ cells stop drifting as a loose swarm and link into a connected mat that shares
 nutrients. That shared transport is the mechanic that breaks the plateau, and a dense
 mat is the visual the layer is missing. It slots in as the **capstone of phase 1's
 growth** — the colony climbs into a teeming network, and the endosymbiosis proc then
-fires the new-lineage finale over that mat. (No phase 2 hookup; the multicellular
-merge in `GAME_PLAN.md` stays a future vision.)
+fires over that mat — the **seam into phase 2** (`docs/PHASE_2.md`). (Going
+multicellular remains a later, open phase in `GAME_PLAN.md`.)
 
 **Core idea:** in a biofilm the food cap is no longer fixed at 5 — the network shares
 nutrients, so the saturation point *tracks the population* (`cap_eff = base + LINK·pop`).

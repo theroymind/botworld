@@ -175,22 +175,20 @@ complementary channels, no pairing UI, no ledger:
 6. **Offline** — The dish keeps metabolizing as background math (aggregate-number offline
    progress), per the master plan.
 
-## End of phase 1 — the endosymbiosis finale
+## End of phase 1 — the endosymbiosis seam
 
-**Current state (2026-06-08): phase 1 is the whole game.** There is no phase 2 /
-multicellular layer yet, so the cell layer's *ending* is the **endosymbiosis proc**:
-a rare engulf-and-keep fires the cinematic in `transition.lua` and the run resets into
-a **fresh lineage** (wipe + new founder, same as `[r]`). It's a clean culmination beat,
-standing in as the prestige moment until a real next scale exists. See
-`docs/CELL_GROWTH.md` for the growth arc that leads up to it (trait synergy, the
-proposed biofilm network stage).
+The cell layer ends on the **endosymbiosis proc**: a rare engulf-and-keep fires the
+cinematic in `transition.lua` (the camera pushes *into* the triggering cell, then a
+white-out). **Until phase 2 ships, that white-out resets into a fresh lineage** (wipe +
+new founder, same as `[r]`) — a clean placeholder culmination. See `docs/CELL_GROWTH.md`
+for the growth arc that leads up to it (trait synergy, the proposed biofilm stage).
 
-**Future vision (deferred — not built):** the merge-upward prestige. Rather than
-wiping, the colony would go **multicellular** — the swarm fuses into a single body and
-carries its genome forward as inherited multipliers, the master plan's "becomes a
-statistic" made literal, animated by the same metaball threshold that handles mitosis.
-This is intentionally *not* wired in today to avoid implying a phase 2 that doesn't
-exist; it lives in `GAME_PLAN.md` as the long-term ladder.
+**This is the seam into phase 2.** Phase 2 — the *complex cell* — is now in design; see
+`docs/PHASE_2.md`. Instead of resetting, the zoom-in continues *inside* the engulfing
+cell, and the bacterium it just kept becomes its first mitochondrion; the collapsed
+colony carries forward as a single number (the "becomes a statistic" beat). Note phase 2
+is a *complex single cell*, **not** multicellular — going multicellular (many cells
+fusing into a body) is a **later** phase whose mechanics are open (`GAME_PLAN.md`).
 
 ---
 
