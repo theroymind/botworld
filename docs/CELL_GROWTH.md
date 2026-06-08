@@ -17,7 +17,45 @@ test runner picks).
 
 ---
 
-## 1. Why it plateaus (it's structural, not a bug)
+## 0. SHIPPED (2026-06-08): open-ended compounding economy
+
+The plateau is gone. The economy is no longer logistic — it **compounds**. Each cell
+now adds a per-cell income that does **not** saturate (`cell.lua GROWTH_RATE` →
+`sim` `intake.growth_per_cell`), so income scales with the colony and population
+climbs **exponentially into the millions** instead of walling at a carrying capacity.
+Phase 1 is now a **~5-minute sprint**:
+
+| time | colony (maxed, GROWTH_RATE 0.1) |
+|---|---|
+| 30 s | ~950 |
+| 1 min | ~3k |
+| 2 min | ~16k |
+| 5 min | ~1.3M |
+
+`lua tools/sim_lab.lua growth` reproduces this from the real `sim.step`.
+
+**Endosymbiosis is the climax, and it's RNG.** A prey engulf can keep the partner and
+resolve the run into a new lineage. The per-engulf chance is `ENDO_BASE_CHANCE` plus
+`ENDO_RAMP_PER_STEP` per `ENDO_STEP` (100k) cells — **possible at any size but
+vanishingly rare early, near-certain once the swarm is in the millions** — so the run
+almost always ends somewhere in the low millions, with variance, never on a fixed
+threshold.
+
+**Rendering samples logarithmically.** A millions-cell colony would be an unreadable
+blur, so `world.sample_count(pop)` draws 1:1 up to `RENDER_KNEE` (250), then adds
+`RENDER_LOG_SLOPE` agents per e-fold, capped at `MAX_AGENTS` (1500): ~458 dots at 1k,
+~874 at 16k, ~1494 at 1M. The dish keeps visibly filling but stays readable. All three
+constants are meant to be tuned by eye in play.
+
+The sections below are the **history and the still-open ideas**: §1–2 explain the old
+logistic wall and the harness; §3 (trait synergy) is shipped and still relevant (it
+shapes the early climb); §4 (biofilm) is now **optional** — the compounding economy
+already delivers the "busy network," so biofilm would be a *visual/structural* layer,
+not the growth fix it was first proposed as.
+
+---
+
+## 1. Why it plateaued — the old logistic model (historical)
 
 The economy is a closed form: each cell forages a little, photosynthesis adds a flat
 light income, and every cell pays upkeep. The colony grows until the saturated intake

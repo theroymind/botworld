@@ -59,8 +59,25 @@ local TOAST_SECONDS = 4
 local FORAGE_CAP = 5 -- foraging income saturates past this many cells (carrying cap)
 local UPKEEP_SCALE = 1.3 -- per-cell upkeep multiplier (lowers K, slows growth, sharpens deficit)
 local PHOTO_LIGHT = 30 -- flat light income once photosynthesis is unlocked (x photo_mult)
+-- OPEN-ENDED COMPOUNDING growth. Each cell adds a tiny per-cell income that does
+-- NOT saturate, so income scales with the colony and population climbs
+-- exponentially toward the millions-scale HARD_CAP instead of walling at a fixed
+-- carrying capacity. GROWTH_RATE is the net compounding surplus per cell (x the
+-- income mult) -- the master pacing knob: higher = a steeper climb, sooner to the
+-- millions. It's added ON TOP of foraging exactly covering upkeep, so the colony
+-- never starves under it. Phase 1 is a ~5-minute sprint: at 0.1 the colony rockets
+-- past a million cells in well under 5 min. Validate with `lua tools/sim_lab.lua growth`.
+local GROWTH_RATE = 0.1
+
+-- Endosymbiosis (phase 1's climax) is an RNG event possible at ANY colony size, but
+-- the per-engulf chance starts vanishingly small and ramps up by ENDO_RAMP_PER_STEP
+-- for every ENDO_STEP cells -- so an early keep is *possible* but statistically very
+-- rare, and the run almost always resolves once the colony is well into the millions.
+-- ENDO_BASE_CHANCE is the floor at a single cell (tiny, never zero); clamped to 1.
+local ENDO_STEP = 100000 -- the chance ramps once per this many cells
+local ENDO_BASE_CHANCE = 0.00002 -- per-engulf chance at the start (possible but very rare)
+local ENDO_RAMP_PER_STEP = 0.0015 -- added to the chance per ENDO_STEP cells of colony size
 local FEED_ENERGY = 40 -- nutrient reserve a bloom feed credits
-local ENDO_CHANCE = 0.001 -- per prey-engulf chance to keep it as a permanent organelle
 
 -- The metabolism dial has been removed; the economy runs at the sweet-spot base
 -- rate baked in here so offline / online math never diverges.
@@ -100,18 +117,29 @@ local function intake_for(state)
     photo = PHOTO_LIGHT * stats.photo_mult
   end
   photo = photo + organelles.photo_bonus(set)
+  local upkeep = metabolism.loss(FIXED_TEMPO) * stats.upkeep_mult * UPKEEP_SCALE
+  local mult = traits.income_mult(state.traits) * organelles.intake_mult(set)
+  -- Compounding income per cell: enough to cover its own upkeep (upkeep/mult) plus
+  -- the GROWTH_RATE surplus, so the net per-cell contribution is GROWTH_RATE x mult
+  -- -- a small positive that compounds the colony exponentially. Scaling the
+  -- surplus by mult means unlocks/organelles also steepen the climb.
+  local growth_per_cell = upkeep / mult + GROWTH_RATE
   return {
     photo = photo,
     forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult,
-    forage_cap = FORAGE_CAP * stats.forage_cap_mult, -- reach synergy lifts the saturation cap (-> higher K)
-    upkeep_per_cell = metabolism.loss(FIXED_TEMPO) * stats.upkeep_mult * UPKEEP_SCALE,
-    mult = traits.income_mult(state.traits) * organelles.intake_mult(set),
+    forage_cap = FORAGE_CAP * stats.forage_cap_mult, -- reach synergy lifts the saturation cap
+    upkeep_per_cell = upkeep,
+    growth_per_cell = growth_per_cell, -- the open-ended compounding channel (-> millions)
+    mult = mult,
     div_mult = stats.div_mult, -- digestion: < 1 cheapens every division
   }
 end
 
+-- The drawn swarm is a logarithmic SAMPLE of the (now millions-scale) colony, so
+-- the dish keeps visibly filling without ever becoming an unreadable blur. The
+-- mapping + its tuning knobs live in world.sample_count.
 local function target_population(state)
-  return math.min(state.sim.population, world.MAX_AGENTS)
+  return world.sample_count(state.sim.population)
 end
 
 -- The panel hugs its content and rides the RIGHT edge: cell.draw stamps the
@@ -197,20 +225,36 @@ local function begin_lineage_transition(cx, cy)
   })
 end
 
--- Roll endosymbiosis for the prey engulfed this frame -- the third real live ->
--- economy coupling. Each completed engulf has a tiny chance to KEEP the prey as a
--- permanent organelle, once the colony is eligible (predation unlocked, the
--- lifetime-division gate met, prerequisites held). At most one keep per frame:
--- acquire it, toast, play the beat AT the triggering cell, and -- the moment it
--- procs -- arm the end-of-phase-1 transition off that same cell. engulf_points carries
--- the world position of each completed prey engulf (index-aligned with the loop),
--- so the cinematic centres on the cell that actually triggered, not the swarm mean.
--- Live-only (prey are live-only), so it never fires offline -- a moment to witness.
+-- The per-engulf endosymbiosis chance at the current colony size: ENDO_BASE_CHANCE
+-- plus a slight ramp for every ENDO_STEP cells (clamped to 1). Nonzero from the
+-- first cell -- so a keep is possible at any size -- but tiny early and climbing
+-- with the colony, so it almost always lands once the swarm is into the millions.
+local function endo_chance(population)
+  local steps = math.floor(population / ENDO_STEP)
+  local chance = ENDO_BASE_CHANCE + ENDO_RAMP_PER_STEP * steps
+  if chance > 1 then
+    return 1
+  end
+  return chance
+end
+
+-- Phase 1's CLIMAX. Each completed prey engulf has the ramped endo_chance() to KEEP
+-- the partner as an organelle and resolve the run into a new lineage via the
+-- end-of-phase-1 cinematic -- possible at any colony size, but vanishingly rare
+-- until the swarm is huge. Gated on predation being unlocked (prey -- the partners
+-- -- exist) and an organelle still being available. At most one keep per frame; the
+-- transition then freezes the sim so it can't re-enter. engulf_points centres the
+-- cinematic on the cell that actually triggered. Live-only (prey are live-only), so
+-- it never fires offline -- a moment to witness.
 local function roll_endosymbiosis(engulfs, engulf_points, predation)
+  if transition.active(transition_state) then
+    return
+  end
   local s = cell.state.sim
+  local chance = endo_chance(s.population)
   for i = 1, engulfs do
     local def = organelles.next_eligible(s.organelles, s.total_divisions, predation)
-    if def and love.math.random() < ENDO_CHANCE then
+    if def and love.math.random() < chance then
       organelles.acquire(s.organelles, def.id)
       set_toast(string.format("Endosymbiosis! %s kept — %s", def.label, def.boon))
       local p = engulf_points and engulf_points[i]
@@ -362,7 +406,8 @@ function cell.update(dt)
       view.spawn(view_state, fx.implode({ x = p.x, y = p.y, color = colors.tertiary, seed = p.x + p.y }))
     end
   end
-  -- A rare prey engulf may be kept as a permanent organelle (the progression).
+  -- Phase 1's climax: a prey engulf may keep the partner (endo_chance ramps with
+  -- colony size), ending the run into a new lineage -- rare early, near-certain huge.
   if engulfs and engulfs > 0 then
     roll_endosymbiosis(engulfs, engulf_points, predation)
   end

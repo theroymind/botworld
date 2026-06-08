@@ -62,6 +62,19 @@ local FIXED_TEMPO = metabolism.optimum() -- the baked-in metabolism dial positio
 local BIOFILM_LINK = 1.0 -- per-stage: cap gains this many slots per cell
 local BIOFILM_DIFFUSION = 0.0012 -- per-stage: upkeep penalty per cell (the self-defeat)
 
+-- ---------------------------------------------------------------------------
+-- OPEN-ENDED COMPOUNDING growth (the `growth` mode), now SHIPPED. The old economy
+-- was LOGISTIC: population grew only until per-cell intake met upkeep, then
+-- starved back to a fixed carrying capacity K -- an S-curve that flattens, which
+-- is why the colony felt walled at ~110. The shipped fix adds a per-cell income
+-- that does NOT saturate (cell.lua GROWTH_RATE -> intake.growth_per_cell), so
+-- income scales with the colony and population climbs EXPONENTIALLY toward the
+-- millions-scale HARD_CAP. The `growth` mode drives the REAL sim.step with this
+-- intake, so it mirrors the game exactly. GROWTH_RATE here mirrors cell.lua; edit
+-- both together (or, better, read curves here and copy the value over).
+-- ---------------------------------------------------------------------------
+local GROWTH_RATE = 0.1 -- MIRRORS cell.lua: compounding surplus per cell (x mult)
+
 -- Build the intake fold for a config at a given population. Population matters
 -- only when biofilm is on (cap + upkeep become pop-dependent); the base game is
 -- pop-independent and this returns the same table every call.
@@ -88,12 +101,22 @@ local function intake_for(cfg, population)
     upkeep = upkeep * (1 + BIOFILM_DIFFUSION * s * (population or 1))
   end
 
+  local mult = traits.income_mult(tstate) * organelles.intake_mult(set)
+  -- Compounding channel, mirroring cell.lua: per-cell income that covers upkeep
+  -- plus the growth_rate surplus, so net per cell is growth_rate x mult (-> the
+  -- exponential climb). growth_rate defaults to 0, which leaves the scenario table
+  -- and sweeps on the legacy logistic model (K stays meaningful, sanity = 110).
+  local growth_per_cell = 0
+  if cfg.growth_rate and cfg.growth_rate > 0 then
+    growth_per_cell = upkeep / mult + cfg.growth_rate
+  end
   return {
     photo = photo,
     forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult,
     forage_cap = forage_cap,
     upkeep_per_cell = upkeep,
-    mult = traits.income_mult(tstate) * organelles.intake_mult(set),
+    growth_per_cell = growth_per_cell,
+    mult = mult,
     div_mult = stats.div_mult,
   }
 end
@@ -175,6 +198,7 @@ local function base_cfg(overrides)
     forage_cap = DEFAULTS.forage_cap,
     upkeep_scale = DEFAULTS.upkeep_scale,
     photo_light = DEFAULTS.photo_light,
+    growth_rate = 0, -- 0 = legacy logistic; > 0 = open-ended compounding (the `growth` mode sets it)
     biofilm = 0,
   }
   if overrides then
@@ -312,6 +336,123 @@ local function curve(name, out)
 end
 
 -- ---------------------------------------------------------------------------
+-- Open-ended growth prototype. Drives the REAL sim.step with the REAL intake fold
+-- (compounding included when cfg.growth_rate > 0), so the numbers ARE the game's.
+-- ---------------------------------------------------------------------------
+
+-- Population at each checkpoint time (seconds), stepping the real economy.
+local function growth_curve(cfg, checkpoints)
+  local state = sim.new()
+  state.organelles = cfg.organelles or {}
+  local dt = 1
+  local out, ci, t = {}, 1, 0
+  local last = checkpoints[#checkpoints]
+  while t < last and ci <= #checkpoints do
+    sim.step(state, dt, intake_for(cfg, state.population))
+    t = t + dt
+    while ci <= #checkpoints and t >= checkpoints[ci] do
+      out[ci] = state.population
+      ci = ci + 1
+    end
+  end
+  while ci <= #checkpoints do
+    out[ci] = state.population
+    ci = ci + 1
+  end
+  return out
+end
+
+local function fmt_pop(n)
+  if n >= 1000000 then
+    return string.format("%5.2fM", n / 1000000)
+  elseif n >= 1000 then
+    return string.format("%5.0fk", n / 1000)
+  else
+    return string.format("%6d", n)
+  end
+end
+
+local function fmt_t(s)
+  if not s then
+    return " >limit"
+  elseif s < 120 then
+    return string.format("%4.0f s", s)
+  else
+    return string.format("%4.1f m", s / 60)
+  end
+end
+
+-- Seconds for a config (real economy) to first cross a target population.
+local function time_to(cfg, target, max_t)
+  local state = sim.new()
+  state.organelles = cfg.organelles or {}
+  local dt, t = 1, 0
+  while t < max_t do
+    sim.step(state, dt, intake_for(cfg, state.population))
+    t = t + dt
+    if state.population >= target then
+      return t
+    end
+  end
+  return nil
+end
+
+-- A maxed colony at a given compounding GROWTH_RATE.
+local function compounding_cfg(rate, extra_photo)
+  local cfg = maxed_cfg({ growth_rate = rate })
+  if extra_photo then
+    cfg.levels.photosynthesis = cfg.levels.photosynthesis + extra_photo
+  end
+  return cfg
+end
+
+local function growth()
+  -- Phase 1 is a ~5-minute sprint: the colony should rocket to the millions and
+  -- the endo proc ends the run around then. These checkpoints zoom in on that.
+  local checkpoints = { 30, 60, 120, 300, 600 }
+  local labels = { "30 s", "1 min", "2 min", "5 min", "10 min" }
+
+  local rows = {
+    { "logistic (old, walls)", maxed_cfg() },
+    { "compounding (shipped)", compounding_cfg(GROWTH_RATE) },
+    { "compounding +1 Photo", compounding_cfg(GROWTH_RATE, 1) },
+  }
+
+  print("")
+  print("growth -- COLONY POPULATION over time (maxed colony, GROWTH_RATE=" .. GROWTH_RATE .. ")")
+  print(string.rep("-", 72))
+  io.write(string.format("%-24s", "model"))
+  for _, l in ipairs(labels) do
+    io.write(string.format("%8s", l))
+  end
+  print("")
+  print(string.rep("-", 72))
+  for _, row in ipairs(rows) do
+    local pops = growth_curve(row[2], checkpoints)
+    io.write(string.format("%-24s", row[1]))
+    for i = 1, #checkpoints do
+      io.write(fmt_pop(pops[i]) .. "  ")
+    end
+    print("")
+  end
+  print(string.rep("-", 72))
+  print("time-to-1,000,000 cells at a few GROWTH_RATE values (the phase-1 pacing knob):")
+  for _, rate in ipairs({ 0.0016, 0.01, 0.03, 0.06, 0.1 }) do
+    print(
+      string.format(
+        "  GROWTH_RATE %-7s -> 1M in %s",
+        tostring(rate),
+        fmt_t(time_to(compounding_cfg(rate), 1000000, 3600))
+      )
+    )
+  end
+  print(string.rep("-", 72))
+  print("pick the rate that lands 1M ~<= 5 min, set GROWTH_RATE in cell.lua + here.")
+  print("the endo proc should fire on hitting the millions target to end phase 1.")
+  print("")
+end
+
+-- ---------------------------------------------------------------------------
 -- Entry.
 -- ---------------------------------------------------------------------------
 local mode = arg[1]
@@ -319,6 +460,8 @@ if mode == "sweep" then
   sweep(arg[2], arg[3], arg[4], arg[5])
 elseif mode == "curve" then
   curve(arg[2], arg[3])
+elseif mode == "growth" then
+  growth()
 else
   scenario_table()
 end

@@ -39,6 +39,18 @@ Reading the numbers:
 
 Target: 1M+ drones at 60fps. Cap is 2M (instance buffer size, `MAX_DRONES`).
 
+## iOS (dev build on your iPhone)
+
+```
+make ios     # package .love, build dev-signed LÖVE app, install + launch on device
+```
+
+One-time setup: Xcode signed into your Apple ID, iPhone plugged in and trusted,
+Developer Mode on (Settings > Privacy & Security). No paid account needed; free
+builds expire after 7 days — re-run `make ios`. Overrides: `TEAM_ID`, `DEVICE`,
+`BUNDLE_ID`, `LOVE_VERSION` (see `tools/ios.sh`). On the phone, taps/drags map to
+mouse input automatically; pinch zooms.
+
 ## Checks
 
 ```

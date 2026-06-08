@@ -33,8 +33,33 @@
 -- Nearest-food lookup uses a rebuilt-per-update spatial hash.
 local world = {}
 
-local MAX_AGENTS = 300 -- the bounded visual sample of the colony
+-- The visible swarm is a bounded SAMPLE of the colony. With the open-ended economy
+-- the colony reaches millions, which would render as an unreadable blur -- so the
+-- on-screen count keeps RISING with the colony but LOGARITHMICALLY, flattening to a
+-- readable ceiling. world.sample_count maps colony size -> drawn agents:
+--   * 1:1 up to RENDER_KNEE (early game is honest -- every cell shown);
+--   * + RENDER_LOG_SLOPE agents per e-fold of colony size beyond the knee;
+--   * hard-capped at MAX_AGENTS (the readability + CPU ceiling).
+-- All three are tuning knobs -- expect to set them by eye in play (readability vs.
+-- "it keeps growing" vs. frame budget).
+local MAX_AGENTS = 1500 -- on-screen ceiling (readability + CPU bound; tune by eye)
+local RENDER_KNEE = 250 -- show 1:1 up to here, then go logarithmic
+local RENDER_LOG_SLOPE = 150 -- agents added per natural-log e-fold of colony size past the knee
 local MAX_BORN_PER_UPDATE = 4 -- smooth fill-in; no flurry on offline return
+
+-- Colony size -> number of agents to actually draw. Rises forever (slowly) but
+-- saturates at MAX_AGENTS, so a 90-cell dish and a 5-million-cell dish both read.
+function world.sample_count(population)
+  population = math.max(0, math.floor(population or 0))
+  if population <= RENDER_KNEE then
+    return population
+  end
+  local n = RENDER_KNEE + math.floor(RENDER_LOG_SLOPE * math.log(population / RENDER_KNEE) + 0.5)
+  if n > MAX_AGENTS then
+    return MAX_AGENTS
+  end
+  return n
+end
 local CELL_SPAWN_SPREAD = 44 -- daughter cell offset from a parent (wide, so births don't seed clumps)
 local BIRTH_EMERGE = 0.5 -- seconds a daughter slides out of its parent (mirrors the view's POP_IN)
 

@@ -38,7 +38,12 @@ local DIV_YIELD = 2 -- banked biomass minted by each successful division
 -- (which whipsaws near carrying capacity as the integer population wobbles).
 local RATE_TAU = 12
 local DEATH_RELEASE = 3 -- energy a starvation death refunds (each deficit unit culls more cells)
-local HARD_CAP = 100000 -- population ceiling (bounds the mint loop; K is the real ceiling)
+-- Population ceiling, bounds the mint loop. With the open-ended COMPOUNDING economy
+-- (intake.growth_per_cell > 0) this IS the effective ceiling -- a millions-scale
+-- number the colony climbs toward over days, rendered as a dense swarm. With the
+-- legacy logistic economy (growth_per_cell == 0) the carrying capacity K is reached
+-- first and this never binds.
+local HARD_CAP = 8000000 -- 8M cells
 
 -- Offline relaxation: replay the shared step in fixed sub-steps so leaving and
 -- returning converges the colony toward carrying capacity instead of crashing.
@@ -87,13 +92,24 @@ end
 -- Net energy/sec at a colony size, from the folded intake. Foraging saturates at
 -- forage_cap cells (a finite food supply); upkeep scales with every cell. Below
 -- the cap the colony grows; once upkeep outruns the saturated intake it starves.
+-- Net energy/sec. Three channels, all scaled by mult: the population-independent
+-- light income (photo), the per-cell foraging that SATURATES past forage_cap (the
+-- legacy logistic faucet), and -- the open-ended part -- a per-cell COMPOUNDING
+-- income (growth_per_cell) that does NOT saturate, so income scales with the
+-- colony and growth becomes exponential. Linear upkeep is the only drain. When
+-- growth_per_cell == 0 this is exactly the old logistic model (carrying capacity
+-- K); when growth_per_cell*mult exceeds upkeep the colony climbs without a finite
+-- cap, toward HARD_CAP.
 local function intake_rate(intake, population)
   local photo = intake.photo or 0
   local forage = intake.forage_per_cell or 0
   local cap = intake.forage_cap or population
   local upkeep = intake.upkeep_per_cell or 0
   local mult = intake.mult or 1
-  return (photo + forage * math.min(population, cap)) * mult - upkeep * population
+  local growth = intake.growth_per_cell or 0
+  local saturating = forage * math.min(population, cap)
+  local compounding = growth * population -- never saturates -> exponential climb
+  return (photo + saturating + compounding) * mult - upkeep * population
 end
 
 function sim.net_energy(intake, population)
@@ -210,10 +226,14 @@ function sim.capacity(intake)
   local cap = intake.forage_cap or 0
   local upkeep = intake.upkeep_per_cell or 0
   local mult = intake.mult or 1
-  if upkeep <= 0 then
+  local growth = intake.growth_per_cell or 0
+  -- The compounding income offsets upkeep per cell. Once it covers upkeep the
+  -- colony has no finite carrying capacity -- it climbs to the hard ceiling.
+  local eff_upkeep = upkeep - growth * mult
+  if eff_upkeep <= 0 then
     return HARD_CAP
   end
-  local k = (photo + forage * cap) * mult / upkeep
+  local k = (photo + forage * cap) * mult / eff_upkeep
   if k < 1 then
     return 1
   elseif k > HARD_CAP then

@@ -3,6 +3,7 @@
 -- per-frame updates, drawing, and input. Tab cycles layers, esc quits.
 local clock = require("lib.engine.clock")
 local layers = require("lib.engine.layers")
+local touch = require("lib.engine.touch")
 local cell = require("lib.layers.cell")
 local solar = require("lib.layers.solar")
 
@@ -18,6 +19,8 @@ function love.load()
   layers.register("solar", solar)
   layers.load_all()
   layers.switch("cell")
+  -- Pinch-to-zoom on touch screens; taps/drags arrive via mouse emulation.
+  touch.init(function(dy) layers.wheelmoved(0, dy) end)
 end
 
 function love.update(dt)
@@ -63,4 +66,16 @@ end
 
 function love.wheelmoved(dx, dy)
   layers.wheelmoved(dx, dy)
+end
+
+function love.touchpressed(id, x, y)
+  touch.pressed(id, x, y)
+end
+
+function love.touchmoved(id, x, y)
+  touch.moved(id, x, y)
+end
+
+function love.touchreleased(id)
+  touch.released(id)
 end
