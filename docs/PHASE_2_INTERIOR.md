@@ -3,6 +3,10 @@
 Companion to `docs/PHASE_2.md` (the design brief) and `docs/PHASE_2_ECONOMY.md` (the
 closed-form economy). Written 2026-06-08 after a first playable draft of the layer.
 
+The bio names below (ER, Golgi, cytoskeleton, mitochondria) are how the *organelle shapes*
+and the code refer to them; for the player-facing panel/label copy each pairs with a plain
+factory role — see the glossary in `docs/PHASE_2.md` → "Player-facing language."
+
 ## Status & scope
 
 The phase-2 economy is built and sound: `sim.lua` + `catalog.lua` are a closed-form,
