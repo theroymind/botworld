@@ -1,4 +1,4 @@
-.PHONY: run lint format format-check check love ios
+.PHONY: run lint format format-check test check love ios
 
 LOVE_FILE := build/botworld.love
 
@@ -25,4 +25,10 @@ format:
 format-check:
 	stylua --check .
 
-check: lint format-check
+# Run the spec suite. tests/run executes every tests/*_spec.lua as a plain
+# Lua 5.1 / LuaJIT script (no busted) with the first interpreter it finds.
+test:
+	./tests/run
+
+# Run all checks (CI-friendly): lint, formatting, and tests.
+check: lint format-check test

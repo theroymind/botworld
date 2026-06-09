@@ -146,7 +146,7 @@ local MAX_FIELD = 6220 -- top tier / hard cap (millions-scale realm)
 -- square. These uniform kinds share one read-only table (cells animate via the
 -- per-entity `age`, not per-instance render state); blooms carry a per-instance
 -- size, so they build their own.
-local RENDER_CELL = { kind = "cell", pop_in = true }
+local RENDER_CELL = { kind = "cell", pop_in = true, shape = "circle" }
 local RENDER_FOOD = { kind = "food" }
 local RENDER_PREY = { kind = "prey" }
 local RENDER_PREDATOR = { kind = "predator" }
@@ -940,7 +940,7 @@ local function in_rect(r, x, y)
   return x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h
 end
 
-local function step_blooms(state, dt, exclude)
+local function step_blooms(state, dt, exclude, confine)
   state.bloom_timer = state.bloom_timer - dt
   if state.bloom_timer <= 0 then
     state.bloom_timer = BLOOM_INTERVAL + rand_range(state, -1.5, 1.5)
@@ -952,18 +952,37 @@ local function step_blooms(state, dt, exclude)
       -- so the clickable never spawns hidden (and unclickable) behind a menu.
       -- Rejection-sample a few tries, then fall back to a point nudged just
       -- outside the rect's left edge so a spawn always lands somewhere legal.
+      --
+      -- `confine` (founder lock only) further CLIPS the spawn band to the locked
+      -- camera frame the orchestrator projects in, so the first blooms always land
+      -- inside the tracked view instead of off its overflowing short-axis edge.
+      -- It's intersected with the interior band; if that intersection is empty on
+      -- an axis (the frame sits outside the usual band), the confine wins so the
+      -- bloom still spawns in view.
+      local xlo, xhi = state.field_w * 0.2, state.field_w * 0.85
+      local ylo, yhi = state.field_h * 0.15, state.field_h * 0.85
+      if confine then
+        xlo, xhi = math.max(xlo, confine.x), math.min(xhi, confine.x + confine.w)
+        ylo, yhi = math.max(ylo, confine.y), math.min(yhi, confine.y + confine.h)
+        if xlo > xhi then
+          xlo, xhi = confine.x, confine.x + confine.w
+        end
+        if ylo > yhi then
+          ylo, yhi = confine.y, confine.y + confine.h
+        end
+      end
       local x, y
       for _ = 1, 12 do
-        x = rand_range(state, state.field_w * 0.2, state.field_w * 0.85)
-        y = rand_range(state, state.field_h * 0.15, state.field_h * 0.85)
+        x = rand_range(state, xlo, xhi)
+        y = rand_range(state, ylo, yhi)
         if not (exclude and in_rect(exclude, x, y)) then
           break
         end
         x = nil
       end
       if not x then
-        x = math.max(state.field_w * 0.2, exclude.x - 1)
-        y = rand_range(state, state.field_h * 0.15, state.field_h * 0.85)
+        x = clamp(exclude.x - 1, xlo, xhi)
+        y = rand_range(state, ylo, yhi)
       end
       state.blooms[#state.blooms + 1] = {
         x = x,
@@ -1115,6 +1134,8 @@ end
 --   threats_enabled   -- whether predators may appear (live-only)
 --   bloom_exclude     -- optional world-space rect { x, y, w, h } blooms must
 --                        avoid (screen UI -- the panel -- projected to world)
+--   bloom_confine     -- optional world-space rect blooms must spawn WITHIN
+--                        (the founder-lock camera frame projected to world)
 -- Returns (killed, engulfs, death_points, kill_points, engulf_points): cells
 -- killed by predators (debit the colony), prey fully engulfed this frame (roll
 -- endosymbiosis), the positions where cells STARVED -- both reconcile's economy
@@ -1228,7 +1249,7 @@ function world.update(state, dt, opts)
   local engulfs, engulf_points = step_cells(state, dt, stats, tempo, predation, births)
   -- Keep the ambient field replenished after consumption.
   ensure_field(state, state.foods, food_target(state), FOOD_DRIFT, RENDER_FOOD)
-  step_blooms(state, dt, opts.bloom_exclude)
+  step_blooms(state, dt, opts.bloom_exclude, opts.bloom_confine)
 
   local killed = 0
   local kill_points

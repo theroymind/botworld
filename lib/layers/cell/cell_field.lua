@@ -92,6 +92,7 @@ attribute vec4 InstanceMove; // home.x (0..1), home.y (0..1), seed (0..1), run j
 attribute vec4 InstanceJit;  // wobble radius, size jitter, alpha jitter, phase (0..1)
 
 varying vec4 cell_color;
+varying vec2 quad_uv;   // local quad coords in [-1,1]^2; |quad_uv| <= 1 is the disc
 
 // Baked motion constants (RUN_COUNT/RUN_TIME/RUN_LEN, WEAVE_RATE, MARK_*). const int
 // RUN_COUNT is a constant expression so it can bound the loops on GLSL ES (iOS).
@@ -190,15 +191,24 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   float halo = sense_halo * (0.5 + 0.5 * sin(time * 3.0 + phase * two_pi));
   float alpha = body ? (InstanceJit.z * twinkle + halo) : MARK_ALPHA;
   cell_color = vec4(body_color, alpha);
+  quad_uv = vertex_position.xy; // unit quad (-1..1); fragment masks it into a disc
   return transform_projection * vec4(vertex_position.xy * half_size + pos, 0.0, 1.0);
 }
 ]]
 
 local FRAGMENT_SHADER = [[
 varying vec4 cell_color;
+varying vec2 quad_uv;
 
 vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords) {
-  return cell_color * color;
+  // Mask the unit quad into a disc: cells render as circles, not squares. fwidth
+  // gives a ~1px feathered edge so the rim is smooth instead of a jagged stairstep,
+  // independent of zoom/cell size. r2 in [0,1] at the inscribed circle's edge.
+  float r2 = dot(quad_uv, quad_uv);
+  float aa = fwidth(r2) + 1e-5;
+  float mask = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r2);
+  if (mask <= 0.0) discard;
+  return cell_color * color * vec4(1.0, 1.0, 1.0, mask);
 }
 ]]
 

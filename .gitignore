@@ -2,3 +2,6 @@
 dist/
 logs/
 build/
+
+# Scratch dir for raw .wav stems awaiting wav->ogg conversion (see assets/music).
+audio/tmp/

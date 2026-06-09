@@ -15,6 +15,7 @@
 local save = require("lib.engine.save")
 local fx = require("lib.engine.fx")
 local sound = require("lib.engine.sound")
+local music = require("lib.engine.music")
 local format = require("lib.engine.format")
 local metabolism = require("lib.layers.cell.metabolism")
 local traits = require("lib.layers.cell.traits")
@@ -388,18 +389,29 @@ local function feed_bloom(b)
   view.spawn(view_state, fx.shake({ mag = 4, life = 0.26, seed = b.x + b.y }))
 end
 
--- Fire any colony milestones the population has reached (auto-unlocks). Each
--- opens a closed-form income channel and tells the world to add its contents.
-local function check_unlocks()
+-- Buy a milestone capability (photosynthesis, phagocytosis): the player spends
+-- biomass to EVOLVE it, replacing the old auto-fire. Guarded on the reveal gate
+-- (colony must have reached the capability's `pop`) and affordability; on success
+-- it deducts the cost, flips the unlock on (opening its closed-form income channel
+-- and letting the world spawn its contents), toasts the tell, and persists. A
+-- no-op if already owned, not yet revealed, or unaffordable.
+local function buy_unlock(id)
   local pop = cell.state.sim.population
-  for _, def in ipairs(traits.unlocks()) do
-    if pop >= def.pop and not traits.is_unlocked(cell.state.traits, def.id) then
-      local fired = traits.unlock(cell.state.traits, def.id)
-      if fired then
-        set_toast(string.format("Unlocked %s — %s", fired.label, fired.tell))
-        persist()
-      end
-    end
+  if traits.is_unlocked(cell.state.traits, id) then
+    return
+  end
+  if not traits.is_revealed(cell.state.traits, id, pop) then
+    return
+  end
+  local cost = traits.unlock_cost(id)
+  if not sim.spend(cell.state.sim, cost) then
+    return
+  end
+  local fired = traits.unlock(cell.state.traits, id)
+  if fired then
+    set_toast(string.format("Evolved %s — %s", fired.label, fired.tell))
+    view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 }))
+    persist()
   end
 end
 
@@ -436,6 +448,10 @@ end
 -- so the focus pushes in relative to the camera's current settled fit.
 local function begin_lineage_transition(cx, cy)
   local base_zoom = view_state.camera.zoom
+  -- The victory beat has just sounded (sound.play("endosymbiosis") at the call site):
+  -- duck the phase-1 BGM out and PAUSE it, clearing the floor for phase 2's layered
+  -- score to fade up at the seam (complexcell.enter_from_seam, fired by on_reset).
+  music.fade_out_pause("bgm", 0.6)
   -- Snapshot phase 1's final metrics NOW (before the reset) -- the figures the
   -- colony "becomes" as a single statistic carried into phase 2.
   local stats = {
@@ -634,6 +650,20 @@ function cell.update(dt)
     bloom_exclude = { x = x1 - pad, y = y1 - pad, w = (x2 - x1) + pad * 2, h = (y2 - y1) + pad * 2 }
   end
 
+  -- CONFINE blooms to the founder-lock frame: while the camera is locked on the
+  -- lone founder it only shows part of the field, so a bloom spawned anywhere in
+  -- the dish can land off-screen. Project the window corners into world space and
+  -- inset by the bloom's drawn extent so the whole clickable sits inside the
+  -- tracked view ("within view or right on the edge"). Only while locked -- once
+  -- the colony splits this is nil and blooms use the full field interior again.
+  local bloom_confine
+  if view_state.camera.init and view_state.locked then
+    local x1, y1 = view.screen_to_world(view_state, 0, 0)
+    local x2, y2 = view.screen_to_world(view_state, width, height)
+    local r = view.bloom_radius(view_state) * 1.7 -- glow reach: keep the disk fully framed
+    bloom_confine = { x = x1 + r, y = y1 + r, w = (x2 - x1) - r * 2, h = (y2 - y1) - r * 2 }
+  end
+
   local predation = traits.is_unlocked(cell.state.traits, "predation")
   local killed, engulfs, deaths, kill_points, engulf_points = world.update(world_state, dt, {
     stats = traits.stats(cell.state.traits),
@@ -645,6 +675,7 @@ function cell.update(dt)
     unlocked = traits.unlocked_set(cell.state.traits),
     threats_enabled = predation,
     bloom_exclude = bloom_exclude,
+    bloom_confine = bloom_confine,
   })
   -- A live predator kill removes cells from the colony (a population setback the
   -- energy economy regrows; biomass -- the banked currency -- is untouched).
@@ -700,7 +731,8 @@ function cell.update(dt)
     roll_endosymbiosis(engulfs, engulf_points, predation)
   end
 
-  check_unlocks()
+  -- (Milestone capabilities are no longer auto-granted by colony size -- they are
+  -- bought from the panel; see buy_unlock. Nothing to check on the tick.)
   -- Failure: the toxicity cull has driven the colony to extinction. End the run
   -- into a fresh lineage (game-over beat). Nothing fires while a cell still lives.
   if is_extinct() then
@@ -721,16 +753,6 @@ function cell.update(dt)
 end
 
 local TRAIT_IDS = { "photosynthesis", "motility", "sensing", "digestion", "evasion" }
-
--- Colony size that auto-unlocks a still-locked trait, for its "colony N" notice.
-local function locked_need(def)
-  for _, u in ipairs(traits.unlocks()) do
-    if u.id == def.locked_until then
-      return u.pop
-    end
-  end
-  return nil
-end
 
 -- A themed action button carrying a dim cost/flavor sublabel and an affordability
 -- gate -- the copied button-node has neither, so we compose the decoration
@@ -824,7 +846,13 @@ local function trait_row(state, id)
       end,
     })
   else
-    right = layout.text(string.format("colony %d", locked_need(def) or 0), {
+    -- The row is gated behind a milestone EVOLUTION (e.g. the photosynthesis trait
+    -- needs the photosynthesis capability bought first). Name the gate rather than a
+    -- colony size, since reaching the colony only OFFERS the purchase now.
+    local gate = traits.def(id)
+    local gate_label = (gate and gate.locked_until == "photosynthesis") and "needs Photosynthesis"
+      or "locked"
+    right = layout.text(gate_label, {
       color = colors.with_alpha(colors.ui.text_muted, 0.6),
       align = "center",
       w = BTN_W,
@@ -863,6 +891,52 @@ local function organelle_children(state)
     )
   end
   return children
+end
+
+-- The EVOLUTIONS section: the milestone capabilities the player BUYS (formerly
+-- auto-granted). One row per not-yet-owned capability -- a buy button gated on
+-- biomass once the colony has grown enough to REVEAL it, or a dim "colony N"
+-- teaser before then. Owned capabilities drop out of this section (photosynthesis
+-- becomes a normal levelable trait; phagocytosis just switches hunting on). nil
+-- once every capability is evolved, so the section disappears when spent out.
+local function capability_children(state)
+  local pop = state.sim.population
+  local rows = {}
+  for _, def in ipairs(traits.unlocks()) do
+    if not traits.is_unlocked(state.traits, def.id) then
+      local label_col = layout.vstack({
+        layout.text(def.label, { color = colors.ui.text }),
+        layout.text(def.tell, { color = colors.ui.text_faint }),
+      }, { gap = 2 })
+
+      local right
+      if traits.is_revealed(state.traits, def.id, pop) then
+        local cost = traits.unlock_cost(def.id)
+        local affordable = sim.can_spend(state.sim, cost)
+        right = action_button_node({
+          label = "evolve",
+          sublabel = format.number(cost) .. " bm",
+          enabled = affordable,
+          w = BTN_W,
+          h = TRAIT_BTN_H,
+          id = "unlock_" .. def.id,
+          on_click = function() buy_unlock(def.id) end,
+        })
+      else
+        right = layout.text(string.format("colony %d", def.pop), {
+          color = colors.with_alpha(colors.ui.text_muted, 0.6),
+          align = "center",
+          w = BTN_W,
+        })
+      end
+      table.insert(rows, layout.hstack({ label_col, right }, { gap = theme.spacing.sm }))
+    end
+  end
+  if #rows == 0 then
+    return nil
+  end
+  table.insert(rows, 1, layout.text("evolutions", { color = colors.ui.text_dim }))
+  return rows
 end
 
 -- The VITALITY BAND: classify the colony's health from its SCALE-INVARIANT per-capita
@@ -989,13 +1063,19 @@ local function build_panel(state)
     layout.vstack(trait_children, { gap = theme.spacing.sm }),
   }
 
+  local capability_group = capability_children(state)
+  if capability_group then
+    table.insert(groups, layout.vstack(capability_group, { gap = theme.spacing.sm }))
+  end
+
   local organelle_group = organelle_children(state)
   if organelle_group then
     table.insert(groups, layout.vstack(organelle_group, { gap = theme.spacing.xs }))
   end
 
   local nxt = traits.next_unlock(state.traits)
-  local footer_text = nxt and string.format("next: %s at colony %d", nxt.label, nxt.pop)
+  local footer_text = nxt
+      and string.format("next: %s — evolve for %s bm", nxt.label, format.number(nxt.cost or 0))
     or "all capabilities evolved"
   table.insert(groups, layout.text(footer_text, { color = colors.ui.text_muted }))
 

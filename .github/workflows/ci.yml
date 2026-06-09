@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache APT packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: lua5.1 liblua5.1-0-dev luarocks
+          version: 1.0
+
+      - name: Cache LuaRocks packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.luarocks
+          key: luarocks-${{ runner.os }}-lua5.1-v1
+
+      - name: Install Lua tools
+        run: |
+          eval "$(luarocks path --local)"
+          if ! luacheck --version 2>/dev/null; then
+            luarocks install --local luacheck
+          fi
+
+      - name: Cache StyLua
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/stylua
+          key: stylua-${{ runner.os }}-v2.4.0
+
+      - name: Install StyLua
+        run: |
+          if [ ! -f /usr/local/bin/stylua ]; then
+            STYLUA_VERSION="v2.4.0"
+            curl -L "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-x86_64.zip" -o /tmp/stylua.zip
+            unzip /tmp/stylua.zip -d /usr/local/bin/
+            rm /tmp/stylua.zip
+          fi
+
+      - name: Lint
+        run: |
+          eval "$(luarocks path --local)"
+          luacheck . --no-color
+
+      - name: Format check
+        run: stylua --check .
+
+      # Tests are framework-free: tests/run executes every tests/*_spec.lua as a
+      # plain Lua 5.1 script. No busted or LÖVE runtime required.
+      - name: Test
+        run: make test

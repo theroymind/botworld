@@ -1,0 +1,18 @@
+{
+  "runtime": {
+    "version": "LuaJIT"
+  },
+  "diagnostics": {
+    "globals": [
+      "love"
+    ],
+    "disable": [
+      "redundant-parameter",
+      "undefined-field",
+      "need-check-nil"
+    ]
+  },
+  "workspace": {
+    "checkThirdParty": false
+  }
+}

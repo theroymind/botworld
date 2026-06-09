@@ -125,7 +125,17 @@ check(not traits.is_unlocked(t, "photosynthesis"), "photosynthesis unlock starts
 check(approx(traits.income_mult(t), 1), "no income channels before any unlock")
 local first = traits.next_unlock(t)
 check(first.id == "photosynthesis", "photosynthesis is the first milestone")
-check(first.pop > 0, "milestone carries a colony threshold")
+check(first.pop > 0, "milestone carries a colony reveal threshold")
+
+-- Milestones are now BOUGHT, not auto-fired: each carries a biomass cost, and the
+-- colony only REVEALS the purchase once it reaches the milestone's `pop`.
+check(first.cost and first.cost > 0, "milestone carries a biomass cost")
+check(traits.unlock_cost("photosynthesis") == first.cost, "unlock_cost returns the def cost")
+check(traits.unlock_cost("nonsuch") == math.huge, "unlock_cost of an unknown id is huge")
+check(not traits.is_revealed(t, "photosynthesis", first.pop - 1), "hidden below the reveal pop")
+check(traits.is_revealed(t, "photosynthesis", first.pop), "revealed at/above the reveal pop")
+check(traits.unlock_cost("predation") > traits.unlock_cost("photosynthesis"),
+  "the later milestone costs more")
 
 local fired = traits.unlock(t, "photosynthesis")
 check(fired and fired.id == "photosynthesis", "unlock returns the def on first fire")
