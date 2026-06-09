@@ -60,10 +60,11 @@ economic (see §5).
    power must also hurt. The safe zone is a band, not a floor.
 2. **A real recipe ratio** (Factorio 3:1 / 12:7:3 feel) between the pipeline
    stages, so reading and feeding the bottleneck is a live decision.
-3. **Teeth.** The balance readout must move real numbers (built / yield), not just
-   pixels.
-4. **Legibility.** A few explicit, biologically-named gauges and a one-line
-   "what to upgrade" nudge.
+3. **Balance must cost real output.** Being off-balance should reduce `built`, not
+   just dim the picture.
+4. **Legibility.** A few explicit, biologically-named gauges so the player can see
+   *that* something is wrong and work out the fix themselves (no hand-holding — in
+   keeping with the "read state through flow" brief).
 5. **Forgiveness preserved.** Soft first, lethal only on sustained *extreme*
    imbalance, and **offline/idle can never brick** the cell.
 
@@ -179,10 +180,12 @@ when ROS climbs (§6).
 
 ---
 
-## 5. Pillar 3 — give the balance scalar economic teeth
+## 5. Pillar 3 — make balance change real output
 
 ### Problem
-`efficiency()` moves only pixels; over-power is invisible.
+Today the balance scalar only changes brightness/speed — it never affects how much
+`built` you actually earn, and over-power is invisible to it entirely. So balance is
+decorative; the player has no reason to care.
 
 ### Proposal
 1. **Unclamp the power side into a peak.** Replace the `clamp(power/demand, 0, 1)`
@@ -237,41 +240,31 @@ view-tuning detail, not an economy constant.)
 
 ---
 
-## 7. Pillar 5 — gauges & the "what to upgrade" nudge
+## 7. Pillar 5 — gauges (show the problem, let the player solve it)
 
 The interior-as-dashboard is elegant but too implicit. Add a small readout (panel
-section or HUD strip), each metric biologically named and tied to a lever:
+section or HUD strip) of a few biologically-named metrics. The gauges show *that*
+something is off; the player works out *which* trait fixes it — deliberately no
+hand-holding, in keeping with the "read state through flow" brief.
 
-| gauge | meaning | the lever |
-|-------|---------|-----------|
-| **Oxidative stress (ROS)** | the new pendulum metric (§4), 0-100% | stabilization |
-| **Balance ratio** | `power / demand` vs. the safe band — under / ideal / over | mitochondria ↔ pipeline |
-| **Oxygen / respiration** | O₂ available to oxidative phosphorylation | (see options below) |
-| **Build efficiency** | the §5 scalar as a single % ("running at 72%") | whichever is off |
+| gauge | meaning |
+|-------|---------|
+| **Oxidative stress (ROS)** | the new pendulum metric (§4), 0-100% |
+| **Balance ratio** | `power / demand` vs. the safe band — under / ideal / over |
+| **Oxygen / respiration** | O₂ available to oxidative phosphorylation |
+| **Build efficiency** | the §5 scalar as a single % ("running at 72%") |
 
-**What-to-upgrade hint** — one line derived from data already computed in
-`fold` / `stage_snapshot` (a read, not new sim): pick the dominant problem and name
-its lever, e.g. *"ER is the bottleneck — feed it,"* *"power deficit — add a
-mitochondrion,"* or *"oxidative stress rising — raise stabilization."*
-
-### Oxygen — one open decision for sign-off
+### Oxygen — displayed metric (decided)
 Mitochondria need O₂ for oxidative phosphorylation, so an oxygen gauge is natural.
-Two ways to realise it:
+**For now it is a displayed metric only:** an informational read on respiration
+load — supply from mitochondria vs. the ATP draw — so the player has a named,
+intuitive signal that "something is wrong" and can reason about which trait
+(more power, stabilization, feed a stage) helps. No new economy, smallest scope.
 
-- **(a) Displayed metric only (recommended first).** Oxygen is an *informational*
-  reskin of respiration load — supply from mitochondria vs. the ATP draw — shown so
-  the player has a named, intuitive read on "am I respiring efficiently?" No new
-  economy. Smallest scope, immediate legibility.
-- **(b) Managed input (depth option).** Oxygen becomes a real gated input the player
-  must supply — and this is where it gets interesting: it maps straight onto the
-  planned **plant/animal fork** (`docs/PHASE_2.md:106-123`), where `fuel_factor` is
-  already the light-vs-eating mix. Animal = active O₂/nutrient intake; plant =
-  photosynthetic supply. Oxygen-as-input could foreshadow that fork. Bigger scope and
-  needs its own lab pass.
-
-**Recommendation:** ship (a) now; keep (b) noted as the natural extension that ties
-the gauge into the fork. **This is the one item I'd like signed off before
-implementation.**
+> Future option (not now): oxygen could later become a real *managed input*, which
+> maps onto the planned **plant/animal fork** (`docs/PHASE_2.md:106-123`) where
+> `fuel_factor` is already the light-vs-eating mix — animal = active O₂/nutrient
+> intake, plant = photosynthetic supply. Noted as a natural extension, deferred.
 
 ---
 
@@ -291,7 +284,7 @@ ROS_LETHAL      = 0.8     -- ROS above this starts feeding lethal stress
 STAB_TOLERANCE  = 0.15    -- each stabilization level lifts BALANCE_HI
 STAB_CLEAR      = 0.5     -- each level speeds ROS clearance
 
--- Pillar 3: teeth
+-- Pillar 3: imbalance cuts built output
 MIN_EFF         = 0.4     -- worst-case built multiplier from imbalance
 ```
 
@@ -309,7 +302,6 @@ Stabilization cost curve mirrors the existing geometric shape
 - ROS rise/fall and `ROS_LETHAL` — confirm the warning window is generous and a hot
   idle cell offline only dims, never dies.
 - Stabilization strength/cost — a real alternative strategy, not a tax.
-- Oxygen: option (a) vs (b) (the §7 sign-off).
 - Re-confirm **balanced play FORKs in ~10-13 min** and **no policy bricks** (add
   `overpower!` — chase power, ignore demand — as a new trap scenario beside the
   existing `throughput!`).
@@ -319,4 +311,4 @@ Stabilization cost curve mirrors the existing geometric shape
 The tuning constants are mirrored byte-for-byte across `catalog.lua` (`:14-17`),
 `tools/phase2_lab.lua`, and `docs/PHASE_2_ECONOMY.md`. Any implementation of this
 proposal must update all three together, and add specs for: the symmetric ROS
-integration, the unclamped peak-in-band balance scalar, and the built-yield teeth.
+integration, the unclamped peak-in-band balance scalar, and the built-yield cut.
