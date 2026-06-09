@@ -4,23 +4,57 @@
 local clock = require("lib.engine.clock")
 local layers = require("lib.engine.layers")
 local touch = require("lib.engine.touch")
+local music = require("lib.engine.music")
 local cell = require("lib.layers.cell")
 local complexcell = require("lib.layers.complexcell")
 local solar = require("lib.layers.solar")
 
-local music
+-- The boot/phase-1 BGM volume. Named here (not buried in the track) because the
+-- phase-2 stems match it -- see lib/engine/music.lua + complexcell's layered intro.
+local BGM_VOLUME = 0.75
 
-function love.load()
+-- Pick the layer to boot into from the command line, so `love . phase2` (or a
+-- literal layer name like `love . complexcell`) jumps straight there for debugging.
+-- `phaseN` maps to the Nth REGISTERED layer (1-based), so it tracks registration
+-- order as phases are added -- no hardcoded phase->name table to keep in sync.
+-- Defaults to the first layer (phase 1) when no/unknown arg is given.
+local function resolve_start_layer(args)
+  local names = layers.names()
+  for _, tok in ipairs(args or {}) do
+    tok = tostring(tok):lower()
+    local n = tok:match("^phase(%d+)$")
+    if n and names[tonumber(n)] then
+      return names[tonumber(n)]
+    end
+    for _, name in ipairs(names) do
+      if name:lower() == tok then
+        return name
+      end
+    end
+  end
+  return names[1]
+end
+
+function love.load(arg)
   love.graphics.setBackgroundColor(0, 0, 0)
-  music = love.audio.newSource("assets/music/botworld.ogg", "stream")
-  music:setLooping(true)
-  music:setVolume(0.75)
-  music:play()
+  -- Phase-1 BGM, loaded but NOT yet played: which track sounds depends on the start
+  -- layer (the phase-2 stems are loaded by complexcell.load below).
+  music.load("bgm", "assets/music/botworld.ogg")
   layers.register("cell", cell)
   layers.register("complexcell", complexcell)
   layers.register("solar", solar)
   layers.load_all()
-  layers.switch("cell")
+  local start = resolve_start_layer(arg)
+  layers.switch(start)
+  -- Score the boot layer. Booting STRAIGHT into phase 2 for debugging (`love . phase2`)
+  -- skips the endosymbiosis seam that normally hands off the music, so the phase-1 BGM
+  -- must never start (otherwise it blips before any pause) -- bring up the complex-cell
+  -- layers directly. Any other start layer plays the phase-1 BGM.
+  if start == "complexcell" and complexcell.start_layered_music then
+    complexcell.start_layered_music()
+  else
+    music.play("bgm", BGM_VOLUME)
+  end
   -- Pinch-to-zoom on touch screens; taps/drags arrive via mouse emulation.
   touch.init(function(dy) layers.wheelmoved(0, dy) end)
 end
@@ -28,6 +62,7 @@ end
 function love.update(dt)
   clock.update(dt, layers.tick_all)
   layers.update(dt)
+  music.update(dt)
 end
 
 function love.draw()

@@ -44,17 +44,37 @@ local quad_mesh
 local instance_mesh
 local endpoint_uniform = {} -- reused vec2 array (positions) -> "endpoints" uniform
 local segment_uniform = {} -- reused vec4 array (flow readouts) -> "segments" uniform
+local cargo_uniform = {} -- reused vec3 array (rgb) -> "cargo_palette" uniform
 local elapsed = 0
+local flow_phase = 0 -- integrated motion clock: advances at flow_speed, no retroactive jump
+local flow_speed = 1 -- current global motion rate (set by view each frame)
 local loaded = false
+
+-- Default cargo-type palette: one colour per leg of the pipeline, cycled when
+-- there are more segments than palette entries.  Chosen for additive blending
+-- (colours brighten where dense) and perceptual separability at pixel-grid res.
+--   leg 0 nucleus->ER      transcript      pale cyan-green
+--   leg 1 ER->Golgi         folded protein  warm amber-gold
+--   leg 2 Golgi->membrane   secretory       rose-violet
+--   leg 3 mito->line        ATP             bright lime
+--   leg 4 spare             lipid           sky-blue
+--   leg 5 spare             generic         soft orange
+local DEFAULT_CARGO_PALETTE = {
+  { 0.20, 0.85, 0.70 }, -- transcript      cyan-green
+  { 0.90, 0.65, 0.15 }, -- folded protein  amber-gold
+  { 0.80, 0.25, 0.65 }, -- secretory       rose-violet
+  { 0.45, 0.95, 0.20 }, -- ATP             bright lime
+  { 0.20, 0.60, 0.95 }, -- lipid           sky-blue
+  { 0.95, 0.50, 0.10 }, -- generic         soft orange
+}
 
 -- The number of pipeline SEGMENTS a route's segment index can address. Baked into
 -- the shader so the per-instance "which segment" attribute can be reduced into the
 -- live segment range each frame (see segment_count uniform). Matches MAX_SEGMENTS.
 local VERTEX_SHADER_TEMPLATE = [[
-uniform float time;
-uniform float speed;         // global liveliness: output-driven base speed multiplier
+uniform float time;          // wall clock for wobble only (never scaled by speed/slow)
+uniform float flow_phase;    // CPU-integrated motion clock: flow_phase += dt*flow_speed
 uniform float brightness;    // global brightness (output up, brownout down)
-uniform float slow;          // global brownout slowdown (eased 0..1; 1 = full speed)
 uniform vec3  tint;          // fuel_factor tint multiplier (neutral white at 1.0)
 uniform int   segment_count; // live pipeline segments (gaps between endpoints)
 uniform vec2  endpoints[%d]; // organelle cluster positions, screen space
@@ -63,6 +83,9 @@ uniform vec2  endpoints[%d]; // organelle cluster positions, screen space
 //   .z vacancy 0..1 (downstream of the choke -> push instances off / dim)
 //   .w density 0..1 (how "full" this segment runs; feeds brightness)
 uniform vec4  segments[%d];
+// Per-segment cargo-type base colour. Indexed by the same `seg` as `segments[]`.
+// The caller fills this from its typed-cargo palette; the default is set in load().
+uniform vec3  cargo_palette[%d];
 
 attribute vec4 InstanceRoute;  // base segment (slot), phase (s), lane sign, brightness jitter
 attribute vec4 InstanceMotion; // cycle (s), lane offset, wobble frequency, wobble phase
@@ -73,7 +96,6 @@ const float DWELL = 0.16;            // fraction of each leg held at an endpoint
 const float WOBBLE_AMPLITUDE = 9.0;  // px of mid-leg jitter
 const float ENDPOINT_PINCH = 0.10;   // residual lane width at the endpoints
 const float ARC_FAN = 0.90;          // share of the lane offset applied as a mid-leg arc
-const float CONGEST_SLOW = 0.55;     // a jammed segment crawls (speed *= 1 - this*congestion)
 const float CONGEST_CLUMP = 0.55;    // a jam pulls vesicles toward the leg's middle (bunching)
 const float BOTTLENECK_PINCH = 0.55; // the choke segment tightens its lane
 const float VACANCY_OFFSCREEN = 0.85;// vacancy this strong parks a vesicle out of view
@@ -109,11 +131,10 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   vec2 from = endpoints[seg];
   vec2 to = endpoints[seg + 1];
 
-  // Closed-form leg progress. Global speed (output) and per-segment congestion both
-  // scale how fast time advances along the leg; brownout `slow` drags the whole
-  // swarm. A jammed segment crawls (CONGEST_SLOW), reading as a backed-up stage.
-  float seg_speed = speed * slow * (1.0 - CONGEST_SLOW * congestion);
-  float t = fract((time * seg_speed + InstanceRoute.y) / InstanceMotion.x);
+  // Closed-form leg progress. `flow_phase` is a CPU-integrated clock that advances
+  // at the current flow_speed; rate changes (brownout easing) only affect FUTURE
+  // motion -- no retroactive phase rescale, so vesicles never teleport or race.
+  float t = fract((flow_phase + InstanceRoute.y) / InstanceMotion.x);
   float s = travel(t);
 
   // CONGESTION CLUMP: bias progress toward the middle of the leg so jammed vesicles
@@ -135,11 +156,13 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
 
   vec2 vesicle = mix(from, to, s) + perpendicular * (bow + wobble);
 
-  // Color: the fuel tint, modulated by per-segment density (busy segments read a
-  // touch brighter) and a per-instance brightness jitter so the cloud isn't flat.
-  // The global `brightness` (output up / brownout down) is applied here too.
+  // Color: base from the per-leg cargo-type palette, modulated by the global fuel
+  // tint, per-segment density (busy segments read a touch brighter), and a
+  // per-instance brightness jitter so the cloud isn't flat.  The global
+  // `brightness` (output up / brownout down) is applied here too.
   float lively = (0.62 + 0.38 * density) * brightness * InstanceRoute.w;
-  vesicle_color = tint * lively;
+  vec3 base = cargo_palette[seg];
+  vesicle_color = base * tint * lively;
 
   return transform_projection * vec4(vertex_position.xy + vesicle, 0.0, 1.0);
 }
@@ -210,13 +233,17 @@ function interior_swarm.load()
   if loaded then
     return
   end
-  local vertex_shader = string.format(VERTEX_SHADER_TEMPLATE, MAX_ENDPOINTS, MAX_SEGMENTS)
+  local vertex_shader = string.format(VERTEX_SHADER_TEMPLATE, MAX_ENDPOINTS, MAX_SEGMENTS, MAX_SEGMENTS)
   shader = love.graphics.newShader(FRAGMENT_SHADER, vertex_shader)
   for i = 1, MAX_ENDPOINTS do
     endpoint_uniform[i] = { 0, 0 }
   end
   for i = 1, MAX_SEGMENTS do
     segment_uniform[i] = { 0, 0, 0, 0 }
+  end
+  for i = 1, MAX_SEGMENTS do
+    local src = DEFAULT_CARGO_PALETTE[((i - 1) % #DEFAULT_CARGO_PALETTE) + 1]
+    cargo_uniform[i] = { src[1], src[2], src[3] }
   end
   build_meshes()
   loaded = true
@@ -236,10 +263,24 @@ end
 
 function interior_swarm.clear() interior_swarm.count = 0 end
 
--- Advance the swarm clock. Cheap: one scalar accumulate; the time uniform is sent
--- in draw alongside the rest (draw is the only place we touch the shader, so the
--- module stays headless until something actually renders).
-function interior_swarm.update(dt) elapsed = elapsed + dt end
+-- Set the global motion speed multiplier. VIEW calls this each frame with the
+-- efficiency/brownout-derived factor. Clamped to >= 0 so the swarm never runs
+-- backward. Changing this only affects future flow_phase accumulation -- vesicles
+-- never jump because flow_phase is integrated, not recomputed from a scaled clock.
+function interior_swarm.set_flow_speed(v)
+  if v < 0 then
+    v = 0
+  end
+  flow_speed = v
+end
+
+-- Advance the swarm clocks. `elapsed` feeds the wobble (continuous, fine).
+-- `flow_phase` is the integrated motion clock: easing flow_speed here is smooth
+-- because we're adding a small dt*speed delta, never rescaling a large accumulator.
+function interior_swarm.update(dt)
+  elapsed = elapsed + dt
+  flow_phase = flow_phase + dt * flow_speed
+end
 
 -- Upload the organelle endpoint positions. `xs`/`ys` are flat arrays of length
 -- `n` (<= MAX_ENDPOINTS), one per cluster along the pipeline, in order. Cheap --
@@ -270,11 +311,31 @@ local function send_segments(segs, n)
   shader:send("segments", unpack(segment_uniform, 1, MAX_SEGMENTS))
 end
 
+-- Upload the cargo-type colour palette. `palette` is an array of {r,g,b} tables,
+-- one per pipeline segment (indexed from 1). Missing entries keep their default.
+-- Excess entries beyond MAX_SEGMENTS are silently ignored.
+local function send_cargo_palette(palette)
+  if palette then
+    local n = math.min(#palette, MAX_SEGMENTS)
+    for i = 1, n do
+      local src = palette[i]
+      local entry = cargo_uniform[i]
+      entry[1], entry[2], entry[3] = src[1], src[2], src[3]
+    end
+  end
+  shader:send("cargo_palette", unpack(cargo_uniform, 1, MAX_SEGMENTS))
+end
+
 -- Draw the live prefix of the swarm. `params` carries the per-frame flow uniforms
 -- and the endpoint/segment data; all of it is cheap to push each frame.
 --   params.endpoints_x / .endpoints_y / .endpoint_count
 --   params.segments / .segment_count
---   params.speed / .brightness / .slow / .tint{3}
+--   params.brightness / .tint{3}
+--   params.cargo_palette  (optional) array of {r,g,b} per pipeline segment;
+--                         if absent the module default palette is used.
+-- Note: params.speed and params.slow are intentionally ignored here -- motion rate
+-- is controlled via set_flow_speed() so VIEW can ease the brownout factor without
+-- causing the retroactive phase-rescale teleport glitch.
 function interior_swarm.draw(params)
   interior_swarm.load() -- lazy GPU init if the host didn't call load explicitly
   if interior_swarm.count == 0 or (params.endpoint_count or 0) < 2 then
@@ -282,12 +343,12 @@ function interior_swarm.draw(params)
   end
 
   shader:send("time", elapsed)
-  shader:send("speed", params.speed or 1)
+  shader:send("flow_phase", flow_phase)
   shader:send("brightness", params.brightness or 1)
-  shader:send("slow", params.slow or 1)
   shader:send("tint", params.tint or { 1, 1, 1 })
   send_endpoints(params.endpoints_x, params.endpoints_y, params.endpoint_count)
   send_segments(params.segments or {}, params.segment_count or 0)
+  send_cargo_palette(params.cargo_palette)
 
   local prev = love.graphics.getShader()
   -- Additive blend: overlapping vesicles brighten, so dense pipelines glow like a

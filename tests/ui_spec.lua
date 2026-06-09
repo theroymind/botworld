@@ -100,6 +100,14 @@ check(fill.resolved_rect.x == 0 and fill.resolved_rect.w == 150, "hstack fill ch
 check(fixed.resolved_rect.x == 160 and fixed.resolved_rect.w == 40, "hstack fixed child pinned right")
 check(hs.resolved_rect.h == 30, "hstack content height = tallest child")
 
+-- Resolve: a node whose height is a FUNCTION of width is evaluated with the width it
+-- actually resolves to -- the contract the wrapping text-node relies on to size itself
+-- to its wrapped line count once a column constrains it.
+local sized = layout.node({ w = "fill", h = function(w) return w / 4 end })
+layout.resolve(sized, rect(0, 0, 120, 999))
+check(sized.resolved_rect.w == 120, "function-height node fills the available width")
+check(sized.resolved_rect.h == 30, "function-height node sizes from the resolved width")
+
 -- Resolve: hstack with an auto-width child measures it to its content, fill rest.
 local inner = layout.node({ w = 30, h = 10 })
 local auto_box = layout.vstack({ inner }, { w = "auto", padding = 0, gap = 0 })

@@ -80,23 +80,30 @@ local CLEAN_PER_PHOTO = 0.12 -- photosynthesis oxygenates the medium
 local SYN_REACH = 0.06 -- Motility x Chemotaxis: forage cap x (1 + this * sqrt(motility*sensing))
 local SYN_THRIFT = 0.02 -- Digestion x Evasion:   upkeep   / (1 + this * sqrt(digestion*evasion))
 
--- Milestone unlocks, in reach order. Each fires automatically when the colony
--- crosses `pop` cells (the orchestrator drives this), opening a closed-form
--- income channel (`income`, added to the gain multiplier) and adding world
--- contents + a visual tell. Absorption (ambient motes) is the always-on start
--- state, so it is NOT a fired unlock; these two are.
+-- Milestone unlocks, in reach order. These are EVOLUTIONS THE PLAYER BUYS, not
+-- auto-fired research: `pop` is now only the colony size at which the option
+-- REVEALS in the panel (so the pacing/teaser still tracks colony growth), and
+-- `cost` is the biomass the player must spend to evolve it. Each opens a
+-- closed-form income channel (`income`, added to the gain multiplier) and adds
+-- world contents + a visual tell. Costs are deliberately STEEP for the phase the
+-- capability appears in -- a real save-up, the "expensive research" beat -- and
+-- are first-pass values to tune in tools/sim_lab.lua against the biomass curve.
+-- Absorption (ambient motes) is the always-on start state, so it is NOT a buyable
+-- unlock; these two are.
 local UNLOCKS = {
   {
     id = "photosynthesis",
     label = "Photosynthesis",
-    pop = 5,
+    pop = 5, -- reveals (becomes buyable) once the colony reaches this size
+    cost = 150, -- biomass to evolve it -- a steep early save-up
     income = 0.3,
     tell = "pigment blooms — light becomes biomass",
   },
   {
     id = "predation",
     label = "Phagocytosis",
-    pop = 24,
+    pop = 24, -- reveals once the colony reaches this size
+    cost = 2500, -- biomass to evolve it -- a steep mid-phase gate
     income = 0.8,
     spawns_prey = true,
     enables_predators = true,
@@ -221,8 +228,8 @@ function traits.unlock(state, id)
   return def
 end
 
--- The next milestone the colony has not yet reached, for the panel's "next at
--- colony N" notice. nil once every unlock has fired.
+-- The next milestone the colony has not yet evolved, for the panel's "next at
+-- colony N" notice. nil once every unlock has been bought.
 function traits.next_unlock(state)
   for _, def in ipairs(UNLOCKS) do
     if not state.unlocked[def.id] then
@@ -230,6 +237,25 @@ function traits.next_unlock(state)
     end
   end
   return nil
+end
+
+-- Biomass cost to evolve a milestone capability. math.huge for an unknown id, so
+-- an affordability check on a bad id always fails closed.
+function traits.unlock_cost(id)
+  local def = UNLOCK_BY_ID[id]
+  return def and def.cost or math.huge
+end
+
+-- Has the colony grown enough for this capability to REVEAL (become buyable)?
+-- Below its `pop` the panel shows a dim "colony N" teaser instead of a buy button;
+-- at/above it the player may spend the biomass cost to evolve it. This replaces
+-- the old auto-fire: reaching `pop` only OFFERS the purchase, never grants it.
+function traits.is_revealed(state, id, pop)
+  local def = UNLOCK_BY_ID[id]
+  if not def then
+    return false
+  end
+  return (pop or 0) >= def.pop
 end
 
 -- Closed-form income multiplier from fired unlocks: each opened channel is an

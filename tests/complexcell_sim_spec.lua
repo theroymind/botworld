@@ -44,6 +44,8 @@ local function rates(o)
     e_per_output = o.e_per_output or 1,
     buffer_max = o.buffer_max or 200,
     brownout_reserve = o.brownout_reserve or 0,
+    stress_rise = o.stress_rise or 0,
+    stress_fall = o.stress_fall or 0,
   }
 end
 
@@ -55,8 +57,10 @@ check(s.built == 0, "fresh built 0")
 check(s.mito == 1, "fresh mito is 1 (the engulfed bacterium)")
 check(type(s.stages) == "table" and next(s.stages) == nil, "fresh stages set is empty")
 check(type(s.unlocked) == "table" and next(s.unlocked) == nil, "fresh unlocked set is empty")
+check(type(s.discovered) == "table" and next(s.discovered) == nil, "fresh discovered set is empty")
 check(s.output == 0, "fresh output 0")
 check(s.brownout == false, "fresh state is not browning out")
+check(s.stress == 0, "fresh state has no oxidative stress")
 
 -- sim.surplus: the bankable surplus at a folded rates, avail - e*T. With the tidy
 -- defaults: avail = 20 - 2 - 0.3*0 = 18; e*T = 1*5 = 5; surplus = 13.
@@ -128,6 +132,88 @@ s = sim.new()
 sim.step(s, 100, rates({ buffer_max = 200 }))
 check(approx(s.energy, 200), "the buffer clamps at buffer_max")
 
+-- ---------------------------------------------------------------------------
+-- OXIDATIVE STRESS -- the failure pressure. A SUSTAINED power deficit drives stress
+-- toward 1 (lysis); restoring power decays it back toward 0 (always recoverable).
+-- Severity = (cost_full - avail)/max(cost_full,eps) clamped [0,1]; rise = stress_rise
+-- * severity, fall = -stress_fall. Derive expected DIRECTION from the constants, not
+-- magic timing.
+-- ---------------------------------------------------------------------------
+do
+  -- A FULL deficit: avail <= 0 (power can't even cover upkeep) -> severity = 1 ->
+  -- stress rises at stress_rise/sec. Over several steps it must climb monotonically.
+  local rise = 0.04
+  local def = rates({ power = 0, upkeep = 2, throughput = 10, excess = 0, stress_rise = rise })
+  local d = sim.new()
+  local last = d.stress
+  for _ = 1, 5 do
+    sim.step(d, 1, def)
+    check(d.stress > last, "stress rises step-over-step under a sustained power deficit")
+    last = d.stress
+  end
+  -- After n seconds at severity 1 the stress is ~ rise*n (until it clamps). Five 1s
+  -- steps at rise 0.04 -> ~0.2, well clear of 0 and below the fail clamp.
+  check(d.stress > 0, "a sustained deficit accrues stress")
+  check(approx(d.stress, rise * 5), "full-deficit (severity 1) stress = stress_rise * seconds")
+end
+
+do
+  -- A PARTIAL deficit accrues stress SLOWER than a full one (severity < 1). avail 6,
+  -- cost_full 10 -> severity = (10-6)/10 = 0.4; rise per sec = stress_rise*0.4.
+  local rise = 0.04
+  local partial =
+    rates({ power = 8, upkeep = 2, throughput = 10, excess = 0, stress_rise = rise })
+  local p = sim.new()
+  sim.step(p, 1, partial)
+  check(approx(p.stress, rise * 0.4), "partial deficit stress scales with severity (0.4 here)")
+  check(p.stress > 0 and p.stress < rise, "a partial deficit accrues less stress than a full one")
+end
+
+do
+  -- HEALTHY surplus (avail >= cost_full): severity 0 -> stress DECAYS at stress_fall.
+  -- Pre-load stress, then step a healthy line; it must fall toward 0 and floor there.
+  local fall = 0.2
+  local good = rates({ power = 20, upkeep = 2, throughput = 5, excess = 0, stress_fall = fall })
+  local h = sim.new()
+  h.stress = 0.5
+  sim.step(h, 1, good)
+  check(approx(h.stress, 0.5 - fall), "a healthy surplus decays stress at stress_fall/sec")
+  check(h.stress < 0.5, "restoring power lowers stress")
+  -- Keep stepping: it floors at 0 (never negative).
+  for _ = 1, 10 do
+    sim.step(h, 1, good)
+  end
+  check(h.stress == 0, "stress decays to 0 and clamps (never negative)")
+end
+
+do
+  -- CLAMP at 1: a long full-deficit step cannot drive stress past 1.
+  local hot = rates({ power = 0, upkeep = 2, throughput = 10, excess = 0, stress_rise = 0.04 })
+  local c = sim.new()
+  sim.step(c, 10000, hot) -- one giant deficit step
+  check(c.stress == 1, "stress clamps at 1 (the lysis threshold)")
+end
+
+do
+  -- RECOVERABLE: a BRIEF deficit then recovery nets BELOW the fail threshold, so a
+  -- transient power gap can never lyse the cell on its own. Rise and fall are tuned so
+  -- a short deficit (a few seconds) is comfortably cleared. Derive: deficit seconds *
+  -- rise must stay under 1, and the subsequent surplus drains it back toward 0.
+  local rise, fall = 0.04, 0.2
+  local def = rates({ power = 0, upkeep = 2, throughput = 10, excess = 0, stress_rise = rise })
+  local good = rates({ power = 20, upkeep = 2, throughput = 5, excess = 0, stress_fall = fall })
+  local r = sim.new()
+  for _ = 1, 5 do -- 5s of full deficit
+    sim.step(r, 1, def)
+  end
+  local peak = r.stress
+  check(peak < 1, "a brief deficit peaks below the fail threshold (recoverable warning window)")
+  for _ = 1, 10 do -- power restored
+    sim.step(r, 1, good)
+  end
+  check(r.stress == 0, "recovery clears the transient stress back to 0")
+end
+
 -- OVERBUILD: raising `excess` (capacity built above the bottleneck) raises waste
 -- (waste_coef * excess), which lowers avail and therefore lowers surplus -- with NO
 -- gain to throughput. Two rates differing ONLY in excess: surplus must drop by
@@ -195,8 +281,11 @@ s.stages.ribosomes = 3
 s.stages.nucleus = 2
 s.unlocked.ribosomes = true
 s.unlocked.nucleus = true
+s.discovered.nucleus = true
+s.discovered.er = true
 s.output = 5
 s.brownout = true
+s.stress = 0.4
 local blob = sim.serialize(s)
 check(approx(blob.energy, 42.5), "serialize persists energy")
 check(approx(blob.built, 137.25), "serialize persists built")
@@ -206,14 +295,25 @@ check(
   blob.unlocked.ribosomes == true and blob.unlocked.nucleus == true,
   "serialize persists unlocks"
 )
+check(
+  blob.discovered.nucleus == true and blob.discovered.er == true,
+  "serialize persists the discovered set"
+)
+check(approx(blob.stress, 0.4), "serialize persists oxidative stress")
 check(blob.stages ~= s.stages, "serialize copies the stages table (no shared reference)")
 check(blob.unlocked ~= s.unlocked, "serialize copies the unlocked table (no shared reference)")
+check(blob.discovered ~= s.discovered, "serialize copies the discovered table (no shared reference)")
 local loaded = sim.load(blob)
 check(approx(loaded.energy, 42.5), "round-trip energy")
 check(approx(loaded.built, 137.25), "round-trip built")
 check(loaded.mito == 4, "round-trip mito")
 check(loaded.stages.ribosomes == 3 and loaded.stages.nucleus == 2, "round-trip stage levels")
 check(loaded.unlocked.ribosomes == true and loaded.unlocked.nucleus == true, "round-trip unlocks")
+check(
+  loaded.discovered.nucleus == true and loaded.discovered.er == true,
+  "round-trip discovered set"
+)
+check(approx(loaded.stress, 0.4), "round-trip oxidative stress")
 check(loaded.brownout == true, "round-trip brownout flag")
 
 -- load tolerates nil, missing fields, and wrong-typed data, falling back to fresh
@@ -228,13 +328,17 @@ local stale = sim.load({
   energy = "oops", -- wrong type
   built = -5, -- negative, rejected
   mito = 0, -- below the floor of 1
+  stress = -1, -- negative, rejected
   stages = "nope", -- wrong type
   unlocked = 7, -- wrong type
+  discovered = "no", -- wrong type
 })
 check(stale.energy == 0, "stale load: wrong-typed energy ignored")
 check(stale.built == 0, "stale load: a negative built falls back to 0")
 check(stale.mito == 1, "stale load: a sub-1 mito falls back to the founder mitochondrion")
+check(stale.stress == 0, "stale load: a negative stress falls back to 0")
 check(next(stale.stages) == nil, "stale load: wrong-typed stages ignored")
 check(next(stale.unlocked) == nil, "stale load: wrong-typed unlocked ignored")
+check(next(stale.discovered) == nil, "stale load: wrong-typed discovered ignored")
 
 print("all tests passed (" .. checks .. " checks)")

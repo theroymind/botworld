@@ -54,15 +54,19 @@ local DEFAULTS = {
 -- science-ordered named beats map onto these: Nucleus, Endomembrane (ER + Golgi),
 -- Cytoskeleton (transport), Membrane/Genome, then the FORK.
 local STAGES = { "ribosomes", "nucleus", "er", "golgi", "transport", "membrane" }
+-- Stair-step gates -- MIRROR catalog.GATES exactly. A gate unlocks only once `built`
+-- crosses `at` AND its `requires` predecessor is already unlocked, so the named beats
+-- arrive one at a time with widening gaps rather than in a clump. `at` rises steeply
+-- down the pipeline to space the reveals across the ~10-min climb.
 local GATES = {
-  -- id of the stage UNLOCKED, the `built` threshold that unlocks it, a label.
-  { id = "nucleus", at = 50, label = "Nucleus" },
-  { id = "er", at = 200, label = "Endomembrane(ER)" },
-  { id = "golgi", at = 200, label = "Golgi" },
-  { id = "transport", at = 600, label = "Cytoskeleton(transport)" },
-  { id = "membrane", at = 1500, label = "Membrane" },
+  { id = "nucleus", at = 50, requires = nil, label = "Nucleus" },
+  { id = "er", at = 1000, requires = "nucleus", label = "Endomembrane(ER)" },
+  { id = "golgi", at = 15000, requires = "er", label = "Golgi" },
+  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton(transport)" },
+  { id = "membrane", at = 105000, requires = "transport", label = "Membrane" },
 }
-local FORK_AT = 50000 -- end-of-phase gate (~12 min smart target)
+local FORK_AT = 180000 -- end-of-phase gate (~10-min smart target; mirrors catalog.FORK_AT)
+local VALUE_PER_STAGE = 0.40 -- +40% built per throughput per integrated stage past the first
 
 -- Per-stage throughput rate. Uniform first guess; kept as a function so a future
 -- tuning pass can make a stage intrinsically faster/slower per the spec.
@@ -102,10 +106,12 @@ local function fold(C, state)
 
   local excess = 0
   local levelsum = 0
+  local unlocked_count = 0
   for _, id in ipairs(STAGES) do
     local lvl = state.stages[id] or 0
     levelsum = levelsum + lvl
     if state.unlocked[id] then
+      unlocked_count = unlocked_count + 1
       local cap = stage_rate(C, id) * lvl
       local over = cap - throughput
       if over > 0 then
@@ -113,6 +119,11 @@ local function fold(C, state)
       end
     end
   end
+
+  -- INTEGRATION VALUE (the carrot): a longer integrated pipeline mints MORE built per
+  -- unit of throughput. Mirrors catalog.fold's value_mult so the lab's progression
+  -- matches the live economy (built, not power, so brownout/stress are unaffected).
+  local value_mult = 1 + VALUE_PER_STAGE * math.max(unlocked_count - 1, 0)
 
   local upkeep = C.UPKEEP_PER_MACHINE * (state.mito + levelsum)
 
@@ -125,6 +136,7 @@ local function fold(C, state)
     e_per_output = C.E_PER_OUTPUT,
     buffer_max = C.BUFFER_MAX,
     brownout_reserve = C.BROWNOUT_RESERVE,
+    value_mult = value_mult,
   }
 end
 
@@ -148,11 +160,25 @@ end
 -- so it doesn't pin throughput to zero the instant it opens. It still starts as the
 -- new bottleneck (cap = stage_rate*1, below the stages ahead of it), which is the
 -- intended "each beat is a new bottleneck to build up" beat -- just not a hard stall.
-local function apply_gates(state)
+local INTEGRATION_SEED_FRACTION = 0.6 -- mirror catalog: a stage integrates near the line, not level 1
+
+local function apply_gates(C, state)
   for _, g in ipairs(GATES) do
-    if not state.unlocked[g.id] and state.built >= g.at then
+    -- Stair-step: a gate fires only once `built` crosses `at` AND its predecessor is
+    -- already unlocked, so the beats chain one at a time. (The live layer splits this
+    -- into a discover step + a paid integrate step; the lab auto-unlocks to keep the
+    -- buyer policies simple, but the SAME prereq+threshold gate governs the order.)
+    local prereq_met = g.requires == nil or state.unlocked[g.requires]
+    if not state.unlocked[g.id] and state.built >= g.at and prereq_met then
+      -- Seed near the line (mirror catalog.unlock_stage): the new stage opens as a
+      -- modest dip the player tops up, not a level-1 crater that re-grinds every level.
+      local line_throughput = fold(C, state).throughput
+      local seed = math.floor((INTEGRATION_SEED_FRACTION * line_throughput) / C.STAGE_RATE + 0.5)
+      if seed < 1 then
+        seed = 1
+      end
       state.unlocked[g.id] = true
-      state.stages[g.id] = math.max(state.stages[g.id] or 0, 1)
+      state.stages[g.id] = math.max(state.stages[g.id] or 0, seed)
     end
   end
 end
@@ -270,7 +296,7 @@ local function run_policy(C, policy_fn, opts)
     t = t + dt
     total_steps = total_steps + 1
 
-    apply_gates(state)
+    apply_gates(C, state)
     for _, g in ipairs(GATES) do
       if state.unlocked[g.id] and not gate_times[g.id] then
         gate_times[g.id] = t

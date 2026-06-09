@@ -631,4 +631,24 @@ for _ = 1, 400 do
 end
 check(spawned_any, "blooms spawn normally when no exclusion rect is given")
 
+-- BLOOM CONFINE (founder lock): with a bloom_confine rect (the locked camera
+-- frame projected into world space), every spawned bloom lands WITHIN it -- even
+-- when the rect is a small window far from the field's usual interior band.
+local cw = world.new({ rng = make_rng(11), aspect = 16 / 9 })
+local conf = { x = cw.field_w * 0.30, y = cw.field_h * 0.40, w = cw.field_w * 0.20, h = cw.field_h * 0.20 }
+local confine_spawns = 0
+for _ = 1, 4000 do
+  world.update(cw, FRAME, { target_population = 1, bloom_confine = conf })
+  for i = #cw.blooms, 1, -1 do
+    local b = cw.blooms[i]
+    confine_spawns = confine_spawns + 1
+    check(
+      b.x >= conf.x and b.x <= conf.x + conf.w and b.y >= conf.y and b.y <= conf.y + conf.h,
+      "bloom always spawns inside the confine rect"
+    )
+    table.remove(cw.blooms, i)
+  end
+end
+check(confine_spawns >= 10, "bloom confine run observed enough spawns to be meaningful")
+
 print("all tests passed (" .. checks .. " checks)")

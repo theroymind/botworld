@@ -41,9 +41,11 @@ function sim.new()
     built = 0, -- headline growth: cumulative structure produced (monotonic)
     mito = 1, -- mitochondria count; the first is the engulfed bacterium
     stages = {}, -- id -> integer level (the assembly-line stages)
-    unlocked = {}, -- id -> true (which stages are online; gated by `built`)
+    unlocked = {}, -- id -> true (which stages are online; INTEGRATED, bought with ATP)
+    discovered = {}, -- id -> true (a stage whose built gate was crossed; awaits integration)
     output = 0, -- last step's assembly-line output O (swarm intensity readout)
     brownout = false, -- true when output throttled below T by a power deficit
+    stress = 0, -- 0..1 oxidative stress: a SUSTAINED power deficit drives it toward lysis (the failure pressure)
   }
 end
 
@@ -96,6 +98,8 @@ function sim.step(state, dt, rates)
   local e = rates.e_per_output or 1
   local buffer_max = rates.buffer_max or math.huge
   local reserve = rates.brownout_reserve or 0
+  local stress_rise = rates.stress_rise or 0
+  local stress_fall = rates.stress_fall or 0
 
   local avail = power - upkeep - waste_coef * excess
   local T = throughput
@@ -124,9 +128,44 @@ function sim.step(state, dt, rates)
   end
   state.energy = energy
 
-  state.built = state.built + O * dt
+  -- built is minted at O * value_mult: a longer INTEGRATED pipeline refines each unit of
+  -- throughput into more structure (the carrot for building the cell out). value_mult
+  -- multiplies BUILT only -- the power cost (e*O) is unchanged, so it never shifts the
+  -- brownout/stress balance. Defaults to 1 (a bare ribosomes-only line).
+  local value_mult = rates.value_mult or 1
+  state.built = state.built + O * value_mult * dt
   state.output = O
   state.brownout = (O < T - 1e-9)
+
+  -- OXIDATIVE STRESS -- the failure pressure (phase 1's toxicity cull re-shaped for
+  -- the eukaryote). A SUSTAINED power deficit poisons the cell: stress integrates
+  -- toward 1 (lysis, triggered by the orchestrator at STRESS_FAIL) and decays back
+  -- toward 0 the moment power is restored, so it is always RECOVERABLE -- a generous
+  -- warning window, never an instant kill. Severity is how far `avail` falls short of
+  -- the cost of running the line fully (0 when fully powered, ->1 as avail hits/passes
+  -- 0). This is additive bookkeeping ONLY: it never touches energy/built/output, so
+  -- the closed form stays intact and online == offline (deterministic, no rng).
+  local severity = 0
+  if avail < cost_full then
+    local denom = cost_full
+    if denom < 1e-9 then
+      denom = 1e-9
+    end
+    severity = (cost_full - avail) / denom
+    if severity < 0 then
+      severity = 0
+    elseif severity > 1 then
+      severity = 1
+    end
+  end
+  local rate = (severity > 0) and (stress_rise * severity) or (-stress_fall)
+  local stress = (state.stress or 0) + rate * dt
+  if stress < 0 then
+    stress = 0
+  elseif stress > 1 then
+    stress = 1
+  end
+  state.stress = stress
 end
 
 -- One sim tick (runs even while backgrounded). rates is the folded table the
@@ -163,14 +202,20 @@ function sim.serialize(state)
   for id in pairs(state.unlocked) do
     unlocked[id] = true
   end
+  local discovered = {}
+  for id in pairs(state.discovered) do
+    discovered[id] = true
+  end
   return {
     energy = state.energy,
     built = state.built,
     mito = state.mito,
     output = state.output,
     brownout = state.brownout,
+    stress = state.stress,
     stages = stages,
     unlocked = unlocked,
+    discovered = discovered,
   }
 end
 
@@ -195,6 +240,9 @@ function sim.load(data)
   if data.brownout ~= nil then
     state.brownout = data.brownout and true or false
   end
+  if type(data.stress) == "number" and data.stress >= 0 then
+    state.stress = data.stress > 1 and 1 or data.stress
+  end
   if type(data.stages) == "table" then
     for id, level in pairs(data.stages) do
       if type(level) == "number" and level >= 0 then
@@ -206,6 +254,13 @@ function sim.load(data)
     for id, on in pairs(data.unlocked) do
       if on then
         state.unlocked[id] = true
+      end
+    end
+  end
+  if type(data.discovered) == "table" then
+    for id, on in pairs(data.discovered) do
+      if on then
+        state.discovered[id] = true
       end
     end
   end

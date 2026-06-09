@@ -163,6 +163,24 @@ local PAN_SMOOTH = 0.008
 local PAN_FADE_LO = 10
 local PAN_FADE_HI = 50
 
+-- FOUNDER LOCK: before the very first split, the dish holds a single cell on the
+-- roomy founder tier -- the whole field fits inside the window, so the stepped
+-- fit-camera shows the founder as a lone dot adrift in empty dish and the
+-- seam-clamped pan has no slack to follow it. While that one cell is all there
+-- is, override the fit and LOCK onto it: centre the founder and push in by
+-- LOCK_PUSH past the fit zoom so it reads as the subject and the camera tracks it
+-- as it swims. The moment it splits we latch `split_seen` and never lock again --
+-- the gentle TIER_SMOOTH glide eases the zoom back out into normal smart framing,
+-- and a late-game collapse back to one cell stays in the grown-colony fit rather
+-- than lurching back in.
+-- Keep the push GENTLE: the lock's real effect is centring + tracking the founder,
+-- not a tight close-up. Too much zoom (2.2 was) crops the dish so far that blooms
+-- spawn off-screen -- the founder-era affordance the player most needs to see. At
+-- 1.0 the founder is centred and tracked at the plain fit zoom, so the whole dish
+-- frames as it normally would (see also world.founder_bloom_inset, which keeps the
+-- first blooms off the overflowing short-axis edge).
+local LOCK_PUSH = 1.0 -- founder-lock zoom as a multiple of the stepped fit zoom
+
 -- The nutrient bloom's on-screen click-target radius, in PIXELS. The bloom is an
 -- interactive affordance, so it holds a CONSTANT screen size (like UI) as the
 -- stepped camera zooms across field tiers -- not a world-scaled disk that
@@ -217,6 +235,8 @@ function view.new()
     fx = fx.new(),
     camera = { zoom = 1, x = 0, y = 0, init = false },
     pan = { x = 0, y = 0 }, -- smart-framing offset, lerped slowly (PAN_SMOOTH)
+    split_seen = false, -- latched once the founder first splits; gates the founder lock
+    locked = false, -- true while the camera is locked on the lone founder (gates bloom confine)
   }
 end
 
@@ -469,9 +489,8 @@ local function draw_mito_mark(e, amul)
   if s <= 0 then
     return
   end
-  local half = s * 0.5
   love.graphics.setColor(MITO_COLOR[1], MITO_COLOR[2], MITO_COLOR[3], a)
-  love.graphics.rectangle("fill", e.x - half, e.y - half, s, s)
+  love.graphics.circle("fill", e.x, e.y, s * 0.5)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
@@ -541,6 +560,25 @@ function view.draw_world(state, snap, opts)
   pan.y = pan.y + (want_y - pan.y) * PAN_SMOOTH
   tx = tx + pan.x
   ty = ty + pan.y
+  -- Founder lock: latch split_seen the instant a second cell exists, then never
+  -- lock again. Until that first split, retarget the fit onto the lone founder --
+  -- centred and pushed in past the fit zoom -- so the camera locks on and tracks
+  -- it. After the split the target reverts to the smart-framing fit above and the
+  -- slow TIER_SMOOTH lerp glides the zoom-out home (no lock on a late collapse).
+  local cells = snap.cells or {}
+  if #cells > 1 then
+    state.split_seen = true
+  end
+  -- `locked` is published for the orchestrator: while it's true, cell.lua confines
+  -- bloom spawns to the locked frame (view.screen_to_world of the window corners)
+  -- so the founder-era click target never spawns off the tracked view.
+  state.locked = (not state.split_seen) and #cells == 1
+  if state.locked then
+    local c = cells[1]
+    tz = tz * LOCK_PUSH
+    tx = win_w / 2 - c.x * tz
+    ty = win_h / 2 - c.y * tz
+  end
   -- Cinematic override: when focused, retarget the lerp onto a world point at an
   -- absolute zoom (the transition's push-in onto the triggering cell). The camera
   -- still eases toward it, so the move reads as a smooth glide, not a cut.
