@@ -138,6 +138,22 @@ local FUEL_TINT = 0.18
 local CYTOPLASM_ALPHA = 0.5
 local NUCLEUS_R_FRAC = 0.30 -- nucleus radius as a fraction of cell radius
 
+-- TAP-READY RING: the "feed me" affordance framing the centre hub, shown only when the
+-- manual ATP tap is off cooldown (snapshot.tap_ready). The phase-2 analogue of phase-1's
+-- clickable nutrient BLOOM (cell/view.lua draw_bloom) -- the SAME secondary_bright feed
+-- token and the same gentle sinusoidal pulse -- so "the cell is ready for a feed tap"
+-- reads in one visual language across phases. Values mirror the phase-1 bloom (6% breathe,
+-- ~1s period, 1.7x soft glow, 2px rim) so the two affordances feel like one mechanic.
+-- Drawn at FULL brightness (NOT dimmed/tinted by brownout): the tap matters MOST when the
+-- cell is power-starved, so the cue must stay legible exactly when the interior is dimmest.
+local TAP_RING_R_FRAC = 0.34 -- base ring radius as a fraction of cell radius (just outside the nucleus rim)
+local TAP_RING_PULSE_AMP = 0.06 -- +/- size pulse (the phase-1 bloom's 6% breathe)
+local TAP_RING_PULSE_FREQ = 6 -- pulse angular frequency in rad/s (~1s period, as phase 1)
+local TAP_RING_GLOW_SCALE = 1.7 -- soft outer glow radius vs. the rim (as the phase-1 bloom glow)
+local TAP_RING_GLOW_ALPHA = 0.10 -- the wispy outer glow alpha
+local TAP_RING_RIM_ALPHA = 0.85 -- the bright "tap me" rim alpha
+local TAP_RING_WIDTH = 2 -- rim line width in screen px (constant, like the bloom rim)
+
 -- The fixed pipeline order (matches the sim's stage ids). The view lays endpoints
 -- out in THIS order, and uses the index to judge up/downstream of the bottleneck for
 -- the vacancy readout.
@@ -185,12 +201,12 @@ end
 -- clockwise on screen). Stored per-id so build_routes can place only UNLOCKED stages.
 -- ============================================================================
 local ZONE = {
-  nucleus   = { frac = 0.00, angle = 0.0 },
+  nucleus = { frac = 0.00, angle = 0.0 },
   ribosomes = { frac = 0.30, angle = math.rad(135) },
-  er        = { frac = 0.42, angle = math.rad(215) },
-  golgi     = { frac = 0.62, angle = math.rad(275) },
+  er = { frac = 0.42, angle = math.rad(215) },
+  golgi = { frac = 0.62, angle = math.rad(275) },
   transport = { frac = 0.76, angle = math.rad(330) },
-  membrane  = { frac = 0.88, angle = math.rad(55) },
+  membrane = { frac = 0.88, angle = math.rad(55) },
 }
 
 -- Resolve a zone's STABLE screen position. Pure: (cx, cy, r) + the fixed polar offset.
@@ -208,11 +224,11 @@ end
 -- chosen to fill the "gaps" between pipeline zones (upper-right, upper, right, and
 -- lower-left quadrants) so the beans read as scattered, not piled on the organelles.
 local MITO_ANGLES = {
-  math.rad(75),  -- upper-right gap (between membrane at 55 and ribosomes at 135)
+  math.rad(75), -- upper-right gap (between membrane at 55 and ribosomes at 135)
   math.rad(175), -- left gap (between ribosomes at 135 and ER at 215)
   math.rad(245), -- lower-left gap (between ER at 215 and Golgi at 275)
   math.rad(305), -- lower-right gap (between Golgi at 275 and transport at 330)
-  math.rad(20),  -- right gap (between transport at 330 and membrane at 55)
+  math.rad(20), -- right gap (between transport at 330 and membrane at 55)
   math.rad(115), -- upper-left (fills the wide upper arc for a 6th bean)
 }
 
@@ -440,6 +456,26 @@ local function draw_nucleus(state, cx, cy, r, level)
   end
 end
 
+-- The TAP-READY ring: a soft pulsing feed ring framing the centre hub, drawn only when
+-- the manual ATP tap is off cooldown (snapshot.tap_ready). The phase-2 analogue of phase
+-- 1's clickable nutrient bloom -- it appears when a tap is available and vanishes once
+-- spent (the tap rolls a fresh cooldown), exactly the bloom's "click me, then gone" beat.
+-- Drawn as a UI affordance in plain screen color (NOT set_interior_color), so brownout's
+-- interior dim/tint never fades the cue when the player most needs to feed the cell.
+local function draw_tap_ring(state, cx, cy, r)
+  local col = colors.secondary_bright
+  local pulse = 1 + TAP_RING_PULSE_AMP * math.sin(state.time * TAP_RING_PULSE_FREQ)
+  local ring_r = r * TAP_RING_R_FRAC * pulse
+  -- Soft outer glow (the wispy breathe), then the bright "tap me" rim at a constant px width.
+  love.graphics.setColor(col[1], col[2], col[3], TAP_RING_GLOW_ALPHA)
+  love.graphics.circle("fill", cx, cy, ring_r * TAP_RING_GLOW_SCALE)
+  love.graphics.setLineWidth(TAP_RING_WIDTH)
+  love.graphics.setColor(col[1], col[2], col[3], TAP_RING_RIM_ALPHA)
+  love.graphics.circle("line", cx, cy, ring_r)
+  love.graphics.setLineWidth(1)
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 -- Draw a Catmull-Rom-ish smooth ribbon through a short list of control points using
 -- love's built-in spline. `pts` is a flat {x,y,...} list; we feed it as a quadratic
 -- bezier-style evenly. Cheap: love.math.newBezierCurve renders the smooth poly for us.
@@ -524,9 +560,12 @@ local function draw_golgi(state, cx, cy, r, golgi_level)
     local ox = gx + nx * push
     local oy = gy + ny * push
     local pts = {
-      ox - tx * width, oy - ty * width,
-      ox + nx * bow, oy + ny * bow, -- mid point bows outward
-      ox + tx * width, oy + ty * width,
+      ox - tx * width,
+      oy - ty * width,
+      ox + nx * bow,
+      oy + ny * bow, -- mid point bows outward
+      ox + tx * width,
+      oy + ty * width,
     }
     set_interior_color(state, colors.tertiary, 0.6)
     draw_spline(pts, 4)
@@ -760,7 +799,7 @@ end
 -- Render the cell interior to the screen from a read-only snapshot (the orchestrator
 -- builds it fresh each frame; see the EXACT shape in this module's header). Draws
 -- nothing of the panel/HUD. Graphics state is reset at the end. Order:
---   membrane (CPU) -> nucleus (CPU) -> organelles (CPU) -> GPU swarm -> fx.
+--   membrane (CPU) -> nucleus (CPU) -> organelles (CPU) -> GPU swarm -> tap ring -> fx.
 function view.draw(state, snapshot)
   snapshot = snapshot or {}
   local win_w, win_h = love.graphics.getDimensions()
@@ -805,12 +844,14 @@ function view.draw(state, snapshot)
   -- LIVE COUNT: START as a handful and grow with leveling. throughput drives the
   -- immediate "leveling adds vesicles" feel; built is the slow bulk fill. Hard-capped.
   local throughput = snapshot.throughput or 0
-  if throughput < 0 then throughput = 0 end
+  if throughput < 0 then
+    throughput = 0
+  end
   local built = snapshot.built or 0
-  if built < 0 then built = 0 end
-  local count = COUNT_BASE
-    + K_FLOW * math.log(1 + throughput)
-    + K_BULK * math.log(1 + built)
+  if built < 0 then
+    built = 0
+  end
+  local count = COUNT_BASE + K_FLOW * math.log(1 + throughput) + K_BULK * math.log(1 + built)
   if count > MAX_LIVE_VESICLES then
     count = MAX_LIVE_VESICLES
   end
@@ -821,7 +862,9 @@ function view.draw(state, snapshot)
   -- (state.drift) then multiplies into the motion speed so easing in/out of brownout
   -- produces a smooth deceleration/acceleration with NO teleport or runaway phase jump.
   local eff = snapshot.efficiency
-  if eff == nil then eff = 1 end
+  if eff == nil then
+    eff = 1
+  end
   eff = clamp01(eff)
   local out_bonus = saturate(snapshot.output, OUTPUT_REF)
   local base_speed = lerp(SPEED_SLOW, SPEED_FAST, eff) + OUTPUT_SPEED_BONUS * out_bonus
@@ -847,14 +890,20 @@ function view.draw(state, snapshot)
     cargo_palette = CARGO_PALETTE, -- typed-cargo colours (Agent C honors / defaults)
   })
 
-  -- 5) World-space fx ride above the interior.
+  -- 5) TAP-READY ring: the centre "feed me" affordance, over the swarm (so it reads as a
+  -- clear cue, not buried in the cloud) but under the fx, so a tap's own pulse lands on top.
+  if snapshot.tap_ready then
+    draw_tap_ring(state, cx, cy, r)
+  end
+
+  -- 6) World-space fx ride above the interior.
   fx.draw_world(state.fx)
 
   love.graphics.pop()
 
   fx.draw_overlay(state.fx)
 
-  -- 6) STRESS VIGNETTE (optional tell for impending lysis). snapshot.stress is 0..1;
+  -- 7) STRESS VIGNETTE (optional tell for impending lysis). snapshot.stress is 0..1;
   -- defaults to 0 if absent (guard: new field from Agent ECON, not yet on all builds).
   -- A faint creeping warm-red glow at the cell rim that intensifies as stress rises.
   -- Implementation: a wide rim stroke at the cell edge, alpha proportional to stress.
