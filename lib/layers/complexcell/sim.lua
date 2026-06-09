@@ -45,7 +45,9 @@ function sim.new()
     discovered = {}, -- id -> true (a stage whose built gate was crossed; awaits integration)
     output = 0, -- last step's assembly-line output O (swarm intensity readout)
     brownout = false, -- true when output throttled below T by a power deficit
-    stress = 0, -- 0..1 oxidative stress: a SUSTAINED power deficit drives it toward lysis (the failure pressure)
+    stress = 0, -- 0..1 oxidative stress: a SUSTAINED power/ROS extreme drives it toward lysis (the failure pressure)
+    ros = 0, -- 0..1 reactive-oxygen species (Pillar 2): idle OVER-power leaks it; it cuts built and, sustained past ROS_LETHAL, feeds lethal stress
+    stab = 0, -- stabilization (antioxidant) level: the counter-lever that raises the safe ceiling and speeds ROS clearance
   }
 end
 
@@ -63,6 +65,117 @@ function sim.surplus(rates)
   local e = rates.e_per_output or 1
   local avail = power - upkeep - waste_coef * excess
   return avail - e * throughput
+end
+
+-- THE BALANCE SCALAR (Pillars 2 & 3), in [0,1]: the single number that drives both the
+-- swarm readout AND the built-yield cut. Pure: a function of a folded `rates` table and
+-- the current `ros` only, no state mutation, no rng. catalog.efficiency() is its
+-- BYTE-FOR-BYTE MIRROR (it calls this), so the live readout and the economic cut can
+-- never drift. Three factors:
+--
+--   flow_balance  = T / (T + excess)         -- pipeline match; 1 when nothing is idle.
+--   power_balance = PEAK-IN-BAND over balance_ratio = power / demand
+--                   (demand = e*T + upkeep): 1 inside [BALANCE_LO, BALANCE_HI_eff];
+--                   a DEFICIT slope below LO (ratio/LO) and a SURPLUS slope above HI_eff
+--                   (1 - severity toward ROS_RATIO_CAP). Two-sided -- over-power bites.
+--   ros_drag      = 1 - ros                  -- accumulated oxidative stress bleeds it.
+--
+-- Returns flow_balance * power_balance * ros_drag, clamped to [0,1].
+function sim.balance_scalar(rates, ros)
+  local power = rates.power or 0
+  local upkeep = rates.upkeep or 0
+  local excess = rates.excess or 0
+  local throughput = rates.throughput or 0
+  local e = rates.e_per_output or 1
+  local balance_lo = rates.balance_lo or 1
+  local balance_hi_eff = rates.balance_hi_eff or balance_lo
+  local ros_ratio_cap = rates.ros_ratio_cap or balance_hi_eff
+
+  -- flow_balance: 1.0 on a perfectly matched pipeline; degrades with idle excess.
+  local flow_balance = 0
+  if throughput > 0 then
+    flow_balance = throughput / (throughput + excess)
+  end
+
+  -- power_balance: the peak-in-band curve. demand = e*T + upkeep is always > 0 here
+  -- (upkeep counts mito >= 1), so balance_ratio is well-defined.
+  local demand = e * throughput + upkeep
+  local power_balance
+  if demand <= 0 then
+    power_balance = 1
+  else
+    local ratio = power / demand
+    if ratio < balance_lo then
+      -- DEFICIT slope: linear from 0 (no power) up to 1 at the band floor.
+      power_balance = ratio / balance_lo
+    elseif ratio <= balance_hi_eff then
+      -- Inside the safe band: full efficiency.
+      power_balance = 1
+    else
+      -- SURPLUS slope: idle over-power. Severity rises from 0 at the band ceiling to 1
+      -- at ROS_RATIO_CAP; power_balance falls 1 -> 0 across that span.
+      local span = ros_ratio_cap - balance_hi_eff
+      local severity
+      if span <= 0 then
+        severity = 1
+      else
+        severity = (ratio - balance_hi_eff) / span
+      end
+      if severity < 0 then
+        severity = 0
+      elseif severity > 1 then
+        severity = 1
+      end
+      power_balance = 1 - severity
+    end
+  end
+
+  local ros_drag = 1 - (ros or 0)
+  if ros_drag < 0 then
+    ros_drag = 0
+  end
+
+  local scalar = flow_balance * power_balance * ros_drag
+  if scalar < 0 then
+    scalar = 0
+  elseif scalar > 1 then
+    scalar = 1
+  end
+  return scalar
+end
+
+-- The SURPLUS-ROS leak severity (Pillar 2): how hard idle over-power is leaking ROS
+-- right now, in [0,1]. 0 inside/below the safe band; rises from the band ceiling
+-- (BALANCE_HI_eff) to full at ROS_RATIO_CAP. Pure; shared by sim.step's ROS integration
+-- so the rise math is stated once.
+local function ros_leak_severity(rates)
+  local power = rates.power or 0
+  local upkeep = rates.upkeep or 0
+  local throughput = rates.throughput or 0
+  local e = rates.e_per_output or 1
+  local balance_hi_eff = rates.balance_hi_eff or (rates.balance_lo or 1)
+  local ros_ratio_cap = rates.ros_ratio_cap or balance_hi_eff
+  local demand = e * throughput + upkeep
+  if demand <= 0 then
+    return 0
+  end
+  local ratio = power / demand
+  if ratio <= balance_hi_eff then
+    return 0
+  end
+  local span = ros_ratio_cap - balance_hi_eff
+  local severity
+  if span <= 0 then
+    severity = 1
+  else
+    severity = (ratio - balance_hi_eff) / span
+  end
+  if severity < 0 then
+    return 0
+  elseif severity > 1 then
+    return 1
+  end
+  return severity
 end
 
 -- THE shared economy step, run by BOTH sim.tick and sim.offline so live and
@@ -100,6 +213,12 @@ function sim.step(state, dt, rates)
   local reserve = rates.brownout_reserve or 0
   local stress_rise = rates.stress_rise or 0
   local stress_fall = rates.stress_fall or 0
+  local ros_rise = rates.ros_rise or 0
+  local ros_fall = rates.ros_fall or 0
+  local stab_clear = rates.stab_clear or 1
+  local ros_lethal = rates.ros_lethal or 1
+  local ros_lethal_rise = rates.ros_lethal_rise or 0
+  local min_eff = rates.min_eff or 1
 
   local avail = power - upkeep - waste_coef * excess
   local T = throughput
@@ -128,12 +247,33 @@ function sim.step(state, dt, rates)
   end
   state.energy = energy
 
-  -- built is minted at O * value_mult: a longer INTEGRATED pipeline refines each unit of
-  -- throughput into more structure (the carrot for building the cell out). value_mult
-  -- multiplies BUILT only -- the power cost (e*O) is unchanged, so it never shifts the
-  -- brownout/stress balance. Defaults to 1 (a bare ribosomes-only line).
+  -- THE ROS PENDULUM (Pillar 2) -- integrate FIRST so the efficiency cut below sees this
+  -- step's ros. Idle OVER-power (balance_ratio past BALANCE_HI_eff) leaks ROS up, scaled
+  -- by ros_leak_severity; inside/below the band it DECAYS, sped by stab_clear (the
+  -- stabilization counter-lever). Additive bookkeeping in [0,1], deterministic (no rng),
+  -- IDENTICAL online vs offline -- only the LETHAL coupling below diverges. The soft cut
+  -- (via the balance scalar) is therefore the same whether you were away or watching.
+  local leak = ros_leak_severity(rates)
+  local ros_rate = (leak > 0) and (ros_rise * leak) or (-ros_fall * stab_clear)
+  local ros = (state.ros or 0) + ros_rate * dt
+  if ros < 0 then
+    ros = 0
+  elseif ros > 1 then
+    ros = 1
+  end
+  state.ros = ros
+
+  -- built is minted at O * value_mult * efficiency_factor. value_mult is the integrated-
+  -- pipeline carrot (longer line refines each unit into more structure). efficiency_factor
+  -- is Pillar 3's load-bearing balance cut: a badly-balanced cell mints as little as
+  -- MIN_EFF of its potential, a well-balanced one mints full value. Both multiply BUILT
+  -- only -- the power cost (e*O) is UNCHANGED above, so the brownout/stress closed form is
+  -- untouched and only the REWARD bends. balance_scalar uses the just-updated ros, so the
+  -- soft ROS cut is baked in here and is identical online vs offline.
   local value_mult = rates.value_mult or 1
-  state.built = state.built + O * value_mult * dt
+  local balance = sim.balance_scalar(rates, ros)
+  local efficiency_factor = min_eff + (1 - min_eff) * balance
+  state.built = state.built + O * value_mult * efficiency_factor * dt
   state.output = O
   state.brownout = (O < T - 1e-9)
 
@@ -158,7 +298,37 @@ function sim.step(state, dt, rates)
       severity = 1
     end
   end
-  local rate = (severity > 0) and (stress_rise * severity) or (-stress_fall)
+
+  -- SURPLUS-ROS LETHAL coupling (Pillar 2) -- the SOFT-THEN-LETHAL ceiling. Only when ros
+  -- is SUSTAINED past ROS_LETHAL does over-power begin feeding the SAME lethal stress the
+  -- deficit half uses; scaled by how far past ROS_LETHAL we are (0 at the threshold, 1 at
+  -- full ros). A generous warning window -- one stabilization or a few power-trims pulls
+  -- you back well before STRESS_FAIL.
+  --
+  -- FORGIVENESS GUARD: this term accrues LIVE ONLY. sim.tick sets rates.lethal_ros;
+  -- sim.offline does NOT, so an idle/backgrounded hot cell can only DIM (the soft built
+  -- cut above, which IS shared) and can never LYSE from surplus while you are away. This
+  -- is the one INTENTIONAL online/offline divergence in the stress tail -- documented in
+  -- docs/PHASE_2_ECONOMY.md. The deficit half keeps its existing recoverable-by-reserve
+  -- guarantee in both paths.
+  local lethal_ros_input = 0
+  if rates.lethal_ros and ros > ros_lethal and ros_lethal < 1 then
+    lethal_ros_input = (ros - ros_lethal) / (1 - ros_lethal)
+    if lethal_ros_input > 1 then
+      lethal_ros_input = 1
+    end
+  end
+
+  -- Stress rate combines the deficit half and the (live-only) surplus-ROS half. When
+  -- BOTH are quiet, stress DECAYS at stress_fall (always recoverable). When either bites,
+  -- stress rises; the deficit term reuses stress_rise, the surplus term uses
+  -- ros_lethal_rise so the two ceilings can be tuned independently.
+  local rate
+  if severity > 0 or lethal_ros_input > 0 then
+    rate = stress_rise * severity + ros_lethal_rise * lethal_ros_input
+  else
+    rate = -stress_fall
+  end
   local stress = (state.stress or 0) + rate * dt
   if stress < 0 then
     stress = 0
@@ -168,9 +338,18 @@ function sim.step(state, dt, rates)
   state.stress = stress
 end
 
--- One sim tick (runs even while backgrounded). rates is the folded table the
--- orchestrator assembles from mito + stage levels + tuning constants.
-function sim.tick(state, dt, rates) sim.step(state, dt, rates) end
+-- One sim tick (the LIVE/foreground path; also runs while backgrounded as a clock
+-- tick). rates is the folded table the orchestrator assembles each tick from mito +
+-- stage levels + tuning constants. tick SETS rates.lethal_ros so the surplus-ROS lethal
+-- coupling accrues here -- the FORGIVENESS GUARD: only the live path can lyse from a
+-- sustained idle surplus; sim.offline (catch-up) never sets it, so coming back to a hot
+-- cell finds it dimmed, not dead. Everything else (incl. the soft ROS built cut) is
+-- identical online vs offline. Mutating the per-tick rates table is safe: fold() rebuilds
+-- it every tick, so the flag never leaks across calls.
+function sim.tick(state, dt, rates)
+  rates.lethal_ros = true
+  sim.step(state, dt, rates)
+end
 
 -- Lump-sum catch-up for time away: replay the shared step in fixed sub-steps so
 -- the buffer integrates correctly across the clamp (one giant dt would overshoot
@@ -213,6 +392,8 @@ function sim.serialize(state)
     output = state.output,
     brownout = state.brownout,
     stress = state.stress,
+    ros = state.ros,
+    stab = state.stab,
     stages = stages,
     unlocked = unlocked,
     discovered = discovered,
@@ -242,6 +423,12 @@ function sim.load(data)
   end
   if type(data.stress) == "number" and data.stress >= 0 then
     state.stress = data.stress > 1 and 1 or data.stress
+  end
+  if type(data.ros) == "number" and data.ros >= 0 then
+    state.ros = data.ros > 1 and 1 or data.ros
+  end
+  if type(data.stab) == "number" and data.stab >= 0 then
+    state.stab = math.floor(data.stab)
   end
   if type(data.stages) == "table" then
     for id, level in pairs(data.stages) do
