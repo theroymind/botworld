@@ -7,6 +7,14 @@ the same way `docs/CELL_GROWTH.md` + `tools/sim_lab.lua` back phase 1.
 This is the **target the lab tunes against**. Constants here are first guesses;
 the lab (`tools/phase2_lab.lua`) is where they get pinned.
 
+> **Proposed redesign — see `docs/PHASE_2_BALANCE.md`.** That doc proposes
+> superseding several decisions below once accepted and implemented: uniform
+> `STAGE_RATE` becomes per-stage rates (a real recipe ratio), oxidative stress
+> becomes two-sided (idle over-power leaks ROS, not just deficit), and the
+> efficiency scalar gains an economic effect (it cuts `built` yield). Until that
+> lands in code, the model described here is what ships. The "Known open tuning
+> task" at the bottom is directly addressed by that proposal's Pillar 1.
+
 ## The shape (mirrors phase 1's architecture)
 
 - **`lib/layers/complexcell/sim.lua`** — the pure, deterministic, closed-form

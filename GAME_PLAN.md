@@ -123,7 +123,8 @@ See `docs/CELL_LAYER.md` (and `docs/CELL_GROWTH.md` for the growth/balance arc).
 Build the design in `docs/PHASE_2.md`: the zoom-in seam, energy as the currency, a self-revealing
 upgrade catalog, flow-based readouts (congestion / vacancy / brownout), and the end-of-phase
 plant/animal fork. Reuse the GPU swarm renderer (pointed inward) and the `sim_lab` harness for
-on-paper balance.
+on-paper balance. A balance/biology revision of the first draft is in review in
+`docs/PHASE_2_BALANCE.md` (two-sided ROS pendulum, stage recipe ratios, player gauges).
 
 ### Beyond — open
 Further layers, co-op, and the automation ramp are designed when reached, each with its own

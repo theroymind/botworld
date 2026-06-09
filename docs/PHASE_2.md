@@ -10,6 +10,12 @@ Phase 1 (the cell colony) is built and tuned. **Phase 2 is the next layer to bui
 doc is its design target — it is not yet implemented.** Everything past phase 2 is
 deliberately left open (see `GAME_PLAN.md`).
 
+> **Balance/biology revision in review — see `docs/PHASE_2_BALANCE.md`.** A first
+> playable draft surfaced that mitochondria are pure upside and the balance readout
+> is cosmetic. That proposal makes balance a two-sided pendulum (idle over-power
+> leaks ROS), adds a stabilization counter-lever and player-facing gauges, and gives
+> stages distinct rates (a real recipe ratio). Read it alongside this brief.
+
 ## The fantasy
 
 You grew a colony in phase 1. At the endosymbiosis victory you **zoom INTO a single cell**
