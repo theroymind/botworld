@@ -31,15 +31,15 @@ fork.CHOICES = {
   {
     id = "plant",
     label = "PLANT",
-    tagline = "light-fed · self-sufficient · structure",
-    bias = "phase 3 leans idle-friendly, sessile, structural growth",
+    tagline = "feeds on light · self-reliant · steady builder",
+    bias = "phase 3 leans calm and idle-friendly — root down and grow",
     accent = colors.secondary, -- green: the interior fills green
   },
   {
     id = "animal",
     label = "ANIMAL",
-    tagline = "eating-fed · active intake · motility",
-    bias = "phase 3 leans active, higher ceiling, motility & sensing",
+    tagline = "eats to grow · fast · always on the move",
+    bias = "phase 3 leans active and hands-on — move, hunt, sense",
     accent = colors.tertiary, -- warm sand: active intake
   },
 }

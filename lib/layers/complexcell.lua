@@ -327,7 +327,7 @@ end
 local function begin_collapse()
     collapsing = true
     collapse_anim = COLLAPSE_ANIM
-    set_toast("The cell lysed under oxidative stress — a new cell begins")
+    set_toast("The cell burst — too long without power. A new cell begins")
     sound.play("endosymbiosis")
     view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
     view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = math.floor(complexcell.state.sim.built) }))
@@ -360,7 +360,7 @@ function complexcell.tick(tick_dt)
     local newly = catalog.discover_gates(s)
     for _, id in ipairs(newly) do
         local def = catalog.STAGE_DEFS[id]
-        set_toast(string.format("Discovered %s — integrate it to bring it online", def.label))
+        set_toast(string.format("Discovered %s — spend ATP to bring it online", def.label))
         persist()
     end
 
@@ -533,7 +533,7 @@ local function integrate_stage(s, id)
         s.energy = s.energy - cost
         if catalog.unlock_stage(s, id) then
             local def = catalog.STAGE_DEFS[id]
-            set_toast(string.format("Integrated %s", def.label))
+            set_toast(string.format("%s is online", def.label))
             view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 }))
             persist()
         end
@@ -649,7 +649,7 @@ local function build_panel(s)
     end
     table.insert(
         header,
-        layout.text(string.format("ATP  %s", format.number(s.energy)), { color = colors.ui.text_dim })
+        layout.text(string.format("ATP energy  %s", format.number(s.energy)), { color = colors.ui.text_dim })
     )
     table.insert(
         header,
@@ -663,7 +663,7 @@ local function build_panel(s)
         header,
         layout.text(
             string.format(
-                "output  %s /s   ·   throughput  %s",
+                "making  %s /s   ·   line speed  %s",
                 format.number(s.output),
                 format.number(rates.throughput)
             ),
@@ -673,7 +673,7 @@ local function build_panel(s)
     if s.brownout then
         table.insert(
             header,
-            layout.text("BROWNOUT — power deficit, line dimmed", { color = colors.ui.accent })
+            layout.text("BROWNOUT — not enough power, production slowed", { color = colors.ui.accent })
         )
     end
     -- OXIDATIVE STRESS warning: as the power-deficit stress climbs past STRESS_WARN it
@@ -682,7 +682,7 @@ local function build_panel(s)
     if s.stress and s.stress > STRESS_WARN then
         table.insert(
             header,
-            layout.text("OXIDATIVE STRESS — power the cell or it lyses", { color = colors.ui.accent })
+            layout.text("OXIDATIVE STRESS — the cell is dying! restore power", { color = colors.ui.accent })
         )
     end
 
@@ -693,7 +693,7 @@ local function build_panel(s)
         layout.hstack({
             layout.vstack({
                 layout.text(string.format("Mitochondria   x%d", s.mito), { color = colors.ui.text }),
-                layout.text("the power plants -- gross ATP/sec", { color = colors.ui.text_faint }),
+                layout.text("power plants -- make the ATP that runs everything", { color = colors.ui.text_faint }),
             }, { gap = 2 }),
             action_button_node({
                 label = "build",
@@ -732,7 +732,7 @@ local function build_panel(s)
     -- on the frame before the cinematic arms.
     local footer_text
     if catalog.reached_fork(s) then
-        footer_text = "FORK reached — a choice of kingdoms"
+        footer_text = "PATH CHOICE — become a plant or an animal"
     else
         local nxt = catalog.next_gate(s)
         if nxt then
@@ -742,9 +742,9 @@ local function build_panel(s)
             local prereq_met = catalog.is_gate_prereq_met(s, nxt)
             local reveal = catalog.reveal(s, nxt.at, prereq_met)
             if reveal == "ready" then
-                footer_text = string.format("next: %s — ready at built %d", nxt.label, nxt.at)
+                footer_text = string.format("next: %s — ready to build!", nxt.label)
             elseif reveal == "named" then
-                footer_text = string.format("next: %s forming at built %d", nxt.label, nxt.at)
+                footer_text = string.format("next: %s — almost ready", nxt.label)
             elseif reveal == "silhouette" then
                 footer_text = "next: something is forming…"
             else
@@ -765,7 +765,7 @@ end
 local function draw_help(width)
     text(
         rect(0, love.graphics.getHeight() - 44, width, 16),
-        "click the cell to feed ATP   ·   [r] fresh cell",
+        "click the cell to inject energy   ·   [r] fresh cell",
         { color = colors.with_alpha(colors.ui.text_faint, 0.7), align = "center" }
     )
 end
@@ -791,7 +791,7 @@ local function draw_collapse(width)
     love.graphics.setColor(0, 0, 0, 0.55 * progress)
     love.graphics.rectangle("fill", 0, 0, width, height)
     love.graphics.setColor(1, 1, 1, 1)
-    text(rect(0, height / 2 - 16, width, 30), "THE CELL LYSED", {
+    text(rect(0, height / 2 - 16, width, 30), "THE CELL BURST", {
         font = "hud_lg",
         color = colors.with_alpha(colors.quaternary, math.min(1, progress * 1.5)),
         align = "center",
