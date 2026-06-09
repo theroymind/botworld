@@ -90,8 +90,30 @@ local RIM_WIDTH = 3 -- membrane rim line width in screen px
 -- than reshuffling them.
 local MITO_BASE = 1
 local MITO_SCALE = 2.2
-local MAX_MITO_EMITTERS = 6 -- hard cap on mito endpoints (keeps the uniform array sane)
+local MAX_MITO_EMITTERS = 6 -- hard cap on mito ENDPOINTS feeding the swarm (keeps the uniform array sane)
 local MITO_RING_FRAC = 0.5 -- mitochondria sit on this inner-mid annulus fraction
+
+-- MITOCHONDRIA RENDER (Pillar 4): the DRAWN picture is decoupled from the swarm-endpoint
+-- cap above so it keeps moving with state.mito into the hundreds. Real mitochondria are a
+-- dynamic FUSED RETICULUM, not a fixed handful of beans -- so low counts read as discrete
+-- beans at the fixed MITO_ANGLES (today's look), and as the count climbs those beans FUSE:
+-- the bodies elongate, tubules bridge adjacent ring anchors into a branched network, and
+-- the cristae densify. None of this touches the economy (power = POWER_PER_MITO*mito is
+-- unchanged); it is purely how the same number is shown.
+--
+-- FUSION is driven by a 0..1 `reticulum` factor: a log sample of mito mapped across
+-- [MITO_FUSE_START, MITO_FUSE_FULL] power-plant counts. Below START the cell is all
+-- discrete beans; at FULL the ring is a fully-bridged network. Log-scaled so the network
+-- keeps visibly thickening from a few dozen into the hundreds without ever exploding the
+-- per-frame primitive count (the body/tubule/cristae counts are all bounded samples).
+local MITO_FUSE_START = 8 -- below this many plants: discrete beans only (the opening look)
+local MITO_FUSE_FULL = 220 -- at/above this: a fully-bridged reticulum (real cells hold hundreds)
+local MITO_BODY_MIN = 6 -- discrete-bean phase draws this many bodies (the MITO_ANGLES anchors)
+local MITO_BODY_MAX = 14 -- a dense reticulum draws up to this many merged bodies around the ring
+local MITO_CRISTAE_MIN = 2 -- cristae arcs per body at the sparse end
+local MITO_CRISTAE_MAX = 6 -- cristae arcs per body in a dense, fused body (denser folding)
+local MITO_ELONGATE = 1.9 -- a fully-fused body stretches to this multiple of the discrete bean length
+local MITO_TUBULE_WIDTH = 0.018 -- connecting-tubule line width as a fraction of cell radius
 
 -- Live vesicle count: START as a handful and GROW with leveling (the phase-1 "fills as
 -- you grow" feel). Base is a tiny opening crowd; growth is driven by `throughput` (so
@@ -185,12 +207,12 @@ end
 -- clockwise on screen). Stored per-id so build_routes can place only UNLOCKED stages.
 -- ============================================================================
 local ZONE = {
-  nucleus   = { frac = 0.00, angle = 0.0 },
+  nucleus = { frac = 0.00, angle = 0.0 },
   ribosomes = { frac = 0.30, angle = math.rad(135) },
-  er        = { frac = 0.42, angle = math.rad(215) },
-  golgi     = { frac = 0.62, angle = math.rad(275) },
+  er = { frac = 0.42, angle = math.rad(215) },
+  golgi = { frac = 0.62, angle = math.rad(275) },
   transport = { frac = 0.76, angle = math.rad(330) },
-  membrane  = { frac = 0.88, angle = math.rad(55) },
+  membrane = { frac = 0.88, angle = math.rad(55) },
 }
 
 -- Resolve a zone's STABLE screen position. Pure: (cx, cy, r) + the fixed polar offset.
@@ -208,11 +230,11 @@ end
 -- chosen to fill the "gaps" between pipeline zones (upper-right, upper, right, and
 -- lower-left quadrants) so the beans read as scattered, not piled on the organelles.
 local MITO_ANGLES = {
-  math.rad(75),  -- upper-right gap (between membrane at 55 and ribosomes at 135)
+  math.rad(75), -- upper-right gap (between membrane at 55 and ribosomes at 135)
   math.rad(175), -- left gap (between ribosomes at 135 and ER at 215)
   math.rad(245), -- lower-left gap (between ER at 215 and Golgi at 275)
   math.rad(305), -- lower-right gap (between Golgi at 275 and transport at 330)
-  math.rad(20),  -- right gap (between transport at 330 and membrane at 55)
+  math.rad(20), -- right gap (between transport at 330 and membrane at 55)
   math.rad(115), -- upper-left (fills the wide upper arc for a 6th bean)
 }
 
@@ -524,9 +546,12 @@ local function draw_golgi(state, cx, cy, r, golgi_level)
     local ox = gx + nx * push
     local oy = gy + ny * push
     local pts = {
-      ox - tx * width, oy - ty * width,
-      ox + nx * bow, oy + ny * bow, -- mid point bows outward
-      ox + tx * width, oy + ty * width,
+      ox - tx * width,
+      oy - ty * width,
+      ox + nx * bow,
+      oy + ny * bow, -- mid point bows outward
+      ox + tx * width,
+      oy + ty * width,
     }
     set_interior_color(state, colors.tertiary, 0.6)
     draw_spline(pts, 4)
@@ -545,63 +570,137 @@ local function draw_golgi(state, cx, cy, r, golgi_level)
   love.graphics.setLineWidth(1)
 end
 
--- Mitochondria: STATIONARY bean shapes (a squashed capsule) with 2-4 internal cristae
--- arcs, at FIXED inner-mid positions. Count = log sample of `mito`. A more-powered
--- cell shows a brighter inner glow; under brownout they gutter FIRST (the caller passes
--- a `power_bright` already lowered by the brownout state). Drawn from arcs + polygon.
-local function draw_mitochondria(state, cx, cy, r, mito, power_bright)
-  local n = sample_count(mito, MITO_BASE, MITO_SCALE, MAX_MITO_EMITTERS)
+-- The 0..1 RETICULUM fusion factor for a given mitochondria count (pure -- no love.*).
+-- A log sample of `mito` mapped across [MITO_FUSE_START, MITO_FUSE_FULL] plant counts:
+-- 0 below START (the discrete-bean opening look), ramping to 1 at/above FULL (a fully
+-- bridged fused network). Log-scaled so the network keeps thickening from a few dozen
+-- plants into the hundreds. This is what makes the picture keep MOVING with state.mito
+-- past the old 6-bean clamp -- shape only, the economy never reads it.
+local function mito_reticulum_factor(mito)
+  mito = mito or 0
+  if mito <= MITO_FUSE_START then
+    return 0
+  end
+  local lo = math.log(1 + MITO_FUSE_START)
+  local hi = math.log(1 + MITO_FUSE_FULL)
+  local v = (math.log(1 + mito) - lo) / (hi - lo)
+  return clamp01(v)
+end
+
+-- How many merged mitochondrial BODIES to draw around the ring for a count + fusion
+-- factor: from MITO_BODY_MIN at the discrete end to MITO_BODY_MAX in a dense reticulum
+-- (pure). Bounded so the per-frame primitive cost never grows with the raw count -- a
+-- 500-plant cell draws the same body budget as a 220-plant one, just at full fusion.
+local function mito_body_count(reticulum)
+  return MITO_BODY_MIN + math.floor((MITO_BODY_MAX - MITO_BODY_MIN) * reticulum + 0.5)
+end
+
+-- The ring position + base orientation of body index `m` of `count` (pure). The first
+-- MITO_BODY_MIN bodies sit on the FIXED MITO_ANGLES anchors (so the low-count look is
+-- byte-stable with the old beans); extra bodies fill the ring evenly. Orientation is a
+-- deterministic per-index jitter off the tangent, so beans never reshuffle on a buy.
+local function mito_body_pose(m, count, cx, cy, r)
   local ring_r = r * MITO_RING_FRAC
-  local bean_len = r * 0.13
-  local bean_w = r * 0.055
-  for m = 1, n do
-    local a = MITO_ANGLES[m] or (m / n * 2 * math.pi)
-    local mx = cx + math.cos(a) * ring_r
-    local my = cy + math.sin(a) * ring_r
-    -- Each bean has a fixed orientation derived from its index (deterministic).
-    local rot = a + math.pi * 0.5 + (hash01(m * 9.1) - 0.5) * 0.6
-    local cr, sr = math.cos(rot), math.sin(rot)
-    -- Build the bean outline as a capsule: sample an ellipse, pinched slightly in the
-    -- middle so it reads as a bean rather than a plain oval.
-    local pts = {}
-    local segs = 18
-    for i = 0, segs - 1 do
-      local th = (i / segs) * 2 * math.pi
-      local ex = math.cos(th) * bean_len
-      local ey = math.sin(th) * bean_w * (1 - 0.25 * math.cos(th * 2)) -- pinch
-      pts[#pts + 1] = mx + ex * cr - ey * sr
-      pts[#pts + 1] = my + ex * sr + ey * cr
+  local a
+  if m <= #MITO_ANGLES then
+    a = MITO_ANGLES[m]
+  else
+    a = (m - 1) / count * 2 * math.pi
+  end
+  local mx = cx + math.cos(a) * ring_r
+  local my = cy + math.sin(a) * ring_r
+  local rot = a + math.pi * 0.5 + (hash01(m * 9.1) - 0.5) * 0.6
+  return mx, my, rot, a
+end
+
+-- Draw ONE mitochondrial body: a pinched capsule (bean) elongated by the fusion factor,
+-- a power-keyed inner glow, and `cristae` internal fold arcs. At reticulum 0 this is the
+-- original discrete bean; as fusion rises the body stretches (MITO_ELONGATE) and gains
+-- cristae, reading as a merged tubular segment of the network. love.* draw-time only.
+local function draw_mito_body(state, mx, my, rot, bean_len, bean_w, cristae, power_bright)
+  local cr, sr = math.cos(rot), math.sin(rot)
+  local segs = 18
+  local pts = {}
+  for i = 0, segs - 1 do
+    local th = (i / segs) * 2 * math.pi
+    local ex = math.cos(th) * bean_len
+    local ey = math.sin(th) * bean_w * (1 - 0.25 * math.cos(th * 2)) -- pinch
+    pts[#pts + 1] = mx + ex * cr - ey * sr
+    pts[#pts + 1] = my + ex * sr + ey * cr
+  end
+  -- Outer membrane fill + rim.
+  set_interior_color(state, colors.tertiary, 0.5)
+  love.graphics.polygon("fill", pts)
+  love.graphics.setLineWidth(1.5)
+  set_interior_color_x(state, colors.secondary, 0.7, power_bright)
+  love.graphics.polygon("line", pts)
+  love.graphics.setLineWidth(1)
+  -- Inner glow: a brighter inner ellipse keyed to power (dims first on brownout).
+  set_interior_color_x(state, colors.secondary_bright, 0.35, power_bright)
+  local gpts = {}
+  for i = 0, segs - 1 do
+    local th = (i / segs) * 2 * math.pi
+    local ex = math.cos(th) * bean_len * 0.6
+    local ey = math.sin(th) * bean_w * 0.5
+    gpts[#gpts + 1] = mx + ex * cr - ey * sr
+    gpts[#gpts + 1] = my + ex * sr + ey * cr
+  end
+  love.graphics.polygon("fill", gpts)
+  -- Cristae: internal fold arcs across the short axis (denser as the body fuses).
+  love.graphics.setLineWidth(1)
+  set_interior_color_x(state, colors.secondary_bright, 0.6, power_bright)
+  for k = 1, cristae do
+    local along = (k / (cristae + 1) - 0.5) * 2 * bean_len * 0.8
+    local x0 = mx + (cr * along) - (sr * bean_w * 0.7)
+    local y0 = my + (sr * along) + (cr * bean_w * 0.7)
+    local x1 = mx + (cr * along) + (sr * bean_w * 0.7)
+    local y1 = my + (sr * along) - (cr * bean_w * 0.7)
+    love.graphics.line(x0, y0, x1, y1)
+  end
+end
+
+-- Mitochondria: at LOW counts, discrete STATIONARY beans at the fixed MITO_ANGLES (the
+-- opening look); as the count climbs they FUSE into a branched RETICULUM -- bodies
+-- elongate, tubules bridge adjacent ring anchors, and cristae densify -- so the picture
+-- keeps moving with state.mito into the hundreds instead of clamping at 6 (Pillar 4).
+-- A more-powered cell shows a brighter inner glow; under brownout they gutter FIRST (the
+-- caller passes a `power_bright` already lowered by the brownout state). Render-only: the
+-- economy (power = POWER_PER_MITO*mito) is untouched -- this only changes how it's shown.
+local function draw_mitochondria(state, cx, cy, r, mito, power_bright)
+  local reticulum = mito_reticulum_factor(mito)
+  local count = mito_body_count(reticulum)
+  -- A fused body elongates (MITO_ELONGATE) and narrows a touch so the network reads as
+  -- tubular rather than a ring of fat blobs. The base bean dimensions match the old look.
+  local bean_len = r * 0.13 * (1 + (MITO_ELONGATE - 1) * reticulum)
+  local bean_w = r * 0.055 * (1 - 0.15 * reticulum)
+
+  -- TUBULES: as fusion rises, draw connecting tubes between adjacent bodies so the ring
+  -- reads as one branched network, not separate beans. Faded in by the fusion factor (none
+  -- at the discrete end), and only between bodies close enough on the ring to merge.
+  if reticulum > 0 and count >= 2 then
+    love.graphics.setLineWidth(math.max(1, r * MITO_TUBULE_WIDTH * reticulum))
+    set_interior_color_x(state, colors.secondary, 0.30 * reticulum, power_bright)
+    local link_max = (r * MITO_RING_FRAC) * (2 * math.pi / count) * 1.6 -- nearest-neighbour gap + slack
+    for m = 1, count do
+      local ax, ay = mito_body_pose(m, count, cx, cy, r)
+      local nxt = (m % count) + 1
+      local bx, by = mito_body_pose(nxt, count, cx, cy, r)
+      local dx, dy = bx - ax, by - ay
+      if math.sqrt(dx * dx + dy * dy) <= link_max then
+        love.graphics.line(ax, ay, bx, by)
+      end
     end
-    -- Outer membrane fill + rim.
-    set_interior_color(state, colors.tertiary, 0.5)
-    love.graphics.polygon("fill", pts)
-    love.graphics.setLineWidth(1.5)
-    set_interior_color_x(state, colors.secondary, 0.7, power_bright)
-    love.graphics.polygon("line", pts)
     love.graphics.setLineWidth(1)
-    -- Inner glow: a brighter inner ellipse keyed to power (dims first on brownout).
-    set_interior_color_x(state, colors.secondary_bright, 0.35, power_bright)
-    local gpts = {}
-    for i = 0, segs - 1 do
-      local th = (i / segs) * 2 * math.pi
-      local ex = math.cos(th) * bean_len * 0.6
-      local ey = math.sin(th) * bean_w * 0.5
-      gpts[#gpts + 1] = mx + ex * cr - ey * sr
-      gpts[#gpts + 1] = my + ex * sr + ey * cr
-    end
-    love.graphics.polygon("fill", gpts)
-    -- Cristae: 2-4 internal arcs across the short axis.
-    local cristae = 2 + (m % 3)
-    love.graphics.setLineWidth(1)
-    set_interior_color_x(state, colors.secondary_bright, 0.6, power_bright)
-    for k = 1, cristae do
-      local along = (k / (cristae + 1) - 0.5) * 2 * bean_len * 0.8
-      local x0 = mx + (cr * along) - (sr * bean_w * 0.7)
-      local y0 = my + (sr * along) + (cr * bean_w * 0.7)
-      local x1 = mx + (cr * along) + (sr * bean_w * 0.7)
-      local y1 = my + (sr * along) - (cr * bean_w * 0.7)
-      love.graphics.line(x0, y0, x1, y1)
-    end
+  end
+
+  -- BODIES: each drawn at its stable pose. Cristae densify with fusion (MITO_CRISTAE_MIN
+  -- ..MAX), plus a small per-body variance so the network doesn't read mechanically.
+  for m = 1, count do
+    local mx, my, rot = mito_body_pose(m, count, cx, cy, r)
+    local cristae = MITO_CRISTAE_MIN
+      + math.floor((MITO_CRISTAE_MAX - MITO_CRISTAE_MIN) * reticulum + 0.5)
+      + (m % 2)
+    draw_mito_body(state, mx, my, rot, bean_len, bean_w, cristae, power_bright)
   end
 end
 
@@ -805,12 +904,14 @@ function view.draw(state, snapshot)
   -- LIVE COUNT: START as a handful and grow with leveling. throughput drives the
   -- immediate "leveling adds vesicles" feel; built is the slow bulk fill. Hard-capped.
   local throughput = snapshot.throughput or 0
-  if throughput < 0 then throughput = 0 end
+  if throughput < 0 then
+    throughput = 0
+  end
   local built = snapshot.built or 0
-  if built < 0 then built = 0 end
-  local count = COUNT_BASE
-    + K_FLOW * math.log(1 + throughput)
-    + K_BULK * math.log(1 + built)
+  if built < 0 then
+    built = 0
+  end
+  local count = COUNT_BASE + K_FLOW * math.log(1 + throughput) + K_BULK * math.log(1 + built)
   if count > MAX_LIVE_VESICLES then
     count = MAX_LIVE_VESICLES
   end
@@ -821,7 +922,9 @@ function view.draw(state, snapshot)
   -- (state.drift) then multiplies into the motion speed so easing in/out of brownout
   -- produces a smooth deceleration/acceleration with NO teleport or runaway phase jump.
   local eff = snapshot.efficiency
-  if eff == nil then eff = 1 end
+  if eff == nil then
+    eff = 1
+  end
   eff = clamp01(eff)
   local out_bonus = saturate(snapshot.output, OUTPUT_REF)
   local base_speed = lerp(SPEED_SLOW, SPEED_FAST, eff) + OUTPUT_SPEED_BONUS * out_bonus

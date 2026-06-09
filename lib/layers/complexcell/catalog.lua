@@ -464,6 +464,90 @@ function catalog.reached_fork(state) return state.built >= catalog.FORK_AT end
 -- Returns flow_balance * power_balance * ros_drag, clamped to [0,1].
 function catalog.efficiency(state) return sim.balance_scalar(catalog.fold(state), state.ros or 0) end
 
+-- ===========================================================================
+-- GAUGE READOUTS (Pillar 5: surface the state, let the player reason out the fix).
+-- Pure derived math so the renderer stays logic-free and the numbers are testable.
+-- None of these write back to the economy -- they only READ fold(state).
+-- ===========================================================================
+
+-- The ATP DEMAND the line is drawing right now: the cost of running the bottleneck
+-- (e * throughput) plus the idle upkeep of every machine. This is the same `demand`
+-- the sim's balance scalar uses (demand = e*T + upkeep); folded once here so the
+-- balance-ratio + oxygen gauges agree with the economy byte-for-byte. Always > 0
+-- (upkeep counts mito >= 1), so the divisions below are well-defined.
+function catalog.demand(state)
+  local rates = catalog.fold(state)
+  return rates.e_per_output * rates.throughput + rates.upkeep
+end
+
+-- THE BALANCE RATIO gauge (Pillar 5): power / demand, the SAME ratio the ROS pendulum
+-- and the peak-in-band efficiency curve key off. The view classifies it against the safe
+-- band [BALANCE_LO, balance_hi_eff] into under / ideal / over. Pure read; demand > 0.
+function catalog.balance_ratio(state)
+  local rates = catalog.fold(state)
+  local demand = rates.e_per_output * rates.throughput + rates.upkeep
+  return rates.power / demand
+end
+
+-- The current safe-band CEILING for the balance ratio (BALANCE_HI lifted by stab). Above
+-- this the cell leaks ROS; below BALANCE_LO it browns out. Surfaced so the view can class
+-- the balance ratio as under (< LO) / ideal (in band) / over (> HI_eff) without inlining
+-- the band math -- the stabilization-raised ceiling lives in the fold, not the renderer.
+function catalog.balance_hi_eff(state) return catalog.fold(state).balance_hi_eff end
+
+-- The three balance-band classes the gauge surfaces (Pillar 5). Named so neither the
+-- catalog nor the view inlines a band string: UNDER (ratio < BALANCE_LO -> brownout),
+-- IDEAL (inside [BALANCE_LO, balance_hi_eff] -> calm), OVER (ratio > balance_hi_eff ->
+-- ROS leak). The panel maps each to a label + color token at its edge.
+catalog.BAND_UNDER = "under"
+catalog.BAND_IDEAL = "ideal"
+catalog.BAND_OVER = "over"
+
+-- Classify the balance ratio against the live safe band [BALANCE_LO, balance_hi_eff]
+-- into one of the BAND_* classes. Pure read -- folds once and reuses the SAME ratio +
+-- ceiling the ROS pendulum and efficiency curve key off, so the gauge's under/ideal/over
+-- verdict can never disagree with the economy that actually leaks ROS or browns out. The
+-- boundaries match sim.balance_scalar's power_balance branches exactly (< LO deficit, <=
+-- HI_eff calm, else surplus). Used by the view to color + label the ratio.
+function catalog.balance_band(state)
+  local rates = catalog.fold(state)
+  local demand = rates.e_per_output * rates.throughput + rates.upkeep
+  local ratio = rates.power / demand
+  if ratio < rates.balance_lo then
+    return catalog.BAND_UNDER
+  elseif ratio <= rates.balance_hi_eff then
+    return catalog.BAND_IDEAL
+  end
+  return catalog.BAND_OVER
+end
+
+-- OXYGEN / RESPIRATION gauge (Pillar 5, DISPLAYED metric only -- no economy hook). An
+-- informational read on respiration LOAD: how much of the mitochondria's oxidative-
+-- phosphorylation capacity (proportional to gross power -- O2 they can turn into ATP) is
+-- actually being drawn by the line's ATP demand. Returns demand/power clamped to [0,1]:
+--   ~1.0 -> state-3 respiration, supply matched to draw (healthy, no leak);
+--   low   -> state-4: idle respiratory capacity with little demand -> electrons leak as
+--            ROS (the over-power danger the ROS gauge then confirms).
+-- This is the DISTINCT, biologically-named signal the design asks for (proposal s7): it
+-- reads the SAME imbalance as the balance ratio from the respiration side, so a player
+-- watching "respiration" sees low O2 use exactly when they are over-powered. Pure; power
+-- is POWER_PER_MITO*mito*fuel >= POWER_PER_MITO (mito >= 1) so the divide is safe.
+function catalog.oxygen(state)
+  local rates = catalog.fold(state)
+  local power = rates.power
+  if power <= 0 then
+    return 0
+  end
+  local demand = rates.e_per_output * rates.throughput + rates.upkeep
+  local load = demand / power
+  if load < 0 then
+    return 0
+  elseif load > 1 then
+    return 1
+  end
+  return load
+end
+
 -- An ordered list of per-stage display rows for the view + panel. Each row carries
 -- its cap (stage_rate*level), whether it's unlocked, whether it's the current
 -- bottleneck, and a 0..1 CONGESTION figure -- how far the stage's capacity sits
