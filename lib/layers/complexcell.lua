@@ -46,7 +46,7 @@ local button = ui.primitives.button
 local complexcell = {}
 
 local SAVE_NAME = "complexcell"
-local SAVE_INTERVAL = 5      -- seconds between autosaves (active layer only)
+local SAVE_INTERVAL = 5 -- seconds between autosaves (active layer only)
 local OFFLINE_CAP = 8 * 3600 -- credit at most 8h of time away
 -- DEV: ignore any existing save on boot, so every launch starts a fresh complex
 -- cell -- mirrors cell.lua's DEV_FRESH_START while the layer is being tuned.
@@ -59,8 +59,8 @@ local TOAST_SECONDS = 4
 -- sim's oxidative stress saturates (state.stress >= catalog.STRESS_FAIL, a power
 -- deficit run to its end) the cell LYSES: a short game-over overlay freezes the sim,
 -- flashes + shakes, then a FRESH cell seeds (the same wipe+reload as [r]).
-local collapsing = false  -- true while the lysis overlay plays (freezes the sim)
-local collapse_anim = 0   -- remaining seconds of the lysis overlay
+local collapsing = false -- true while the lysis overlay plays (freezes the sim)
+local collapse_anim = 0 -- remaining seconds of the lysis overlay
 local COLLAPSE_ANIM = 2.6 -- length of the lysis beat before the fresh reload (matches cell.lua)
 -- Surface the oxidative-stress WARNING (the analogue of the BROWNOUT line) once stress
 -- climbs past this fraction -- early enough that the player can still power out of it
@@ -75,19 +75,19 @@ local STRESS_WARN = 0.4
 -- stays a useful nudge the whole phase instead of fading to nothing once costs climb:
 -- early (mito 1, power 10) a tap is ~25 ATP (a power plant in one tap); late it grows
 -- with your mitochondria. Clamped at the buffer ceiling.
-local TAP_POWER_SECONDS = 2.5     -- a tap is worth this many seconds of gross ATP power
-local ATP_TAP_COOLDOWN_MIN = 5    -- shortest gap between taps (seconds)
-local ATP_TAP_COOLDOWN_MAX = 10   -- longest gap; each tap rolls a fresh cd in [MIN, MAX]
+local TAP_POWER_SECONDS = 2.5 -- a tap is worth this many seconds of gross ATP power
+local ATP_TAP_COOLDOWN_MIN = 5 -- shortest gap between taps (seconds)
+local ATP_TAP_COOLDOWN_MAX = 10 -- longest gap; each tap rolls a fresh cd in [MIN, MAX]
 local ATP_TAP_PITCH_SPREAD = 0.12 -- +/- pitch jitter on the beat so repeats don't read identical
-local atp_tap_cooldown = 0        -- remaining lockout, drained in update()
+local atp_tap_cooldown = 0 -- remaining lockout, drained in update()
 
-local PANEL_MARGIN = 16           -- gap from the window edge (panel x is computed each frame)
+local PANEL_MARGIN = 16 -- gap from the window edge (panel x is computed each frame)
 local PANEL_Y = 16
 local PANEL_W = 320
 local PANEL_H = 540
 local PAD = 16
-local BTN_W = 96                   -- fixed-width action button, pinned right by the fill label column
-local BTN_H = 52                   -- tall enough that the cost sublabel (at r.y+r.h-16) clears the flavor text
+local BTN_W = 96 -- fixed-width action button, pinned right by the fill label column
+local BTN_H = 52 -- tall enough that the cost sublabel (at r.y+r.h-16) clears the flavor text
 local BAR_COLOR = colors.secondary -- the ATP buffer bar rides the global nourishment token
 
 complexcell.state = nil
@@ -115,13 +115,13 @@ local intro_fade = 0
 -- Anchored to the catalog's stair-step gates so the score thickens with each named beat
 -- (er ~1 min, transport ~5 min into the ~10-min run); both ride `built`, so a fast or
 -- slow player still hears the stems arrive on their own organelles, not a wall clock.
-local LAYER_VOL = 0.50              -- matches the phase-1 BGM volume (main.BGM_VOLUME)
+local LAYER_VOL = 0.50 -- matches the phase-1 BGM volume (main.BGM_VOLUME)
 local LAYER1_VOL = LAYER_VOL * 0.50 -- the bed stem sits 25% under the others (it underpins, not leads)
-local LAYER_FADE = 3.0              -- seconds each stem eases in over (musical, not a hard cut)
-local LAYER2_AT = 1000              -- == catalog Endomembrane (ER) gate
-local LAYER3_AT = 50000             -- == catalog Cytoskeleton/transport gate (~28% up the 180000 climb)
-local layer2_in = false             -- one-shot: layer2 has been faded in
-local layer3_in = false             -- one-shot: layer3 has been faded in
+local LAYER_FADE = 3.0 -- seconds each stem eases in over (musical, not a hard cut)
+local LAYER2_AT = 1000 -- == catalog Endomembrane (ER) gate
+local LAYER3_AT = 50000 -- == catalog Cytoskeleton/transport gate (~28% up the 180000 climb)
+local layer2_in = false -- one-shot: layer2 has been faded in
+local layer3_in = false -- one-shot: layer3 has been faded in
 -- The end-of-phase-2 transition cinematic (armed when `built` first crosses the
 -- FORK gate). While active the orchestrator FREEZES the live sim and hands the
 -- frame to it -- exactly as cell.lua does at the endosymbiosis finale.
@@ -143,41 +143,41 @@ complexcell._panel_h = PANEL_H
 complexcell._panel_x = PANEL_MARGIN
 
 local function set_toast(message)
-    toast_text = message
-    toast_timer = TOAST_SECONDS
+  toast_text = message
+  toast_timer = TOAST_SECONDS
 end
 
 local function persist()
-    save.write(SAVE_NAME, {
-        sim = sim.serialize(complexcell.state.sim),
-        carry = complexcell.state.carry, -- the colony number carried from phase 1
-        -- The terminal fork: persist the recorded kingdom so a resumed save returns
-        -- straight to the ascension placeholder rather than re-playing the cinematic.
-        fork_choice = complexcell.state.fork_choice,
-        stamp = os.time(),
-    })
+  save.write(SAVE_NAME, {
+    sim = sim.serialize(complexcell.state.sim),
+    carry = complexcell.state.carry, -- the colony number carried from phase 1
+    -- The terminal fork: persist the recorded kingdom so a resumed save returns
+    -- straight to the ascension placeholder rather than re-playing the cinematic.
+    fork_choice = complexcell.state.fork_choice,
+    stamp = os.time(),
+  })
 end
 
 -- Build the fresh in-memory state: a sim seeded with ribosomes online at level 1
 -- (matching the lab's run_policy init, so output > 0 from t=0) plus the carried
 -- phase-1 colony number. `data` is a save blob or {} for a fresh cell.
 local function build_state(data)
-    local s = sim.load(data.sim)
-    -- Ribosomes online from t=0 at level 1, so the assembly line produces from the
-    -- start -- the lab's init. (sim.load already floors mito at 1, the engulfed
-    -- bacterium.) Idempotent: a resumed save that already has them stays as-is.
-    s.unlocked.ribosomes = true
-    s.stages.ribosomes = math.max(s.stages.ribosomes or 0, 1)
-    return {
-        sim = s,
-        -- The frozen phase-1 snapshot (colony / divisions / biomass / organelles) the
-        -- colony "became" -- a fixed statistic, surfaced in the panel. nil on a [r] fresh
-        -- cell (no phase-1 lineage to carry).
-        carry = type(data.carry) == "table" and data.carry or nil,
-        -- The end-of-phase fork pick ("plant"|"animal"), restored from a resumed save so
-        -- the placeholder is returned to without re-playing the cinematic. nil until chosen.
-        fork_choice = fork.choice_def(data.fork_choice) and data.fork_choice or nil,
-    }
+  local s = sim.load(data.sim)
+  -- Ribosomes online from t=0 at level 1, so the assembly line produces from the
+  -- start -- the lab's init. (sim.load already floors mito at 1, the engulfed
+  -- bacterium.) Idempotent: a resumed save that already has them stays as-is.
+  s.unlocked.ribosomes = true
+  s.stages.ribosomes = math.max(s.stages.ribosomes or 0, 1)
+  return {
+    sim = s,
+    -- The frozen phase-1 snapshot (colony / divisions / biomass / organelles) the
+    -- colony "became" -- a fixed statistic, surfaced in the panel. nil on a [r] fresh
+    -- cell (no phase-1 lineage to carry).
+    carry = type(data.carry) == "table" and data.carry or nil,
+    -- The end-of-phase fork pick ("plant"|"animal"), restored from a resumed save so
+    -- the placeholder is returned to without re-playing the cinematic. nil until chosen.
+    fork_choice = fork.choice_def(data.fork_choice) and data.fork_choice or nil,
+  }
 end
 
 -- Reset the end-of-phase fork runtime flags from the (re)built state. A resumed
@@ -185,48 +185,48 @@ end
 -- placeholder (the cinematic never re-plays); otherwise the layer opens in normal
 -- play and the cinematic arms the first time `built` crosses the FORK gate.
 local function reset_fork_runtime()
-    -- A freshly (re)built cell runs normally: clear any prior lysis overlay + tap lockout.
-    collapsing = false
-    collapse_anim = 0
-    atp_tap_cooldown = 0
-    transition_state = transition.new()
-    if complexcell.state.fork_choice then
-        fork_armed = true
-        fork_mode = "ascension"
-    else
-        fork_armed = false
-        fork_mode = nil
-    end
+  -- A freshly (re)built cell runs normally: clear any prior lysis overlay + tap lockout.
+  collapsing = false
+  collapse_anim = 0
+  atp_tap_cooldown = 0
+  transition_state = transition.new()
+  if complexcell.state.fork_choice then
+    fork_armed = true
+    fork_mode = "ascension"
+  else
+    fork_armed = false
+    fork_mode = nil
+  end
 end
 
 function complexcell.load()
-    intro_fade = 0                                                     -- a resumed/loaded cell opens normally (only the seam plays the teal intro)
-    sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
-    sound.load("cytoplasm_active", "assets/sounds/cytoplasm_active.ogg") -- the manual ATP-tap beat
-    -- The three vertical-remix stems (idempotent loads, paused at volume 0 until armed).
-    -- stream = false -> decode fully so the short stems loop sample-accurately (gapless);
-    -- a streaming source would drop a few ms at each loop point.
-    local loop_stem = { stream = false }
-    music.load("complexcell_layer1", "assets/music/complexcell_layer1.ogg", loop_stem)
-    music.load("complexcell_layer2", "assets/music/complexcell_layer2.ogg", loop_stem)
-    music.load("complexcell_layer3", "assets/music/complexcell_layer3.ogg", loop_stem)
-    local data = DEV_FRESH_START and {} or (save.read(SAVE_NAME) or {})
-    complexcell.state = build_state(data)
-    reset_fork_runtime()
-    view_state = view.new()
+  intro_fade = 0 -- a resumed/loaded cell opens normally (only the seam plays the teal intro)
+  sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
+  sound.load("cytoplasm_active", "assets/sounds/cytoplasm_active.ogg") -- the manual ATP-tap beat
+  -- The three vertical-remix stems (idempotent loads, paused at volume 0 until armed).
+  -- stream = false -> decode fully so the short stems loop sample-accurately (gapless);
+  -- a streaming source would drop a few ms at each loop point.
+  local loop_stem = { stream = false }
+  music.load("complexcell_layer1", "assets/music/complexcell_layer1.ogg", loop_stem)
+  music.load("complexcell_layer2", "assets/music/complexcell_layer2.ogg", loop_stem)
+  music.load("complexcell_layer3", "assets/music/complexcell_layer3.ogg", loop_stem)
+  local data = DEV_FRESH_START and {} or (save.read(SAVE_NAME) or {})
+  complexcell.state = build_state(data)
+  reset_fork_runtime()
+  view_state = view.new()
 
-    -- Offline catch-up from a wall-clock stamp (closed-form rate only -- the same
-    -- shared step the live tick runs, folded through catalog.fold). Apply any gates
-    -- the offline build crossed so the resumed cell opens its stages.
-    if type(data.stamp) == "number" then
-        local seconds = math.min(os.time() - data.stamp, OFFLINE_CAP)
-        if seconds > 0 then
-            sim.offline(complexcell.state.sim, seconds, catalog.fold(complexcell.state.sim))
-            -- Reveal (not unlock) any stages the offline build crossed -- they wait in the
-            -- panel as "integrate" rows until the player pays the steep ATP cost.
-            catalog.discover_gates(complexcell.state.sim)
-        end
+  -- Offline catch-up from a wall-clock stamp (closed-form rate only -- the same
+  -- shared step the live tick runs, folded through catalog.fold). Apply any gates
+  -- the offline build crossed so the resumed cell opens its stages.
+  if type(data.stamp) == "number" then
+    local seconds = math.min(os.time() - data.stamp, OFFLINE_CAP)
+    if seconds > 0 then
+      sim.offline(complexcell.state.sim, seconds, catalog.fold(complexcell.state.sim))
+      -- Reveal (not unlock) any stages the offline build crossed -- they wait in the
+      -- panel as "integrate" rows until the player pays the steep ATP cost.
+      catalog.discover_gates(complexcell.state.sim)
     end
+  end
 end
 
 -- Kick off the layered phase-2 score: start ALL THREE stems together (so they stay
@@ -235,25 +235,25 @@ end
 -- the seam, or main at a debug phase-2 boot). layer2/layer3 ride in later from
 -- update() as `built` crosses their thresholds. Idempotent: re-arms the one-shots.
 function complexcell.start_layered_music()
-    layer2_in, layer3_in = false, false
-    music.play("complexcell_layer1", 0)
-    music.play("complexcell_layer2", 0)
-    music.play("complexcell_layer3", 0)
-    music.fade_in("complexcell_layer1", LAYER1_VOL, LAYER_FADE)
+  layer2_in, layer3_in = false, false
+  music.play("complexcell_layer1", 0)
+  music.play("complexcell_layer2", 0)
+  music.play("complexcell_layer3", 0)
+  music.fade_in("complexcell_layer1", LAYER1_VOL, LAYER_FADE)
 end
 
 -- Ride the upper stems in as the cell grows. One-shot per layer, keyed on `built`
 -- crossing each threshold; the actual crossfade is the music manager's volume
 -- envelope (the stems are already playing silently in sync).
 local function update_music_layers(built)
-    if not layer2_in and built >= LAYER2_AT then
-        layer2_in = true
-        music.fade_in("complexcell_layer2", LAYER_VOL, LAYER_FADE)
-    end
-    if not layer3_in and built >= LAYER3_AT then
-        layer3_in = true
-        music.fade_in("complexcell_layer3", LAYER_VOL, LAYER_FADE)
-    end
+  if not layer2_in and built >= LAYER2_AT then
+    layer2_in = true
+    music.fade_in("complexcell_layer2", LAYER_VOL, LAYER_FADE)
+  end
+  if not layer3_in and built >= LAYER3_AT then
+    layer3_in = true
+    music.fade_in("complexcell_layer3", LAYER_VOL, LAYER_FADE)
+  end
 end
 
 -- Called by the phase-1 seam (cell.lua's endosymbiosis finale): (re)initialize a
@@ -262,13 +262,13 @@ end
 -- number -- the collapsed colony carried forward as a single figure. Persisted so
 -- the zoom-into-the-cell lands in a real, saved phase 2.
 function complexcell.enter_from_seam(opts)
-    opts = opts or {}
-    complexcell.state = build_state({ carry = opts.stats })
-    reset_fork_runtime()
-    view_state = view.new()
-    intro_fade = INTRO_FADE         -- open out of phase 1's teal flood, fading in over INTRO_FADE
-    complexcell.start_layered_music() -- phase-2 score fades up out of the teal hand-off
-    persist()
+  opts = opts or {}
+  complexcell.state = build_state({ carry = opts.stats })
+  reset_fork_runtime()
+  view_state = view.new()
+  intro_fade = INTRO_FADE -- open out of phase 1's teal flood, fading in over INTRO_FADE
+  complexcell.start_layered_music() -- phase-2 score fades up out of the teal hand-off
+  persist()
 end
 
 -- Arm the END-OF-PHASE-2 victory cinematic -- the phase-2 sibling of cell.lua's
@@ -280,44 +280,44 @@ end
 -- mode so the modal is revealed as the white-out fades (it does NOT reset or switch
 -- layers -- the fork is the terminal beat of this draft). One-shot via fork_armed.
 local function arm_fork()
-    fork_armed = true
-    -- Centre the cinematic on the cell's centre (the view fills the screen). The
-    -- transition projects (x, y) itself; we pass screen-centre-ish coords directly
-    -- since the interior has no world camera to project through.
-    local cx, cy = 0, 0
-    if love and love.graphics then
-        cx, cy = love.graphics.getWidth() * 0.5, love.graphics.getHeight() * 0.5
-    end
-    sound.play("endosymbiosis")
-    transition.begin(transition_state, {
-        x = cx,
-        y = cy,
-        title = "TWO PATHS",
-        kicker = "ascension",
-        subtitle = "what will you become",
-        on_focus = function()
-            -- No camera in the interior view; mark the moment with a gentle flash beat.
-            view.spawn(view_state, fx.flash({ color = colors.primary, alpha = 0.12, life = 0.5 }))
-        end,
-        on_shake = function(mag, life, seed)
-            view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
-        end,
-        on_reset = function()
-            -- The white-out peaks: reveal the plant/animal CHOICE behind the lifting white.
-            -- No layer switch, no economy reset -- the assembly line is simply done.
-            fork_mode = "choice"
-        end,
-    })
+  fork_armed = true
+  -- Centre the cinematic on the cell's centre (the view fills the screen). The
+  -- transition projects (x, y) itself; we pass screen-centre-ish coords directly
+  -- since the interior has no world camera to project through.
+  local cx, cy = 0, 0
+  if love and love.graphics then
+    cx, cy = love.graphics.getWidth() * 0.5, love.graphics.getHeight() * 0.5
+  end
+  sound.play("endosymbiosis")
+  transition.begin(transition_state, {
+    x = cx,
+    y = cy,
+    title = "TWO PATHS",
+    kicker = "ascension",
+    subtitle = "what will you become",
+    on_focus = function()
+      -- No camera in the interior view; mark the moment with a gentle flash beat.
+      view.spawn(view_state, fx.flash({ color = colors.primary, alpha = 0.12, life = 0.5 }))
+    end,
+    on_shake = function(mag, life, seed)
+      view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
+    end,
+    on_reset = function()
+      -- The white-out peaks: reveal the plant/animal CHOICE behind the lifting white.
+      -- No layer switch, no economy reset -- the assembly line is simply done.
+      fork_mode = "choice"
+    end,
+  })
 end
 
 -- Commit the player's plant/animal pick: record it (via the pure fork helper),
 -- persist it in the save blob, and fall through to the terminal ascension
 -- placeholder. Wired as the on_choose callback the choice modal's cards fire.
 local function choose_kingdom(id)
-    if fork.record_choice(complexcell.state, id) then
-        fork_mode = "ascension"
-        persist()
-    end
+  if fork.record_choice(complexcell.state, id) then
+    fork_mode = "ascension"
+    persist()
+  end
 end
 
 -- Begin the LYSIS game-over beat (the phase-2 sibling of cell.lua's begin_collapse):
@@ -325,13 +325,16 @@ end
 -- runs for COLLAPSE_ANIM, then update() wipes the save and seeds a fresh cell -- the
 -- same reset as [r]. One-shot via the collapsing flag; cleared on every (re)build.
 local function begin_collapse()
-    collapsing = true
-    collapse_anim = COLLAPSE_ANIM
-    set_toast("The cell lysed under oxidative stress — a new cell begins")
-    sound.play("endosymbiosis")
-    view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
-    view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = math.floor(complexcell.state.sim.built) }))
-    persist()
+  collapsing = true
+  collapse_anim = COLLAPSE_ANIM
+  set_toast("The cell lysed under oxidative stress — a new cell begins")
+  sound.play("endosymbiosis")
+  view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
+  view.spawn(
+    view_state,
+    fx.shake({ mag = 10, life = 0.7, seed = math.floor(complexcell.state.sim.built) })
+  )
+  persist()
 end
 
 -- Fixed sim tick (runs even while backgrounded). Pure: fold -> step -> apply gates;
@@ -342,127 +345,130 @@ end
 -- must not mint/starve under the freeze -- the assembly line has stopped. Mirrors
 -- cell.tick's transition guard.
 function complexcell.tick(tick_dt)
-    if not complexcell.state then
-        return
-    end
-    -- The fork is a terminal beat: once the choice/ascension screen is up, freeze.
-    if fork_mode then
-        return
-    end
-    -- Freeze while the cinematic builds toward its white peak (before on_reset fires).
-    if transition.active(transition_state) and not transition_state.reset_done then
-        return
-    end
-    local s = complexcell.state.sim
-    sim.tick(s, tick_dt, catalog.fold(s))
-    -- DISCOVERY (not auto-unlock): a freshly-crossed gate only REVEALS its stage as an
-    -- "integrate" purchase row; the player pays the steep ATP cost to bring it online.
-    local newly = catalog.discover_gates(s)
-    for _, id in ipairs(newly) do
-        local def = catalog.STAGE_DEFS[id]
-        set_toast(string.format("Discovered %s — integrate it to bring it online", def.label))
-        persist()
-    end
+  if not complexcell.state then
+    return
+  end
+  -- The fork is a terminal beat: once the choice/ascension screen is up, freeze.
+  if fork_mode then
+    return
+  end
+  -- Freeze while the cinematic builds toward its white peak (before on_reset fires).
+  if transition.active(transition_state) and not transition_state.reset_done then
+    return
+  end
+  local s = complexcell.state.sim
+  sim.tick(s, tick_dt, catalog.fold(s))
+  -- DISCOVERY (not auto-unlock): a freshly-crossed gate only REVEALS its stage as an
+  -- "integrate" purchase row; the player pays the steep ATP cost to bring it online.
+  local newly = catalog.discover_gates(s)
+  for _, id in ipairs(newly) do
+    local def = catalog.STAGE_DEFS[id]
+    set_toast(string.format("Discovered %s — integrate it to bring it online", def.label))
+    persist()
+  end
 
-    -- FAILURE -> LYSIS: the oxidative stress the sim accrues from a sustained power
-    -- deficit has saturated. The cell dies; play the game-over beat, then reload fresh.
-    -- arm_collapse touches love.*/sound, but tick runs only the pure economy -- so we set
-    -- the module flag here and the live overlay/reset is driven from update(), like cell.
-    if s.stress >= catalog.STRESS_FAIL and not collapsing then
-        begin_collapse()
-    end
+  -- FAILURE -> LYSIS: the oxidative stress the sim accrues from a sustained power
+  -- deficit has saturated. The cell dies; play the game-over beat, then reload fresh.
+  -- arm_collapse touches love.*/sound, but tick runs only the pure economy -- so we set
+  -- the module flag here and the live overlay/reset is driven from update(), like cell.
+  if s.stress >= catalog.STRESS_FAIL and not collapsing then
+    begin_collapse()
+  end
 end
 
 function complexcell.update(dt)
-    if not complexcell.state then
-        return
-    end
-    -- Drain the seam intro fade regardless of the cinematic/fork guards below, so the
-    -- teal hand-off sheet always lifts (it's pure cosmetics over a freshly-seeded cell).
-    if intro_fade > 0 then
-        intro_fade = math.max(0, intro_fade - dt)
-    end
-    -- Drain the manual ATP-tap lockout so the cytoplasm click rearms after the cooldown.
-    if atp_tap_cooldown > 0 then
-        atp_tap_cooldown = math.max(0, atp_tap_cooldown - dt)
-    end
-    tween.update(dt)                               -- advance the UI kit's hover/press lighten transitions
-    view.update(view_state, dt)                    -- the interior keeps animating beneath the overlay
-    update_music_layers(complexcell.state.sim.built) -- thicken the score as `built` climbs
+  if not complexcell.state then
+    return
+  end
+  -- Drain the seam intro fade regardless of the cinematic/fork guards below, so the
+  -- teal hand-off sheet always lifts (it's pure cosmetics over a freshly-seeded cell).
+  if intro_fade > 0 then
+    intro_fade = math.max(0, intro_fade - dt)
+  end
+  -- Drain the manual ATP-tap lockout so the cytoplasm click rearms after the cooldown.
+  if atp_tap_cooldown > 0 then
+    atp_tap_cooldown = math.max(0, atp_tap_cooldown - dt)
+  end
+  tween.update(dt) -- advance the UI kit's hover/press lighten transitions
+  view.update(view_state, dt) -- the interior keeps animating beneath the overlay
+  update_music_layers(complexcell.state.sim.built) -- thicken the score as `built` climbs
 
-    -- The cell has LYSED: the game-over beat owns the frame. Advance only the view (so the
-    -- red flash + shake play) and the overlay clock, then -- when it elapses -- wipe the
-    -- save and seed a fresh cell (the same reset as [r], via enter_from_seam). Mirrors
-    -- cell.update's collapsing branch.
-    if collapsing then
-        if toast_timer > 0 then
-            toast_timer = toast_timer - dt
-        end
-        collapse_anim = collapse_anim - dt
-        if collapse_anim <= 0 then
-            save.remove(SAVE_NAME)
-            complexcell.enter_from_seam({}) -- fresh cell; reset_fork_runtime clears collapsing
-        end
-        return
-    end
-
-    -- Advance the victory cinematic whenever it's armed. The view/tween still update
-    -- (so the fx beats play + the white-out fades), but the economy is frozen by
-    -- tick's guard, and we bail before the autosave/arming so the terminal beat is
-    -- clean. The choice modal is revealed by on_reset at the white peak.
-    if transition.active(transition_state) then
-        transition.update(transition_state, dt)
-        if toast_timer > 0 then
-            toast_timer = toast_timer - dt
-        end
-        return
-    end
-
+  -- The cell has LYSED: the game-over beat owns the frame. Advance only the view (so the
+  -- red flash + shake play) and the overlay clock, then -- when it elapses -- wipe the
+  -- save and seed a fresh cell (the same reset as [r], via enter_from_seam). Mirrors
+  -- cell.update's collapsing branch.
+  if collapsing then
     if toast_timer > 0 then
-        toast_timer = toast_timer - dt
+      toast_timer = toast_timer - dt
     end
+    collapse_anim = collapse_anim - dt
+    if collapse_anim <= 0 then
+      save.remove(SAVE_NAME)
+      complexcell.enter_from_seam({}) -- fresh cell; reset_fork_runtime clears collapsing
+    end
+    return
+  end
 
-    -- Live-only arming (mirrors cell.lua, where the finale arms from update, not the
-    -- backgrounded tick): the first frame `built` crosses the FORK gate, play the
-    -- victory cinematic. Guarded one-shot via fork_armed; skipped once the fork flow
-    -- is up. arm_fork touches love.*/sound, so it lives here, never in tick.
-    if not fork_armed and not fork_mode and catalog.reached_fork(complexcell.state.sim) then
-        arm_fork()
-        return
+  -- Advance the victory cinematic whenever it's armed. The view/tween still update
+  -- (so the fx beats play + the white-out fades), but the economy is frozen by
+  -- tick's guard, and we bail before the autosave/arming so the terminal beat is
+  -- clean. The choice modal is revealed by on_reset at the white peak.
+  if transition.active(transition_state) then
+    transition.update(transition_state, dt)
+    if toast_timer > 0 then
+      toast_timer = toast_timer - dt
     end
+    return
+  end
 
-    -- The terminal fork flow (choice / ascension) is a held screen: no autosave churn.
-    if fork_mode then
-        return
-    end
+  if toast_timer > 0 then
+    toast_timer = toast_timer - dt
+  end
 
-    save_accum = save_accum + dt
-    if save_accum >= SAVE_INTERVAL then
-        save_accum = 0
-        persist()
-    end
+  -- Live-only arming (mirrors cell.lua, where the finale arms from update, not the
+  -- backgrounded tick): the first frame `built` crosses the FORK gate, play the
+  -- victory cinematic. Guarded one-shot via fork_armed; skipped once the fork flow
+  -- is up. arm_fork touches love.*/sound, so it lives here, never in tick.
+  if not fork_armed and not fork_mode and catalog.reached_fork(complexcell.state.sim) then
+    arm_fork()
+    return
+  end
+
+  -- The terminal fork flow (choice / ascension) is a held screen: no autosave churn.
+  if fork_mode then
+    return
+  end
+
+  save_accum = save_accum + dt
+  if save_accum >= SAVE_INTERVAL then
+    save_accum = 0
+    persist()
+  end
 end
 
 -- The snapshot the view draws against (THE CONTRACT). Built fresh each draw so the
 -- view always sees the current economy: the headline numbers/flags, the power-plant
 -- count, the neutral fuel mix, the pinning stage, and the ordered pipeline rows.
-local function build_snapshot(s)
-    return {
-        built = s.built,
-        energy = s.energy,
-        buffer_max = catalog.BUFFER_MAX,
-        output = s.output,
-        throughput = catalog.fold(s).throughput,
-        brownout = s.brownout,
-        mito = s.mito,
-        fuel_factor = catalog.FUEL_FACTOR,
-        bottleneck_id = catalog.bottleneck_id(s),
-        stages = catalog.stage_snapshot(s),
-        efficiency = (catalog.efficiency and catalog.efficiency(s)) or 1,
-        -- 0..1 oxidative stress (power deficit). The view may dim/redden the cell as it
-        -- climbs toward STRESS_FAIL (the lysis threshold).
-        stress = s.stress,
-    }
+local function build_snapshot(s, tap_ready)
+  return {
+    built = s.built,
+    energy = s.energy,
+    buffer_max = catalog.BUFFER_MAX,
+    output = s.output,
+    throughput = catalog.fold(s).throughput,
+    brownout = s.brownout,
+    mito = s.mito,
+    fuel_factor = catalog.FUEL_FACTOR,
+    bottleneck_id = catalog.bottleneck_id(s),
+    stages = catalog.stage_snapshot(s),
+    efficiency = (catalog.efficiency and catalog.efficiency(s)) or 1,
+    -- 0..1 oxidative stress (power deficit). The view may dim/redden the cell as it
+    -- climbs toward STRESS_FAIL (the lysis threshold).
+    stress = s.stress,
+    -- Whether the manual ATP tap is off cooldown and usable RIGHT NOW: drives the
+    -- centre "feed me" ring (the phase-1 bloom analogue). Cosmetic; never feeds the sim.
+    tap_ready = tap_ready,
+  }
 end
 
 -- A themed action button carrying a dim cost/flavor sublabel and an affordability
@@ -470,57 +476,57 @@ end
 -- stacked text lines in a custom draw_fn node, registering the hover zone + on_click
 -- only when enabled.
 local function action_button_node(opts)
-    local enabled = opts.enabled
-    return {
-        type = "node",
-        w = opts.w,
-        h = opts.h,
-        draw_fn = function(r)
-            local tcol = enabled and colors.ui.white or colors.with_alpha(colors.ui.text, 0.35)
-            button.draw(r, "", {
-                font = "hud_small",
-                id = enabled and opts.id or nil,
-                opacity = enabled and nil or 0.18,
-            })
-            local label_y = r.y + math.max(2, math.floor((r.h - 28) / 2))
-            text(
-                rect(r.x, label_y, r.w, 14),
-                opts.label,
-                { font = "hud", color = tcol, align = "center" }
-            )
-            if opts.sublabel then
-                text(rect(r.x, r.y + r.h - 16, r.w, 12), opts.sublabel, {
-                    font = "hud_small",
-                    color = colors.with_alpha(tcol, 0.6),
-                    align = "center",
-                })
-            end
-        end,
-        on_click = enabled and opts.on_click or nil,
-        resolved_rect = nil,
-    }
+  local enabled = opts.enabled
+  return {
+    type = "node",
+    w = opts.w,
+    h = opts.h,
+    draw_fn = function(r)
+      local tcol = enabled and colors.ui.white or colors.with_alpha(colors.ui.text, 0.35)
+      button.draw(r, "", {
+        font = "hud_small",
+        id = enabled and opts.id or nil,
+        opacity = enabled and nil or 0.18,
+      })
+      local label_y = r.y + math.max(2, math.floor((r.h - 28) / 2))
+      text(
+        rect(r.x, label_y, r.w, 14),
+        opts.label,
+        { font = "hud", color = tcol, align = "center" }
+      )
+      if opts.sublabel then
+        text(rect(r.x, r.y + r.h - 16, r.w, 12), opts.sublabel, {
+          font = "hud_small",
+          color = colors.with_alpha(tcol, 0.6),
+          align = "center",
+        })
+      end
+    end,
+    on_click = enabled and opts.on_click or nil,
+    resolved_rect = nil,
+  }
 end
 
 -- Buy the next mitochondrion (a power plant): deduct its cost from the ATP buffer
 -- (sim.energy -- the phase-2 currency) and bump the count. Clamped at affordability.
 local function buy_mito(s)
-    local cost = catalog.mito_cost(s.mito)
-    if s.energy >= cost then
-        s.energy = s.energy - cost
-        s.mito = s.mito + 1
-        persist()
-    end
+  local cost = catalog.mito_cost(s.mito)
+  if s.energy >= cost then
+    s.energy = s.energy - cost
+    s.mito = s.mito + 1
+    persist()
+  end
 end
 
 -- Buy the next level of an unlocked stage: deduct its geometric cost from the ATP
 -- buffer and increment the level. Clamped at affordability.
 local function buy_stage(s, id)
-    local cost = catalog.stage_cost(s.stages[id] or 0)
-    if s.energy >= cost then
-        s.energy = s.energy - cost
-        s.stages[id] = (s.stages[id] or 0) + 1
-        persist()
-    end
+  local cost = catalog.stage_cost(s.stages[id] or 0)
+  if s.energy >= cost then
+    s.energy = s.energy - cost
+    s.stages[id] = (s.stages[id] or 0) + 1
+    persist()
+  end
 end
 
 -- INTEGRATE a discovered-but-locked stage: pay its steep one-time ATP cost from the
@@ -528,26 +534,26 @@ end
 -- tell, and persist. Guarded on affordability; unlock_stage itself never touches energy,
 -- so the deduction is the orchestrator's job. A no-op if unaffordable.
 local function integrate_stage(s, id)
-    local cost = catalog.stage_unlock_cost(id)
-    if s.energy >= cost then
-        s.energy = s.energy - cost
-        if catalog.unlock_stage(s, id) then
-            local def = catalog.STAGE_DEFS[id]
-            set_toast(string.format("Integrated %s", def.label))
-            view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 }))
-            persist()
-        end
+  local cost = catalog.stage_unlock_cost(id)
+  if s.energy >= cost then
+    s.energy = s.energy - cost
+    if catalog.unlock_stage(s, id) then
+      local def = catalog.STAGE_DEFS[id]
+      set_toast(string.format("Integrated %s", def.label))
+      view.spawn(
+        view_state,
+        fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 })
+      )
+      persist()
     end
+  end
 end
 
 -- Is the screen point (x, y) inside the panel's right-edge rect? The panel is the only
 -- click surface; a tap that misses it lands in the cytoplasm (the ATP-tap zone).
 local function is_in_panel(x, y)
-    local px = complexcell._panel_x
-    return x >= px
-        and x <= px + PANEL_W
-        and y >= PANEL_Y
-        and y <= PANEL_Y + complexcell._panel_h
+  local px = complexcell._panel_x
+  return x >= px and x <= px + PANEL_W and y >= PANEL_Y and y <= PANEL_Y + complexcell._panel_h
 end
 
 -- The manual ATP TAP: a cytoplasm click injects an ATP burst into the buffer (clamped
@@ -555,18 +561,18 @@ end
 -- The burst scales with gross power (TAP_POWER_SECONDS of production), so it keeps
 -- helping as the cell grows. Spawns a pulse + flash + soft beat so the tap reads.
 local function tap_atp(s, x, y)
-    if atp_tap_cooldown > 0 then
-        return
-    end
-    -- Roll a fresh randomised cooldown each tap so the cadence varies (not a fixed metronome).
-    atp_tap_cooldown = ATP_TAP_COOLDOWN_MIN
-        + love.math.random() * (ATP_TAP_COOLDOWN_MAX - ATP_TAP_COOLDOWN_MIN)
-    -- Burst scales with gross ATP power (mitochondria), so it stays a useful nudge late.
-    local burst = catalog.fold(s).power * TAP_POWER_SECONDS
-    s.energy = math.min(s.energy + burst, catalog.BUFFER_MAX)
-    view.spawn(view_state, fx.pulse({ x = x, y = y, color = colors.secondary_bright }))
-    view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.08, life = 0.15 }))
-    sound.play("cytoplasm_active", { volume = 0.8, pitch_spread = ATP_TAP_PITCH_SPREAD })
+  if atp_tap_cooldown > 0 then
+    return
+  end
+  -- Roll a fresh randomised cooldown each tap so the cadence varies (not a fixed metronome).
+  atp_tap_cooldown = ATP_TAP_COOLDOWN_MIN
+    + love.math.random() * (ATP_TAP_COOLDOWN_MAX - ATP_TAP_COOLDOWN_MIN)
+  -- Burst scales with gross ATP power (mitochondria), so it stays a useful nudge late.
+  local burst = catalog.fold(s).power * TAP_POWER_SECONDS
+  s.energy = math.min(s.energy + burst, catalog.BUFFER_MAX)
+  view.spawn(view_state, fx.pulse({ x = x, y = y, color = colors.secondary_bright }))
+  view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.08, life = 0.15 }))
+  sound.play("cytoplasm_active", { volume = 0.8, pitch_spread = ATP_TAP_PITCH_SPREAD })
 end
 
 -- One DISCOVERED-but-locked stage row: the stage label + flavor and an "integrate"
@@ -574,367 +580,375 @@ end
 -- These sit in the assembly-line group alongside the unlocked level-up rows; once
 -- integrated the stage falls through to the normal stage_row level-up path.
 local function discovered_row(s, row)
-    local label_col = layout.vstack({
-        layout.text(string.format("%s   (locked)", row.label), { color = colors.ui.text }),
-        layout.text(row.flavor, { color = colors.ui.text_faint }),
-    }, { gap = 2 })
+  local label_col = layout.vstack({
+    layout.text(string.format("%s   (locked)", row.label), { color = colors.ui.text }),
+    layout.text(row.flavor, { color = colors.ui.text_faint }),
+  }, { gap = 2 })
 
-    local cost = catalog.stage_unlock_cost(row.id)
-    local affordable = s.energy >= cost
-    local right = action_button_node({
-        label = "integrate",
-        sublabel = format.number(cost) .. " atp",
-        enabled = affordable,
-        w = BTN_W,
-        h = BTN_H,
-        id = "integrate_" .. row.id,
-        on_click = function() integrate_stage(s, row.id) end,
-    })
+  local cost = catalog.stage_unlock_cost(row.id)
+  local affordable = s.energy >= cost
+  local right = action_button_node({
+    label = "integrate",
+    sublabel = format.number(cost) .. " atp",
+    enabled = affordable,
+    w = BTN_W,
+    h = BTN_H,
+    id = "integrate_" .. row.id,
+    on_click = function() integrate_stage(s, row.id) end,
+  })
 
-    return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
+  return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
 end
 
 -- One pipeline-stage row: a fill-width label column (name + level over its flavor)
 -- and a right-pinned level-up button gated on the ATP buffer. Built only for
 -- UNLOCKED stages (locked beats are teased by the self-revealing footer instead).
 local function stage_row(s, row)
-    -- No bottleneck highlight: every stage row reads the same. The player reads the line
-    -- from the cell's own flow, not from the panel telling them which stage to feed.
-    local label_col = layout.vstack({
-        layout.text(string.format("%s   Lv %d", row.label, row.level), { color = colors.ui.text }),
-        layout.text(row.flavor, { color = colors.ui.text_faint }),
-    }, { gap = 2 })
+  -- No bottleneck highlight: every stage row reads the same. The player reads the line
+  -- from the cell's own flow, not from the panel telling them which stage to feed.
+  local label_col = layout.vstack({
+    layout.text(string.format("%s   Lv %d", row.label, row.level), { color = colors.ui.text }),
+    layout.text(row.flavor, { color = colors.ui.text_faint }),
+  }, { gap = 2 })
 
-    local cost = catalog.stage_cost(row.level)
-    local affordable = s.energy >= cost
-    local right = action_button_node({
-        label = "level up",
-        sublabel = format.number(cost) .. " atp",
-        enabled = affordable,
-        w = BTN_W,
-        h = BTN_H,
-        id = "stage_" .. row.id,
-        on_click = function() buy_stage(s, row.id) end,
-    })
+  local cost = catalog.stage_cost(row.level)
+  local affordable = s.energy >= cost
+  local right = action_button_node({
+    label = "level up",
+    sublabel = format.number(cost) .. " atp",
+    enabled = affordable,
+    w = BTN_W,
+    h = BTN_H,
+    id = "stage_" .. row.id,
+    on_click = function() buy_stage(s, row.id) end,
+  })
 
-    return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
+  return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
 end
 
 -- The whole panel as a declarative node tree, rebuilt each frame so dynamic values
 -- and the on_click closures capture the current state. Stacked groups (header /
 -- power / stages / footer) inside a PAD-padded vstack. Mirrors cell.lua's build_panel.
 local function build_panel(s)
-    local rates = catalog.fold(s)
-    local buffer_ratio = math.max(0, math.min(s.energy / catalog.BUFFER_MAX, 1))
+  local rates = catalog.fold(s)
+  local buffer_ratio = math.max(0, math.min(s.energy / catalog.BUFFER_MAX, 1))
 
-    -- HEADER: the headline built total, the ATP buffer bar, the live output/throughput
-    -- readouts, and the brownout tell only when the line is power-starved.
-    local header = {}
-    table.insert(
-        header,
-        layout.text("built  " .. format.number(s.built), { size = "lg", color = colors.ui.text })
+  -- HEADER: the headline built total, the ATP buffer bar, the live output/throughput
+  -- readouts, and the brownout tell only when the line is power-starved.
+  local header = {}
+  table.insert(
+    header,
+    layout.text("built  " .. format.number(s.built), { size = "lg", color = colors.ui.text })
+  )
+  -- The phase-1 colony, now a frozen statistic carried across the seam.
+  local carry = complexcell.state.carry
+  if carry then
+    local legacy = string.format(
+      "from phase 1  ·  colony %s  ·  %s divisions",
+      format.number(carry.colony or 0),
+      format.number(carry.divisions or 0)
     )
-    -- The phase-1 colony, now a frozen statistic carried across the seam.
-    local carry = complexcell.state.carry
-    if carry then
-        local legacy = string.format(
-            "from phase 1  ·  colony %s  ·  %s divisions",
-            format.number(carry.colony or 0),
-            format.number(carry.divisions or 0)
-        )
-        if (carry.organelles or 0) > 0 then
-            legacy = legacy .. string.format("  ·  %d organelles", carry.organelles)
-        end
-        table.insert(header, layout.text(legacy, { color = colors.ui.text_faint }))
+    if (carry.organelles or 0) > 0 then
+      legacy = legacy .. string.format("  ·  %d organelles", carry.organelles)
     end
-    table.insert(
-        header,
-        layout.text(string.format("ATP  %s", format.number(s.energy)), { color = colors.ui.text_dim })
+    table.insert(header, layout.text(legacy, { color = colors.ui.text_faint }))
+  end
+  table.insert(
+    header,
+    layout.text(string.format("ATP  %s", format.number(s.energy)), { color = colors.ui.text_dim })
+  )
+  table.insert(
+    header,
+    layout.bar(buffer_ratio, {
+      h = 10,
+      color = BAR_COLOR,
+      bg_color = colors.with_alpha(colors.ui.white, 0.12),
+    })
+  )
+  table.insert(
+    header,
+    layout.text(
+      string.format(
+        "output  %s /s   ·   throughput  %s",
+        format.number(s.output),
+        format.number(rates.throughput)
+      ),
+      { color = colors.ui.text_muted }
     )
+  )
+  if s.brownout then
     table.insert(
-        header,
-        layout.bar(buffer_ratio, {
-            h = 10,
-            color = BAR_COLOR,
-            bg_color = colors.with_alpha(colors.ui.white, 0.12),
-        })
+      header,
+      layout.text("BROWNOUT — power deficit, line dimmed", { color = colors.ui.accent })
     )
+  end
+  -- OXIDATIVE STRESS warning: as the power-deficit stress climbs past STRESS_WARN it
+  -- creeps toward STRESS_FAIL (lysis). Surfaced on the accent token, like BROWNOUT, so
+  -- the player can power the cell back out before it dies.
+  if s.stress and s.stress > STRESS_WARN then
     table.insert(
-        header,
-        layout.text(
-            string.format(
-                "output  %s /s   ·   throughput  %s",
-                format.number(s.output),
-                format.number(rates.throughput)
-            ),
-            { color = colors.ui.text_muted }
-        )
+      header,
+      layout.text("OXIDATIVE STRESS — power the cell or it lyses", { color = colors.ui.accent })
     )
-    if s.brownout then
-        table.insert(
-            header,
-            layout.text("BROWNOUT — power deficit, line dimmed", { color = colors.ui.accent })
-        )
+  end
+
+  -- POWER: the mitochondria count + a build-mitochondrion button (ATP).
+  local mito_cost = catalog.mito_cost(s.mito)
+  local power_group = {
+    layout.text("power", { color = colors.ui.text_dim }),
+    layout.hstack({
+      layout.vstack({
+        layout.text(string.format("Mitochondria   x%d", s.mito), { color = colors.ui.text }),
+        layout.text("the power plants -- gross ATP/sec", { color = colors.ui.text_faint }),
+      }, { gap = 2 }),
+      action_button_node({
+        label = "build",
+        sublabel = format.number(mito_cost) .. " atp",
+        enabled = s.energy >= mito_cost,
+        w = BTN_W,
+        h = BTN_H,
+        id = "build_mito",
+        on_click = function() buy_mito(s) end,
+      }),
+    }, { gap = theme.spacing.sm }),
+  }
+
+  -- STAGES: one row per UNLOCKED stage (the others are teased in the footer).
+  local stage_children = { layout.text("assembly line", { color = colors.ui.text_dim }) }
+  for _, row in ipairs(catalog.stage_snapshot(s)) do
+    if row.unlocked then
+      -- Online stages keep their level-up row.
+      table.insert(stage_children, stage_row(s, row))
+    elseif catalog.is_discovered(s, row.id) then
+      -- Discovered but not yet integrated: a one-time "integrate" purchase row.
+      table.insert(stage_children, discovered_row(s, row))
     end
-    -- OXIDATIVE STRESS warning: as the power-deficit stress climbs past STRESS_WARN it
-    -- creeps toward STRESS_FAIL (lysis). Surfaced on the accent token, like BROWNOUT, so
-    -- the player can power the cell back out before it dies.
-    if s.stress and s.stress > STRESS_WARN then
-        table.insert(
-            header,
-            layout.text("OXIDATIVE STRESS — power the cell or it lyses", { color = colors.ui.accent })
-        )
-    end
+    -- Undiscovered stages stay hidden here, teased only by the self-revealing footer.
+  end
 
-    -- POWER: the mitochondria count + a build-mitochondrion button (ATP).
-    local mito_cost = catalog.mito_cost(s.mito)
-    local power_group = {
-        layout.text("power", { color = colors.ui.text_dim }),
-        layout.hstack({
-            layout.vstack({
-                layout.text(string.format("Mitochondria   x%d", s.mito), { color = colors.ui.text }),
-                layout.text("the power plants -- gross ATP/sec", { color = colors.ui.text_faint }),
-            }, { gap = 2 }),
-            action_button_node({
-                label = "build",
-                sublabel = format.number(mito_cost) .. " atp",
-                enabled = s.energy >= mito_cost,
-                w = BTN_W,
-                h = BTN_H,
-                id = "build_mito",
-                on_click = function() buy_mito(s) end,
-            }),
-        }, { gap = theme.spacing.sm }),
-    }
+  local groups = {
+    layout.vstack(header, { gap = theme.spacing.xs }),
+    layout.vstack(power_group, { gap = theme.spacing.xs }),
+    layout.vstack(stage_children, { gap = theme.spacing.sm }),
+  }
 
-    -- STAGES: one row per UNLOCKED stage (the others are teased in the footer).
-    local stage_children = { layout.text("assembly line", { color = colors.ui.text_dim }) }
-    for _, row in ipairs(catalog.stage_snapshot(s)) do
-        if row.unlocked then
-            -- Online stages keep their level-up row.
-            table.insert(stage_children, stage_row(s, row))
-        elseif catalog.is_discovered(s, row.id) then
-            -- Discovered but not yet integrated: a one-time "integrate" purchase row.
-            table.insert(stage_children, discovered_row(s, row))
-        end
-        -- Undiscovered stages stay hidden here, teased only by the self-revealing footer.
-    end
-
-    local groups = {
-        layout.vstack(header, { gap = theme.spacing.xs }),
-        layout.vstack(power_group, { gap = theme.spacing.xs }),
-        layout.vstack(stage_children, { gap = theme.spacing.sm }),
-    }
-
-    -- FOOTER: the self-revealing next beat, or the FORK line once it's reached. At
-    -- the FORK the victory cinematic takes over the whole screen (the panel is
-    -- suppressed), so this line is only briefly visible as `built` crosses FORK_AT
-    -- on the frame before the cinematic arms.
-    local footer_text
-    if catalog.reached_fork(s) then
-        footer_text = "FORK reached — a choice of kingdoms"
+  -- FOOTER: the self-revealing next beat, or the FORK line once it's reached. At
+  -- the FORK the victory cinematic takes over the whole screen (the panel is
+  -- suppressed), so this line is only briefly visible as `built` crosses FORK_AT
+  -- on the frame before the cinematic arms.
+  local footer_text
+  if catalog.reached_fork(s) then
+    footer_text = "FORK reached — a choice of kingdoms"
+  else
+    local nxt = catalog.next_gate(s)
+    if nxt then
+      -- Stair-step: hold the teaser fully hidden until the next beat's predecessor is
+      -- integrated, so a stage walled behind an un-integrated one reads "next: …"
+      -- rather than teasing its silhouette early.
+      local prereq_met = catalog.is_gate_prereq_met(s, nxt)
+      local reveal = catalog.reveal(s, nxt.at, prereq_met)
+      if reveal == "ready" then
+        footer_text = string.format("next: %s — ready at built %d", nxt.label, nxt.at)
+      elseif reveal == "named" then
+        footer_text = string.format("next: %s forming at built %d", nxt.label, nxt.at)
+      elseif reveal == "silhouette" then
+        footer_text = "next: something is forming…"
+      else
+        footer_text = "next: …"
+      end
     else
-        local nxt = catalog.next_gate(s)
-        if nxt then
-            -- Stair-step: hold the teaser fully hidden until the next beat's predecessor is
-            -- integrated, so a stage walled behind an un-integrated one reads "next: …"
-            -- rather than teasing its silhouette early.
-            local prereq_met = catalog.is_gate_prereq_met(s, nxt)
-            local reveal = catalog.reveal(s, nxt.at, prereq_met)
-            if reveal == "ready" then
-                footer_text = string.format("next: %s — ready at built %d", nxt.label, nxt.at)
-            elseif reveal == "named" then
-                footer_text = string.format("next: %s forming at built %d", nxt.label, nxt.at)
-            elseif reveal == "silhouette" then
-                footer_text = "next: something is forming…"
-            else
-                footer_text = "next: …"
-            end
-        else
-            footer_text = "the assembly line is complete"
-        end
+      footer_text = "the assembly line is complete"
     end
-    table.insert(groups, layout.text(footer_text, { color = colors.ui.text_muted }))
+  end
+  table.insert(groups, layout.text(footer_text, { color = colors.ui.text_muted }))
 
-    return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
+  return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
 end
 
 -- Centered footer help line, a direct text overlay (not part of the panel tree). Bare
 -- INTERACTION affordances only -- no strategy hints (what to build / which stage to
 -- level / how to reach the fork). The player figures out the optimisation themselves.
 local function draw_help(width)
-    text(
-        rect(0, love.graphics.getHeight() - 44, width, 16),
-        "click the cell to feed ATP   ·   [r] fresh cell",
-        { color = colors.with_alpha(colors.ui.text_faint, 0.7), align = "center" }
-    )
+  text(
+    rect(0, love.graphics.getHeight() - 44, width, 16),
+    "click the cell to feed ATP   ·   [r] fresh cell",
+    { color = colors.with_alpha(colors.ui.text_faint, 0.7), align = "center" }
+  )
 end
 
 local function draw_toast(width)
-    if toast_timer <= 0 or not toast_text then
-        return
-    end
-    local alpha = math.min(toast_timer, 1)
-    text(rect(0, 40, width, 22), toast_text, {
-        font = "hud_lg",
-        color = colors.with_alpha(colors.ui.accent, alpha),
-        align = "center",
-    })
+  if toast_timer <= 0 or not toast_text then
+    return
+  end
+  local alpha = math.min(toast_timer, 1)
+  text(rect(0, 40, width, 22), toast_text, {
+    font = "hud_lg",
+    color = colors.with_alpha(colors.ui.accent, alpha),
+    align = "center",
+  })
 end
 
 -- The LYSIS game-over overlay: a dimming sheet + cause line over the frozen interior,
 -- held for COLLAPSE_ANIM before the fresh cell reloads. Mirrors cell.lua's draw_collapse
 -- (a darkening wash that deepens as the beat runs, the threat token on the headline).
 local function draw_collapse(width)
-    local height = love.graphics.getHeight()
-    local progress = 1 - math.max(0, math.min(collapse_anim / COLLAPSE_ANIM, 1)) -- 0 -> 1
-    love.graphics.setColor(0, 0, 0, 0.55 * progress)
-    love.graphics.rectangle("fill", 0, 0, width, height)
-    love.graphics.setColor(1, 1, 1, 1)
-    text(rect(0, height / 2 - 16, width, 30), "THE CELL LYSED", {
-        font = "hud_lg",
-        color = colors.with_alpha(colors.quaternary, math.min(1, progress * 1.5)),
-        align = "center",
-    })
+  local height = love.graphics.getHeight()
+  local progress = 1 - math.max(0, math.min(collapse_anim / COLLAPSE_ANIM, 1)) -- 0 -> 1
+  love.graphics.setColor(0, 0, 0, 0.55 * progress)
+  love.graphics.rectangle("fill", 0, 0, width, height)
+  love.graphics.setColor(1, 1, 1, 1)
+  text(rect(0, height / 2 - 16, width, 30), "THE CELL LYSED", {
+    font = "hud_lg",
+    color = colors.with_alpha(colors.quaternary, math.min(1, progress * 1.5)),
+    align = "center",
+  })
 end
 
 -- The seam intro sheet: a full-screen teal (the cell's own primary token) that fades
 -- out over INTRO_FADE, so phase 2 opens straight out of phase 1's teal plunge. Drawn
 -- LAST (over the interior + panel) so the whole screen lifts as one. No-op once drained.
 local function draw_intro()
-    if intro_fade <= 0 then
-        return
-    end
-    local w, h = love.graphics.getDimensions()
-    local prim = colors.primary
-    love.graphics.setColor(prim[1], prim[2], prim[3], math.min(1, intro_fade / INTRO_FADE))
-    love.graphics.rectangle("fill", 0, 0, w, h)
-    love.graphics.setColor(1, 1, 1, 1)
+  if intro_fade <= 0 then
+    return
+  end
+  local w, h = love.graphics.getDimensions()
+  local prim = colors.primary
+  love.graphics.setColor(prim[1], prim[2], prim[3], math.min(1, intro_fade / INTRO_FADE))
+  love.graphics.rectangle("fill", 0, 0, w, h)
+  love.graphics.setColor(1, 1, 1, 1)
 end
 
 function complexcell.draw()
-    local s = complexcell.state.sim
-    local width = love.graphics.getWidth()
+  local s = complexcell.state.sim
+  local width = love.graphics.getWidth()
 
-    -- The interior swarm first (the other agent's view, drawn against the snapshot
-    -- contract), THEN the panel over it -- mirroring cell.draw's world-then-panel pipe.
-    view.draw(view_state, build_snapshot(s))
+  -- The centre "feed me" ring shows only when a tap would actually land: off cooldown AND
+  -- in normal play (the lysis/cinematic/fork beats below swallow clicks, so the cue must
+  -- not invite a tap that does nothing). Cosmetic-only flag, threaded through the snapshot.
+  local tap_ready = atp_tap_cooldown <= 0
+    and not collapsing
+    and not fork_mode
+    and not transition.active(transition_state)
 
-    -- The cell has LYSED: the game-over beat owns the frame (panel/help suppressed). The
-    -- overlay + toast play over the frozen interior until update() reloads a fresh cell.
-    if collapsing then
-        draw_collapse(width)
-        draw_toast(width)
-        return
-    end
+  -- The interior swarm first (the other agent's view, drawn against the snapshot
+  -- contract), THEN the panel over it -- mirroring cell.draw's world-then-panel pipe.
+  view.draw(view_state, build_snapshot(s, tap_ready))
 
-    -- The end-of-phase-2 finale OWNS the screen (the panel is suppressed):
-    --   * the victory cinematic plays over the frozen interior, its overlay drawn by
-    --     the REUSED transition module (centred on screen-centre coords);
-    --   * at the white peak on_reset flips fork_mode to "choice" -- the modal is then
-    --     revealed beneath the lifting white-out (drawn AFTER transition.draw so the
-    --     cards bleed up through the fade), and clicking a card commits the kingdom;
-    --   * once chosen, the terminal ascension placeholder holds the screen.
-    if fork_mode then
-        if fork_mode == "ascension" then
-            fork.draw("ascension", { choice = complexcell.state.fork_choice })
-            complexcell._fork_click_map = nil
-        else
-            complexcell._fork_click_map = fork.draw("choice", { on_choose = choose_kingdom })
-        end
-        -- During the white-out fade the cinematic is still active; draw its overlay ON
-        -- TOP of the freshly-revealed modal so the white sheet lifts to expose it.
-        if transition.active(transition_state) then
-            transition.draw(transition_state, transition_state.x, transition_state.y)
-        end
-        return
-    end
-
-    if transition.active(transition_state) then
-        -- Pre-reset cinematic: the build-up + white-out over the frozen interior. The
-        -- panel/help/toast are suppressed -- the screen belongs to the transition.
-        transition.draw(transition_state, transition_state.x, transition_state.y)
-        return
-    end
-
-    -- The panel rides the RIGHT edge: its left x is computed from the window width
-    -- each frame (it hugs its content height, so only x moves with resize).
-    local panel_x = width - PANEL_W - PANEL_MARGIN
-    complexcell._panel_x = panel_x
-
-    -- Build + resolve the panel tree into the right-edge panel rect, draw its themed
-    -- backing, then render it -- keeping this frame's click map on the module so
-    -- mousepressed can hit-test it (one-frame lag is standard and harmless).
-    interaction.begin_frame()
-    local tree = build_panel(s)
-    layout.resolve(tree, rect(panel_x, PANEL_Y, PANEL_W, PANEL_H))
-    complexcell._panel_h = tree.resolved_rect.h
-    primitives.container(rect(panel_x, PANEL_Y, PANEL_W, complexcell._panel_h), "content")
-    complexcell._click_map = renderer.draw(tree, nil)
-    local mx, my = love.mouse.getPosition()
-    interaction.commit_frame(mx, my, love.mouse.isDown(1))
-
-    draw_help(width)
+  -- The cell has LYSED: the game-over beat owns the frame (panel/help suppressed). The
+  -- overlay + toast play over the frozen interior until update() reloads a fresh cell.
+  if collapsing then
+    draw_collapse(width)
     draw_toast(width)
-    draw_intro() -- the teal seam sheet lifts over everything as phase 2 opens
+    return
+  end
+
+  -- The end-of-phase-2 finale OWNS the screen (the panel is suppressed):
+  --   * the victory cinematic plays over the frozen interior, its overlay drawn by
+  --     the REUSED transition module (centred on screen-centre coords);
+  --   * at the white peak on_reset flips fork_mode to "choice" -- the modal is then
+  --     revealed beneath the lifting white-out (drawn AFTER transition.draw so the
+  --     cards bleed up through the fade), and clicking a card commits the kingdom;
+  --   * once chosen, the terminal ascension placeholder holds the screen.
+  if fork_mode then
+    if fork_mode == "ascension" then
+      fork.draw("ascension", { choice = complexcell.state.fork_choice })
+      complexcell._fork_click_map = nil
+    else
+      complexcell._fork_click_map = fork.draw("choice", { on_choose = choose_kingdom })
+    end
+    -- During the white-out fade the cinematic is still active; draw its overlay ON
+    -- TOP of the freshly-revealed modal so the white sheet lifts to expose it.
+    if transition.active(transition_state) then
+      transition.draw(transition_state, transition_state.x, transition_state.y)
+    end
+    return
+  end
+
+  if transition.active(transition_state) then
+    -- Pre-reset cinematic: the build-up + white-out over the frozen interior. The
+    -- panel/help/toast are suppressed -- the screen belongs to the transition.
+    transition.draw(transition_state, transition_state.x, transition_state.y)
+    return
+  end
+
+  -- The panel rides the RIGHT edge: its left x is computed from the window width
+  -- each frame (it hugs its content height, so only x moves with resize).
+  local panel_x = width - PANEL_W - PANEL_MARGIN
+  complexcell._panel_x = panel_x
+
+  -- Build + resolve the panel tree into the right-edge panel rect, draw its themed
+  -- backing, then render it -- keeping this frame's click map on the module so
+  -- mousepressed can hit-test it (one-frame lag is standard and harmless).
+  interaction.begin_frame()
+  local tree = build_panel(s)
+  layout.resolve(tree, rect(panel_x, PANEL_Y, PANEL_W, PANEL_H))
+  complexcell._panel_h = tree.resolved_rect.h
+  primitives.container(rect(panel_x, PANEL_Y, PANEL_W, complexcell._panel_h), "content")
+  complexcell._click_map = renderer.draw(tree, nil)
+  local mx, my = love.mouse.getPosition()
+  interaction.commit_frame(mx, my, love.mouse.isDown(1))
+
+  draw_help(width)
+  draw_toast(width)
+  draw_intro() -- the teal seam sheet lifts over everything as phase 2 opens
 end
 
 function complexcell.keypressed(key)
-    if key == "r" then
-        -- DEV: a fresh complex cell -- wipe the save and re-enter from the seam with no
-        -- carried phase-1 stats, the instant clean-slate start for tuning.
-        save.remove(SAVE_NAME)
-        complexcell.enter_from_seam({})
-    elseif key == "f" then
-        -- DEV: force the end-of-phase FORK (the real climb to FORK_AT is a ~10-min
-        -- playthrough). Slam `built` to the gate + apply any gates it crosses, so the
-        -- next update arms the victory cinematic -- mirrors cell.lua's [m]. No-op once
-        -- the fork flow is already up.
-        if not fork_mode and not transition.active(transition_state) then
-            local s = complexcell.state.sim
-            s.built = catalog.FORK_AT
-            -- DEV: the real path only DISCOVERS gates (the player integrates them), but the
-            -- dev fork shortcut wants every stage live -- so discover AND unlock all of them.
-            catalog.discover_gates(s)
-            for _, id in ipairs(catalog.STAGES) do
-                catalog.unlock_stage(s, id)
-            end
-        end
+  if key == "r" then
+    -- DEV: a fresh complex cell -- wipe the save and re-enter from the seam with no
+    -- carried phase-1 stats, the instant clean-slate start for tuning.
+    save.remove(SAVE_NAME)
+    complexcell.enter_from_seam({})
+  elseif key == "f" then
+    -- DEV: force the end-of-phase FORK (the real climb to FORK_AT is a ~10-min
+    -- playthrough). Slam `built` to the gate + apply any gates it crosses, so the
+    -- next update arms the victory cinematic -- mirrors cell.lua's [m]. No-op once
+    -- the fork flow is already up.
+    if not fork_mode and not transition.active(transition_state) then
+      local s = complexcell.state.sim
+      s.built = catalog.FORK_AT
+      -- DEV: the real path only DISCOVERS gates (the player integrates them), but the
+      -- dev fork shortcut wants every stage live -- so discover AND unlock all of them.
+      catalog.discover_gates(s)
+      for _, id in ipairs(catalog.STAGES) do
+        catalog.unlock_stage(s, id)
+      end
     end
+  end
 end
 
 function complexcell.mousepressed(x, y, button_index)
-    if button_index ~= 1 then
-        return
-    end
-    -- The end-of-phase finale owns the screen. During the cinematic, swallow clicks.
-    -- In the CHOICE modal, a card hit commits the kingdom; the ascension placeholder
-    -- has no click targets.
-    if fork_mode then
-        if fork_mode == "choice" and not transition.active(transition_state) then
-            local cb = complexcell._fork_click_map
-                and renderer.hit_test(complexcell._fork_click_map, x, y)
-            if cb then
-                cb()
-            end
-        end
-        return
-    end
-    if transition.active(transition_state) then
-        return
-    end
-    -- The lysis beat owns the frame: swallow clicks until the fresh cell reloads.
-    if collapsing then
-        return
-    end
-    -- A widget hit fires its on_click closure; a click that misses the panel falls
-    -- through to the cytoplasm and feeds a manual ATP burst (the kickstart tap).
-    local cb = complexcell._click_map and renderer.hit_test(complexcell._click_map, x, y)
-    if cb then
+  if button_index ~= 1 then
+    return
+  end
+  -- The end-of-phase finale owns the screen. During the cinematic, swallow clicks.
+  -- In the CHOICE modal, a card hit commits the kingdom; the ascension placeholder
+  -- has no click targets.
+  if fork_mode then
+    if fork_mode == "choice" and not transition.active(transition_state) then
+      local cb = complexcell._fork_click_map
+        and renderer.hit_test(complexcell._fork_click_map, x, y)
+      if cb then
         cb()
-    elseif not is_in_panel(x, y) then
-        tap_atp(complexcell.state.sim, x, y)
+      end
     end
+    return
+  end
+  if transition.active(transition_state) then
+    return
+  end
+  -- The lysis beat owns the frame: swallow clicks until the fresh cell reloads.
+  if collapsing then
+    return
+  end
+  -- A widget hit fires its on_click closure; a click that misses the panel falls
+  -- through to the cytoplasm and feeds a manual ATP burst (the kickstart tap).
+  local cb = complexcell._click_map and renderer.hit_test(complexcell._click_map, x, y)
+  if cb then
+    cb()
+  elseif not is_in_panel(x, y) then
+    tap_atp(complexcell.state.sim, x, y)
+  end
 end
 
 return complexcell
