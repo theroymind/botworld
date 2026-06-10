@@ -12,6 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # lib/love-ui is a PRIVATE git submodule the test suite require()s. The
+      # default GITHUB_TOKEN is scoped to this repo only and can't read it, so we
+      # fetch it over SSH with a read-only deploy key (secret LOVE_UI_DEPLOY_KEY).
+      # Done as its own step (not checkout's ssh-key:) because that key can only
+      # authenticate love-ui, not the botworld checkout above.
+      - name: Fetch private love-ui submodule
+        env:
+          LOVE_UI_DEPLOY_KEY: ${{ secrets.LOVE_UI_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$LOVE_UI_DEPLOY_KEY" > ~/.ssh/love_ui_deploy
+          chmod 600 ~/.ssh/love_ui_deploy
+          ssh-keyscan -t rsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/love_ui_deploy -o IdentitiesOnly=yes"
+          # .gitmodules uses a relative URL (../love-ui), which resolves to an
+          # HTTPS github.com URL against the botworld origin. Route github.com over
+          # SSH so the deploy key -- not the token -- authenticates the fetch.
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
       - name: Cache APT packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
