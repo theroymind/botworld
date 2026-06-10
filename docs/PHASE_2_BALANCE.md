@@ -312,3 +312,19 @@ The tuning constants are mirrored byte-for-byte across `catalog.lua` (`:14-17`),
 `tools/phase2_lab.lua`, and `docs/PHASE_2_ECONOMY.md`. Any implementation of this
 proposal must update all three together, and add specs for: the symmetric ROS
 integration, the unclamped peak-in-band balance scalar, and the built-yield cut.
+
+## 11. Reward follow-ups (post-balance tuning)
+
+Two changes close the "balance is solved, now what?" gap once a player has the pendulum
+under control:
+
+- **The ATP cap scales with `built`.** A fixed `BUFFER_MAX = 5000` left a solved cell
+  parked permanently at full with nothing to optimise toward. The cap now breathes up —
+  `buffer_max(built) = BUFFER_BASE * (1 + built / BUFFER_BUILT_REF)` (`BUFFER_BASE = 5000`,
+  `BUFFER_BUILT_REF = 20000` → ~10× by the 180k FORK). It stays pure + state-derived, so
+  online == offline, and `BUFFER_BASE` still holds every current unlock at `built 0`.
+  Mirrored across `catalog.lua`, `tools/phase2_lab.lua`, and `PHASE_2_ECONOMY.md`.
+- **The build rate is surfaced.** The headline now reads `built  N   (+R /s)`, where
+  `R = catalog.build_rate(state)` mirrors the sim's mint byte-for-byte
+  (`output * value_mult * efficiency_factor`). Tuning a stage or trimming power moves `R`
+  immediately, so the optimisation has a visible, felt payoff instead of an invisible one.

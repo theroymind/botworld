@@ -79,7 +79,11 @@ throughput = min over unlocked (stage_rate[s] * level[s])
 excess     = Σ max(0, stage_rate[s]*level[s] - throughput)
 upkeep     = UPKEEP_PER_MACHINE * (mito + Σ level[s])   -- energy-per-gene idle cost
 ```
-plus pass-through constants `WASTE_COEF`, `E_PER_OUTPUT`, `BUFFER_MAX`.
+plus pass-through constants `WASTE_COEF`, `E_PER_OUTPUT`, and `buffer_max` — the ATP
+cap now **scales with `built`** rather than pinning at a fixed wall:
+`buffer_max(built) = BUFFER_BASE * (1 + built / BUFFER_BUILT_REF)`, so a *solved* cell
+stops parking permanently at full and meticulous tuning keeps a felt payoff. It stays
+pure + state-derived, so the buffer clamp is identical online and offline.
 
 `fuel_factor` is the **plant/animal mix** parameter — neutral baseline **1.0**
 through the whole phase; the end-of-phase fork slams it to a pole. One economy to
@@ -98,7 +102,7 @@ else                                  -- power can't cover upkeep: line stops
   O = 0
 end
 N = avail - e * O                     -- net ATP/sec (>0 in a reserved brownout)
-state.energy = clamp(state.energy + N*dt, 0, BUFFER_MAX)
+state.energy = clamp(state.energy + N*dt, 0, buffer_max(built))   -- cap scales with built
 
 -- THE ROS PENDULUM (Pillar 2) -- integrated FIRST so the built cut below sees it.
 demand    = e*T + upkeep
@@ -190,7 +194,8 @@ mirrored byte-for-byte, and are the values the orchestrator folds from:
 ```
 POWER_PER_MITO    = 10        E_PER_OUTPUT     = 1.0
 UPKEEP_PER_MACHINE= 0.25      WASTE_COEF       = 0.0   (penalty carried by upkeep)
-BUFFER_MAX        = 5000      BROWNOUT_RESERVE = 0.3
+BUFFER_BASE       = 5000      BROWNOUT_RESERVE = 0.3
+BUFFER_BUILT_REF  = 20000     (cap = BUFFER_BASE*(1+built/REF); ~10x by the FORK)
 fuel_factor       = 1.0 (neutral)
 mito start        = 1         MITO_BASE  = 25  MITO_GROWTH  = 1.12
                               STAGE_BASE = 20  STAGE_GROWTH = 1.12

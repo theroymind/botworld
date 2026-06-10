@@ -41,7 +41,8 @@ check(catalog.POWER_PER_MITO == 10, "POWER_PER_MITO")
 check(catalog.UPKEEP_PER_MACHINE == 0.25, "UPKEEP_PER_MACHINE")
 check(catalog.WASTE_COEF == 0, "WASTE_COEF")
 check(catalog.E_PER_OUTPUT == 1.0, "E_PER_OUTPUT")
-check(catalog.BUFFER_MAX == 5000, "BUFFER_MAX")
+check(catalog.BUFFER_BASE == 5000, "BUFFER_BASE (ATP cap at built 0)")
+check(catalog.BUFFER_BUILT_REF == 20000, "BUFFER_BUILT_REF (built per extra BUFFER_BASE)")
 check(catalog.BROWNOUT_RESERVE == 0.3, "BROWNOUT_RESERVE")
 check(catalog.FUEL_FACTOR == 1.0, "FUEL_FACTOR")
 -- Pillar 1: STAGE_RATE is now a PER-STAGE table, not a scalar. Each stage carries a
@@ -100,7 +101,8 @@ do
   check(approx(r.upkeep, 0.5), "fold upkeep = UPKEEP_PER_MACHINE * (mito + levelsum)")
   check(approx(r.waste_coef, catalog.WASTE_COEF), "fold passes waste_coef")
   check(approx(r.e_per_output, catalog.E_PER_OUTPUT), "fold passes e_per_output")
-  check(approx(r.buffer_max, catalog.BUFFER_MAX), "fold passes buffer_max")
+  -- The cap is state-derived now: at built 0 the fold threads exactly BUFFER_BASE.
+  check(approx(r.buffer_max, catalog.BUFFER_BASE), "fold buffer_max = BUFFER_BASE at built 0")
   check(approx(r.brownout_reserve, catalog.BROWNOUT_RESERVE), "fold passes brownout_reserve")
   -- Pillar 2/3 fields: with no stab, the safe ceiling is the bare BALANCE_HI and ROS
   -- clearance is the bare 1x; the ROS constants pass through for the sim.
@@ -197,6 +199,85 @@ check(
 )
 
 -- ---------------------------------------------------------------------------
+-- buffer_max: the ATP cap now SCALES with `built` instead of pinning at a fixed wall.
+-- It floors at BUFFER_BASE (built 0), is non-decreasing in built, stays finite, and
+-- reaches BUFFER_BASE * (1 + FORK_AT/BUFFER_BUILT_REF) by the FORK -- ~10x with the
+-- shipped constants. Every expectation is derived from the source constants.
+-- ---------------------------------------------------------------------------
+do
+  check(
+    approx(catalog.buffer_max(state({ built = 0 })), catalog.BUFFER_BASE),
+    "buffer_max at built 0 is exactly BUFFER_BASE"
+  )
+  -- One BUFFER_BUILT_REF of built adds exactly one more BUFFER_BASE of headroom.
+  check(
+    approx(catalog.buffer_max(state({ built = catalog.BUFFER_BUILT_REF })), 2 * catalog.BUFFER_BASE),
+    "buffer_max gains one BUFFER_BASE per BUFFER_BUILT_REF of built"
+  )
+  -- By the FORK the cap is ~10x the base (1 + FORK_AT/BUFFER_BUILT_REF).
+  local fork_cap = catalog.BUFFER_BASE * (1 + catalog.FORK_AT / catalog.BUFFER_BUILT_REF)
+  check(
+    approx(catalog.buffer_max(state({ built = catalog.FORK_AT })), fork_cap),
+    "buffer_max by the FORK = BUFFER_BASE * (1 + FORK_AT/BUFFER_BUILT_REF)"
+  )
+  check(fork_cap >= 10 * catalog.BUFFER_BASE - 1e-9, "the FORK cap is ~10x BUFFER_BASE")
+  -- Floor + finite + non-decreasing across a sweep of growing built.
+  local prev = nil
+  for _, b in ipairs({ 0, 50, 5000, 30000, 105000, 180000, 1e7 }) do
+    local cap = catalog.buffer_max(state({ built = b }))
+    check(cap >= catalog.BUFFER_BASE, "buffer_max never dips below BUFFER_BASE (built " .. b .. ")")
+    check(cap == cap and cap < math.huge, "buffer_max stays finite (built " .. b .. ")")
+    if prev then
+      check(cap >= prev, "buffer_max is non-decreasing in built (built " .. b .. ")")
+    end
+    prev = cap
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- build_rate: the read-only "+N /s" headline readout. Mirrors the sim's mint EXACTLY --
+-- output * value_mult * efficiency_factor, where efficiency_factor = MIN_EFF +
+-- (1-MIN_EFF) * balance_scalar -- and RISES with efficiency (a better-balanced cell at the
+-- same output mints more built). Derived from the source constants + the sim's own scalar.
+-- ---------------------------------------------------------------------------
+do
+  -- A concrete state with a known output: build_rate must equal the sim's mint factors.
+  local s = state({ mito = 5, unlocked = { ribosomes = true }, stages = { ribosomes = 4 } })
+  s.output = catalog.fold(s).throughput -- as if fully powered (O = T)
+  local r = catalog.fold(s)
+  local eff_factor = catalog.MIN_EFF + (1 - catalog.MIN_EFF) * sim.balance_scalar(r, s.ros or 0)
+  check(
+    approx(catalog.build_rate(s), s.output * (r.value_mult or 1) * eff_factor),
+    "build_rate = output * value_mult * efficiency_factor (mirrors the sim mint)"
+  )
+
+  -- Zero output -> zero build rate (nothing is flowing down the line).
+  local s0 = state()
+  s0.output = 0
+  check(approx(catalog.build_rate(s0), 0), "build_rate is 0 when output is 0")
+
+  -- RISES with efficiency: ros drag lowers the balance scalar, so the SAME output mints a
+  -- strictly lower build_rate -- the felt payoff of staying balanced.
+  local s_lo = state({ mito = 5, unlocked = { ribosomes = true }, stages = { ribosomes = 4 } })
+  s_lo.output = catalog.fold(s_lo).throughput
+  local s_hi = sim.load(sim.serialize(s_lo))
+  s_hi.output = s_lo.output
+  s_hi.ros = 0.5 -- worse balance via ros drag
+  check(
+    catalog.build_rate(s_hi) < catalog.build_rate(s_lo),
+    "lower efficiency (ros drag) mints a lower build_rate at the same output"
+  )
+
+  -- value_mult lifts it too: a longer integrated pipeline mints MORE per unit of output,
+  -- which build_rate folds in (the same carrot that rewards building the cell out).
+  local s_long = state({
+    unlocked = { ribosomes = true, nucleus = true },
+    stages = { ribosomes = 4, nucleus = 4 },
+  })
+  check(catalog.fold(s_long).value_mult > 1, "two integrated stages raise value_mult above 1")
+end
+
+-- ---------------------------------------------------------------------------
 -- discover_gates: DISCOVER (not unlock) stages at thresholds, return new ids. The
 -- discovery is step ONE of two -- it flags availability, but never unlocks or seeds
 -- a level (that is unlock_stage, paid via stage_unlock_cost by the orchestrator).
@@ -276,11 +357,13 @@ do
     catalog.stage_unlock_cost("transport") < catalog.stage_unlock_cost("membrane"),
     "membrane is the steepest integration"
   )
-  -- All integration costs fit inside the ATP buffer ceiling (so they're saveable).
+  -- All integration costs fit inside the ATP buffer ceiling at its SMALLEST (built 0 ->
+  -- BUFFER_BASE), so every beat is saveable from the very start; the cap only grows from
+  -- there. (BUFFER_BASE is the strictest case, so checking it covers every later built.)
   for _, g in ipairs(catalog.GATES) do
     check(
-      catalog.stage_unlock_cost(g.id) <= catalog.BUFFER_MAX,
-      g.id .. " integration cost is inside BUFFER_MAX (saveable)"
+      catalog.stage_unlock_cost(g.id) <= catalog.BUFFER_BASE,
+      g.id .. " integration cost is inside BUFFER_BASE (saveable from built 0)"
     )
   end
 end

@@ -1,7 +1,36 @@
 local rect = require("lib.engine.ui.primitives.rect")
 local is_visible = require("lib.engine.ui.layout.is-visible")
+local separator = require("lib.engine.ui.primitives.separator")
+local align = require("lib.engine.ui.layout.align")
 
 local ZERO_RECT = rect(0, 0, 0, 0)
+local SEPARATOR_THICKNESS = separator.THICKNESS
+
+-- Shift an already-resolved subtree by (dx, dy). Cross-axis alignment works this
+-- way because a child's size is only known after it resolves: resolve it at the
+-- start edge first, then slide the whole subtree into place.
+local function offset_resolved(node, dx, dy)
+  local r = node.resolved_rect
+  if not r then
+    return
+  end
+  node.resolved_rect = rect(r.x + dx, r.y + dy, r.w, r.h)
+  if node.children then
+    for _, child in ipairs(node.children) do
+      offset_resolved(child, dx, dy)
+    end
+  end
+end
+
+-- Maps an alignment mode plus the leftover slack to the cross-axis offset. Both
+-- axes share the "center" enum value (align.CENTER == align.MIDDLE), so one rule
+-- serves vstack align and hstack align_v; any end-edge mode takes the full slack.
+local function cross_axis_offset(slack, mode)
+  if mode == align.CENTER then
+    return math.floor(slack / 2)
+  end
+  return slack
+end
 
 local function normalize_padding(padding)
   if type(padding) == "number" then
@@ -47,7 +76,7 @@ local function resolve_grid(tree, available_rect)
 
   local total_cells = #tree.children
   local rows = math.max(1, math.ceil(total_cells / cols))
-  local total_h = rows * (slot_size + gap)
+  local total_h = rows * (slot_size + gap) - gap
 
   tree.resolved_rect = rect(available_rect.x, available_rect.y, resolved_w, total_h)
   return tree
@@ -72,6 +101,9 @@ local function measure_child_width(child, separator_w)
   if child_w == "fill" or child_w == nil then
     if child.type == "vstack" or child.type == "hstack" then
       return measure_auto_width(child)
+    end
+    if type(child.measure_w) == "function" then
+      return child.measure_w()
     end
     if type(child.measure_w) == "number" then
       return child.measure_w
@@ -109,13 +141,16 @@ measure_auto_width = function(tree)
         if visible_count > 0 then
           total_w = total_w + gap
         end
-        total_w = total_w + measure_child_width(child, 1)
+        total_w = total_w + measure_child_width(child, SEPARATOR_THICKNESS)
         visible_count = visible_count + 1
       end
     end
     return total_w + pad.left + pad.right
   end
 
+  if type(tree.measure_w) == "function" then
+    return tree.measure_w()
+  end
   if type(tree.measure_w) == "number" then
     return tree.measure_w
   end
@@ -171,7 +206,11 @@ function resolve(tree, available_rect)
     if w == "fill" or w == nil then
       w = available_rect.w
     elseif w == "auto" then
-      w = type(tree.measure_w) == "number" and tree.measure_w or available_rect.w
+      local measured = tree.measure_w
+      if type(measured) == "function" then
+        measured = measured()
+      end
+      w = type(measured) == "number" and measured or available_rect.w
     end
     local h = tree.h
     if h == "fill" then
@@ -199,6 +238,7 @@ function resolve(tree, available_rect)
   local gap = tree.gap or 0
 
   if tree.type == "vstack" then
+    local h_align = tree.align or align.START
     local cursor_y = inner_y
     local visible_count = 0
     for _, child in ipairs(tree.children) do
@@ -210,11 +250,16 @@ function resolve(tree, available_rect)
         end
         local child_w = inner_w
         if child.type == "separator" then
-          resolve(child, rect(inner_x, cursor_y, child_w, 1))
+          resolve(child, rect(inner_x, cursor_y, child_w, SEPARATOR_THICKNESS))
           cursor_y = cursor_y + child.resolved_rect.h
         else
-          local child_rect = rect(inner_x, cursor_y, child_w, inner_h - (cursor_y - inner_y))
-          resolve(child, child_rect)
+          -- Clamp so over-full stacks hand later children zero height, never negative.
+          local available_h = math.max(0, inner_h - (cursor_y - inner_y))
+          resolve(child, rect(inner_x, cursor_y, child_w, available_h))
+          if h_align ~= align.START and child.resolved_rect.w < inner_w then
+            local slack = inner_w - child.resolved_rect.w
+            offset_resolved(child, cross_axis_offset(slack, h_align), 0)
+          end
           cursor_y = cursor_y + child.resolved_rect.h
         end
         visible_count = visible_count + 1
@@ -246,10 +291,10 @@ function resolve(tree, available_rect)
           child._measured_w = child_w
           fixed_total = fixed_total + child_w
         elseif child.type == "separator" then
-          fixed_total = fixed_total + 1
+          fixed_total = fixed_total + SEPARATOR_THICKNESS
         elseif child_w == "fill" or child_w == nil then
           if is_auto_width then
-            local measured = measure_child_width(child, 1)
+            local measured = measure_child_width(child, SEPARATOR_THICKNESS)
             child._measured_w = measured
             fixed_total = fixed_total + measured
           else
@@ -262,7 +307,8 @@ function resolve(tree, available_rect)
     end
 
     local gap_total = math.max(0, (visible_child_count - 1)) * gap
-    local remaining = inner_w - fixed_total - gap_total
+    -- Clamp so over-constrained rows give fill children zero width, never negative.
+    local remaining = math.max(0, inner_w - fixed_total - gap_total)
     local fill_w = fill_count > 0 and math.floor(remaining / fill_count) or 0
 
     local cursor_x = inner_x
@@ -279,9 +325,12 @@ function resolve(tree, available_rect)
         end
         if child.type == "separator" then
           table.insert(separators, { child = child, x = cursor_x })
-          cursor_x = cursor_x + 1
+          cursor_x = cursor_x + SEPARATOR_THICKNESS
         else
           local child_w = child._measured_w or child.w
+          -- The cache is per-resolve scratch on a caller-owned table: consume it
+          -- immediately so it can't go stale across re-resolves.
+          child._measured_w = nil
           if child_w == "fill" or child_w == nil then
             child_w = fill_w
           end
@@ -314,9 +363,23 @@ function resolve(tree, available_rect)
       end
     end
 
-    local separator_h = (tree.h == "content" or tree.h == nil) and max_h or inner_h
+    local row_h = (tree.h == "content" or tree.h == nil) and max_h or inner_h
     for _, entry in ipairs(separators) do
-      resolve(entry.child, rect(entry.x, inner_y, 1, separator_h))
+      resolve(entry.child, rect(entry.x, inner_y, SEPARATOR_THICKNESS, row_h))
+    end
+
+    -- Cross-axis alignment: children resolve pinned to the row top; once the row
+    -- height is known, slide shorter children down. Separators already span row_h.
+    local v_align = tree.align_v or align.TOP
+    if v_align ~= align.TOP then
+      for _, child in ipairs(tree.children) do
+        if is_visible(child) and child.type ~= "separator" and child.resolved_rect then
+          local slack = row_h - child.resolved_rect.h
+          if slack > 0 then
+            offset_resolved(child, 0, cross_axis_offset(slack, v_align))
+          end
+        end
+      end
     end
 
     local total_h = max_h + pad.top + pad.bottom

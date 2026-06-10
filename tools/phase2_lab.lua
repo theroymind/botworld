@@ -49,7 +49,10 @@ local DEFAULTS = {
   UPKEEP_PER_MACHINE = 0.25, -- per-gene idle cost (mito + every stage level + stab)
   WASTE_COEF = 0.0, -- overbuild penalty carried by idle-machine upkeep (no extra waste term)
   E_PER_OUTPUT = 1.0, -- ATP cost per unit of assembly-line output
-  BUFFER_MAX = 5000, -- ATP savings ceiling (well above any single buy through FORK; finite)
+  -- ATP savings ceiling, SCALED with `built` (see buffer_max below): the cap breathes up
+  -- as the cell grows so a solved cell stops pinning at a fixed wall. Mirrors catalog.
+  BUFFER_BASE = 5000, -- ATP cap at built 0 (all current unlocks fit; finite)
+  BUFFER_BUILT_REF = 20000, -- built per extra BUFFER_BASE of cap (~10x ceiling by the 180k FORK)
   BROWNOUT_RESERVE = 0.3, -- fraction of power held for the buffer in a deficit (visible teeth + recovery)
   FUEL_FACTOR = 1.0, -- plant/animal mix; neutral 1.0 through the phase
 
@@ -134,6 +137,13 @@ local function stage_cost(C, level) return C.STAGE_BASE * C.STAGE_GROWTH ^ level
 local function mito_cost(C, mito) return C.MITO_BASE * C.MITO_GROWTH ^ (mito - 1) end
 local function stab_cost(C, stab) return C.STAB_BASE * C.STAB_GROWTH ^ stab end
 
+-- The ATP cap at this state's `built`: a gentle linear-in-built climb off BUFFER_BASE so
+-- the savings ceiling breathes up as the cell grows (mirrors catalog.buffer_max). Pure +
+-- state-derived, so the buffer clamp the sim applies is identical online and offline.
+local function buffer_max(C, state)
+  return C.BUFFER_BASE * (1 + (state.built or 0) / C.BUFFER_BUILT_REF)
+end
+
 -- ===========================================================================
 -- THE FOLD: state + constants -> the `rates` table sim.step consumes. Mirrors how
 -- sim_lab rebuilds phase-1's intake fold. The sim never sees levels or stage_rate;
@@ -197,7 +207,7 @@ local function fold(C, state)
     upkeep = upkeep,
     waste_coef = C.WASTE_COEF,
     e_per_output = C.E_PER_OUTPUT,
-    buffer_max = C.BUFFER_MAX,
+    buffer_max = buffer_max(C, state),
     brownout_reserve = C.BROWNOUT_RESERVE,
     -- NOTE: stress_rise/stress_fall are intentionally OMITTED here. The lab measures
     -- PACING + the SOFT ceilings (brownout throttle, ROS build-efficiency cut), not lysis.

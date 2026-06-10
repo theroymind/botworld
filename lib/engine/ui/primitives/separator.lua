@@ -1,5 +1,9 @@
 local separator = {}
 
+-- Cross-axis size of a separator (the 1px line). The layout solver reserves exactly
+-- this much width (hstack) or height (vstack) for separator children.
+separator.THICKNESS = 1
+
 function separator.draw(r, config)
   local cfg = config or {}
   local color = cfg.color or { 0.4, 0.4, 0.4, 1 }

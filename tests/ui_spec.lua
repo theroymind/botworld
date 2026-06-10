@@ -149,5 +149,90 @@ local hs2 = layout.hstack({ fill2, auto_box }, { gap = 0, padding = 0 })
 layout.resolve(hs2, rect(0, 0, 100, 20))
 check(auto_box.resolved_rect.w == 30, "hstack auto child measures to content")
 check(fill2.resolved_rect.w == 70, "hstack fill child takes the remainder")
+check(rawget(auto_box, "_measured_w") == nil, "measure cache cleared after placement")
+
+-- Resolve: over-constrained layouts clamp to zero instead of going negative.
+-- An hstack whose fixed children outgrow the row gives fill children 0 width...
+local big_fixed = layout.node({ w = 300, h = 10 })
+local squeezed = layout.node({ w = "fill", h = 10 })
+local over_row = layout.hstack({ big_fixed, squeezed }, { gap = 10, padding = 0 })
+layout.resolve(over_row, rect(0, 0, 100, 20))
+check(squeezed.resolved_rect.w == 0, "over-constrained hstack clamps fill width to 0")
+-- ...and a vstack whose content outgrows the rect hands later children 0 height.
+local too_tall = layout.node({ h = 50 })
+local squeezed_v = layout.node({ h = "fill" })
+local over_col = layout.vstack({ too_tall, squeezed_v }, { gap = 0, padding = 0 })
+layout.resolve(over_col, rect(0, 0, 100, 30))
+check(squeezed_v.resolved_rect.h == 0, "overflowing vstack clamps child height to 0")
+
+-- Stacks compact nil children (icon_node/count_badge_node return nil for "absent"),
+-- so a hole no longer truncates the sibling list.
+local before_hole = layout.node({ h = 10 })
+local after_hole = layout.node({ h = 10 })
+local holed_col = layout.vstack({ before_hole, nil, after_hole }, { gap = 5, padding = 0 })
+check(#holed_col.children == 2, "vstack compacts nil children")
+layout.resolve(holed_col, rect(0, 0, 100, 100))
+check(after_hole.resolved_rect.y == 15, "vstack sibling after a nil child still resolves")
+local h_before = layout.node({ w = 10, h = 10 })
+local h_after = layout.node({ w = 10, h = 10 })
+local holed_row = layout.hstack({ h_before, nil, h_after }, { gap = 5, padding = 0 })
+layout.resolve(holed_row, rect(0, 0, 100, 20))
+check(h_after.resolved_rect.x == 15, "hstack sibling after a nil child still resolves")
+
+-- Grid height has no trailing gap: rows*(slot+gap) - gap, matching the width math.
+local SLOT_SIZE = 20
+local SLOT_GAP = 4
+local slots = {}
+for _ = 1, 5 do
+  table.insert(slots, layout.node({ h = SLOT_SIZE }))
+end
+local grid_box = layout.grid.node(slots, { slot_size = SLOT_SIZE, gap = SLOT_GAP, cols = 2 })
+local expected_grid_h = 3 * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP -- 5 cells / 2 cols = 3 rows
+check(grid_box.h(200) == expected_grid_h, "grid-node measured height drops trailing gap")
+layout.resolve(grid_box, rect(0, 0, 200, 200))
+check(grid_box.resolved_rect.h == expected_grid_h, "resolved grid height drops trailing gap")
+
+-- Function-valued measure_w (dynamic text-node strings) drives auto-width measurement.
+local dyn = layout.node({ w = "auto", h = 10, measure_w = function() return 42 end })
+layout.resolve(dyn, rect(0, 0, 100, 20))
+check(dyn.resolved_rect.w == 42, "auto node takes width from function measure_w")
+local dyn_label = layout.node({ w = "fill", h = 10, measure_w = function() return 25 end })
+local dyn_row = layout.hstack({ dyn_label }, { w = "auto", padding = 0, gap = 0 })
+layout.resolve(dyn_row, rect(0, 0, 100, 20))
+check(dyn_row.resolved_rect.w == 25, "auto hstack measures function measure_w child")
+
+-- Cross-axis alignment: vstack `align` places narrower children horizontally...
+local narrow_center = layout.node({ w = 20, h = 10 })
+local centered_col = layout.vstack({ narrow_center }, { align = layout.align.CENTER, padding = 0 })
+layout.resolve(centered_col, rect(0, 0, 100, 50))
+check(narrow_center.resolved_rect.x == 40, "vstack align=center centers narrower child")
+local narrow_end = layout.node({ w = 20, h = 10 })
+local ended_col = layout.vstack({ narrow_end }, { align = layout.align.END, padding = 0 })
+layout.resolve(ended_col, rect(0, 0, 100, 50))
+check(narrow_end.resolved_rect.x == 80, "vstack align=end pins narrower child to the right")
+-- ...the shift moves the whole resolved subtree, not just the child's own rect...
+local nested_leaf = layout.node({ w = 20, h = 10 })
+local nested_row = layout.hstack({ nested_leaf }, { w = 20, padding = 0, gap = 0 })
+local nested_col = layout.vstack({ nested_row }, { align = layout.align.CENTER, padding = 0 })
+layout.resolve(nested_col, rect(0, 0, 100, 50))
+check(nested_leaf.resolved_rect.x == 40, "vstack align offsets the whole subtree")
+-- ...and hstack `align_v` places shorter children vertically within the row.
+local short_mid = layout.node({ w = 10, h = 10 })
+local tall_mid = layout.node({ w = 10, h = 30 })
+local mid_row = layout.hstack(
+  { short_mid, tall_mid },
+  { align_v = layout.align.MIDDLE, gap = 0, padding = 0 }
+)
+layout.resolve(mid_row, rect(0, 0, 100, 50))
+check(short_mid.resolved_rect.y == 10, "hstack align_v=center centers shorter child")
+check(tall_mid.resolved_rect.y == 0, "hstack align_v leaves the tallest child at the top")
+local short_bottom = layout.node({ w = 10, h = 10 })
+local tall_bottom = layout.node({ w = 10, h = 30 })
+local bottom_row = layout.hstack(
+  { short_bottom, tall_bottom },
+  { align_v = layout.align.BOTTOM, gap = 0, padding = 0 }
+)
+layout.resolve(bottom_row, rect(0, 0, 100, 50))
+check(short_bottom.resolved_rect.y == 20, "hstack align_v=bottom pins shorter child down")
 
 print("all tests passed (" .. checks .. " checks)")

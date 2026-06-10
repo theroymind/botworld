@@ -25,7 +25,7 @@ function badge.draw(r, label, config)
   text(
     rect_mod(r.x + PAD_X, r.y + PAD_Y, r.w - PAD_X * 2, font:getHeight()),
     label,
-    { font = font_name, color = text_color, align = "center" }
+    { font = font_name, color = text_color, align = "center", truncate = true }
   )
 end
 
