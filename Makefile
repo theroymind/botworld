@@ -1,6 +1,12 @@
-.PHONY: run lint format format-check test check love ios
+.PHONY: setup run lint format format-check test check love ios
 
 LOVE_FILE := build/botworld.love
+
+# First-run setup: fetch the lib/love-ui submodule (the UI kit). Needed after a
+# plain `git clone`, or any pull that moves the submodule pointer -- without it
+# lib/love-ui is empty and the game fails to load (module 'lib.love-ui' not found).
+setup:
+	git submodule update --init --recursive
 
 run:
 	love .

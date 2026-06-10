@@ -9,6 +9,7 @@ update/draw/input. Each layer separates a pure economy core from a cosmetic live
 ## Commands
 
 ```bash
+make setup                  # First clone: fetch the lib/love-ui submodule (UI kit)
 make run                    # Run the game (love .)
 make test                   # Run the spec suite (tests/run)
 make lint                   # luacheck

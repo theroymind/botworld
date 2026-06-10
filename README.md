@@ -3,6 +3,22 @@
 Prototype/benchmark testbed for a Starvester-inspired multi-scale incremental game,
 evaluating LÖVE 2D (11.4) as the stack.
 
+## Setup
+
+The UI kit lives in the private [`love-ui`](https://github.com/theroymind/love-ui)
+repo, wired in as a git submodule at `lib/love-ui` (you need read access to it).
+Clone with submodules:
+
+```
+git clone --recurse-submodules git@github.com:theroymind/botworld.git
+```
+
+Already cloned, or the game fails to load with `module 'lib.love-ui' not found`? Run:
+
+```
+make setup        # git submodule update --init --recursive
+```
+
 ## Current experiment: benchmark #2 — GPU-instanced shader swarm
 
 Benchmark #1 (SpriteBatch + CPU sim, see git history) was CPU-bound: every drone cost
