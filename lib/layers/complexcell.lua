@@ -339,6 +339,18 @@ local function choose_kingdom(id)
   end
 end
 
+-- The lethal problem in plain words, named by which side of the balance band drove the
+-- stress: a power DEFICIT ("low power") or idle OVER-power ("power overload"). Oxidative
+-- stress is two-sided now (the ROS pendulum), so the warning + lysis toast must state the
+-- ACTUAL cause, not assume a deficit. States the problem only -- no fix hint (the player
+-- reads the vitals and picks the lever).
+local function lethal_problem(s)
+  if catalog.balance_band(s) == catalog.BAND_OVER then
+    return "power overload"
+  end
+  return "low power"
+end
+
 -- Begin the LYSIS game-over beat (the phase-2 sibling of cell.lua's begin_collapse):
 -- freeze the sim, flash + shake red, toast the cause, play a death sound. The overlay
 -- runs for COLLAPSE_ANIM, then update() wipes the save and seeds a fresh cell -- the
@@ -346,7 +358,9 @@ end
 local function begin_collapse()
   collapsing = true
   collapse_anim = COLLAPSE_ANIM
-  set_toast("The cell burst — too long without power. A new cell begins")
+  set_toast(
+    string.format("The cell burst — %s. A new cell begins", lethal_problem(complexcell.state.sim))
+  )
   sound.play("endosymbiosis")
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(
@@ -692,7 +706,7 @@ local function vitals_group(snap)
   local ros_color = (ros >= ROS_WARN_FRAC) and colors.quaternary or colors.ui.text_muted
   table.insert(
     children,
-    gauge_row("oxidative stress", string.format("%d%%", math.floor(ros * 100 + 0.5)), ros_color)
+    gauge_row("cell stress", string.format("%d%%", math.floor(ros * 100 + 0.5)), ros_color)
   )
 
   -- Balance ratio = power / demand, with its under/ideal/over verdict from the band map.
@@ -702,7 +716,11 @@ local function vitals_group(snap)
   local band_color = BAND_COLOR[band] or colors.ui.text_muted
   table.insert(
     children,
-    gauge_row("balance", string.format("%.2fx  %s", snap.balance_ratio or 0, band_word), band_color)
+    gauge_row(
+      "power balance",
+      string.format("%.2fx  %s", snap.balance_ratio or 0, band_word),
+      band_color
+    )
   )
 
   -- Oxygen / respiration load, 0-100%: how much of the mitochondria's O2 capacity the
@@ -711,7 +729,7 @@ local function vitals_group(snap)
   table.insert(
     children,
     gauge_row(
-      "respiration",
+      "oxygen use",
       string.format("%d%%", math.floor((snap.oxygen or 0) * 100 + 0.5)),
       colors.ui.text_muted
     )
@@ -721,7 +739,7 @@ local function vitals_group(snap)
   table.insert(
     children,
     gauge_row(
-      "build efficiency",
+      "efficiency",
       string.format("%d%%", math.floor((snap.efficiency or 1) * 100 + 0.5)),
       colors.ui.text_muted
     )
@@ -816,14 +834,15 @@ local function build_panel(s)
       layout.text("BROWNOUT — not enough power, production slowed", { color = colors.ui.accent })
     )
   end
-  -- OXIDATIVE STRESS warning: as the power-deficit stress climbs past STRESS_WARN it
-  -- creeps toward STRESS_FAIL (lysis). Surfaced on the accent token, like BROWNOUT, so
-  -- the player can power the cell back out before it dies.
+  -- DYING warning: as stress climbs past STRESS_WARN it creeps toward STRESS_FAIL (lysis).
+  -- Stress is two-sided (deficit OR over-power), so we name the actual problem -- "low
+  -- power" / "power overload" -- and state it only, no fix hint. Surfaced on the accent
+  -- token, like BROWNOUT, so the player can rebalance before it dies.
   if s.stress and s.stress > STRESS_WARN then
     table.insert(
       header,
       layout.text(
-        "OXIDATIVE STRESS — the cell is dying! restore power",
+        string.format("%s — the cell is dying", lethal_problem(s):upper()),
         { color = colors.ui.accent }
       )
     )

@@ -135,8 +135,13 @@ Readouts & warnings, in plain terms:
 
 - `throughput` → **"line speed"** (the line's max rate); `output` → **"making … /s"** (what
   it's actually producing now). `ATP` is labelled **"ATP energy."**
-- **BROWNOUT** → "not enough power, production slowed." **Oxidative stress** → "the cell is
-  dying! restore power." **Lysis** → "THE CELL BURST" / "too long without power."
+- **BROWNOUT** → "not enough power, production slowed." The **dying** warning and the **lysis**
+  toast *state the problem only, never the fix* (the player reads the vitals and picks the
+  lever): they name which side of the balance drove it — **"LOW POWER — the cell is dying"**
+  vs **"POWER OVERLOAD — the cell is dying"**, and on death "The cell burst — low power" vs
+  "… power overload." (Oxidative stress is two-sided now — a deficit *or* idle over-power —
+  so the old deficit-only "restore power" copy was dropped.) The vitals gauges are
+  de-jargoned to match: **cell stress · power balance · oxygen use · efficiency.**
 - The self-reveal teaser drops raw `built` targets for plain "something is forming…" →
   "almost ready" → "ready to build!"; the finale reads **"PATH CHOICE — become a plant or an
   animal."** The fork cards trade "sessile/motility" for "root down and grow" / "always on
