@@ -29,13 +29,15 @@ local transition = require("lib.layers.cell.transition")
 local layers = require("lib.engine.layers")
 local complexcell = require("lib.layers.complexcell")
 
--- Canonical UI kit (lib/engine/ui): retained-mode layout tree + renderer, themed
--- primitives, fonts, interaction. The panel below is a declarative node tree.
-local ui = require("lib.engine.ui")
+-- Canonical UI kit (lib/love-ui submodule): retained-mode layout tree + renderer,
+-- themed primitives, fonts, interaction. The panel below is a declarative node tree.
+local ui = require("lib.love-ui")
 local layout = ui.layout
 local renderer = ui.renderer
 local primitives = ui.primitives
-local colors = ui.colors
+-- Colors come through the game facade (NOT ui.colors): requiring it applies the
+-- botworld token overrides before any value below is captured at load time.
+local colors = require("lib.engine.colors")
 local theme = ui.theme
 local interaction = ui.interaction
 local tween = ui.tween

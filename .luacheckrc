@@ -6,9 +6,11 @@ globals = {
   "love",
 }
 
--- Exclude non-project directories.
+-- Exclude non-project directories. lib/love-ui is a git submodule with its own
+-- luacheck/stylua/test setup -- this repo never lints it.
 exclude_files = {
   ".claude/",
+  "lib/love-ui/",
 }
 
 -- stylua owns formatting, so don't double-report line length.

@@ -1,4 +1,4 @@
--- Standalone spec for the pure ellipsis helper (lib/engine/ui/util/truncate.lua).
+-- Standalone spec for the pure ellipsis helper (lib/love-ui/util/truncate.lua).
 -- Plain Lua 5.1 / luajit, no busted, no love. Run from the repo root:
 -- lua tests/truncate_spec.lua
 --
@@ -7,7 +7,7 @@
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 
-local truncate = require("lib.engine.ui.util.truncate")
+local truncate = require("lib.love-ui.util.truncate")
 
 local checks = 0
 

@@ -1,4 +1,4 @@
--- Standalone spec for lib/engine/ui/toast.lua (the engine-owned transient hint shared
+-- Standalone spec for lib/love-ui/toast.lua (the library-owned transient hint shared
 -- by every layer). Plain Lua 5.1, no framework. Run from the repo root:
 --   lua tests/toast_spec.lua
 --
@@ -8,10 +8,10 @@
 -- timing is derived from toast.LINGER_SECONDS, never a literal, so a re-tune of the
 -- window can't silently rot the spec.
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
--- Two patterns: files (lib/foo.lua) and packages with init.lua (lib/engine/ui).
+-- Two patterns: files (lib/foo.lua) and packages with init.lua (lib/love-ui).
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 
-local toast = require("lib.engine.ui.toast")
+local toast = require("lib.love-ui.toast")
 
 local checks = 0
 

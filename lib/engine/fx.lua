@@ -17,9 +17,9 @@
 --   fx.add(ctrl, fx.flash{ ... }); fx.add(ctrl, fx.shake{ ... }).
 -- Pure Lua 5.1 at require time -- love.* is touched only inside draw closures,
 -- so the controller, update, factories and camera_offset are headless-testable.
--- Default effect colors come from the GLOBAL color tokens (lib/engine/ui/colors):
+-- Default effect colors come from the GLOBAL color tokens (lib/engine/colors):
 -- generic ordinals (primary, secondary, ...), never literal RGB.
-local colors = require("lib.engine.ui.colors")
+local colors = require("lib.engine.colors")
 
 local fx = {}
 

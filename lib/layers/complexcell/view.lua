@@ -2,7 +2,7 @@
 -- eukaryotic cell -- the phase-2 sibling of lib/layers/cell/view.lua. Same discipline:
 -- love.* is touched ONLY inside draw-time code (so a bare `require` loads headless),
 -- transient beats compose through an fx controller (lib/engine/fx.lua), and every
--- color binds a GLOBAL token from lib/engine/ui/colors -- no literal RGB, no per-layer
+-- color binds a GLOBAL token from lib/engine/colors -- no literal RGB, no per-layer
 -- palette. Where phase 1 framed a dish of flat squares with a stepped fit-camera, this
 -- view frames the cytoplasm of ONE cell and aims a swarm INWARD: recognizable
 -- organelles at anatomically-anchored positions, and a teeming cloud of vesicles/cargo
@@ -69,7 +69,7 @@
 -- bare-`require` without touching love.* or FFI. The swarm lazily initializes on first
 -- draw; the membrane/nucleus/organelle draws live below the "draw-time" line.
 local fx = require("lib.engine.fx")
-local colors = require("lib.engine.ui.colors")
+local colors = require("lib.engine.colors")
 local interior_swarm = require("lib.layers.complexcell.interior_swarm")
 
 local view = {}

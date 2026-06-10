@@ -1,23 +1,26 @@
--- Standalone smoke spec for the vendored UI kit (lib/engine/ui). Plain Lua 5.1 /
--- luajit, no busted, no love. Run from the repo root: lua tests/ui_spec.lua
+-- Standalone smoke spec for the UI kit (lib/love-ui submodule) as botworld
+-- consumes it. Plain Lua 5.1 / luajit, no busted, no love. Run from the repo
+-- root: lua tests/ui_spec.lua
 --
--- Covers only the love-free layer: the color palette + ui tokens, theme tokens,
--- the rect geometry spine, tween easing/integration, highlight modes, and the
--- pure layout `resolve` geometry (vstack stacking, hstack fill/fixed and
--- fill/auto splits -- the exact shape the cell trait-row relies on). The
--- love-coupled parts (fonts, primitives, renderer, text/button/bar nodes) are
--- verified by booting the game.
+-- Covers only the love-free layer: the color facade (library palette + botworld
+-- overrides), theme tokens, the rect geometry spine, tween easing/integration,
+-- highlight modes, and the pure layout `resolve` geometry (vstack stacking,
+-- hstack fill/fixed and fill/auto splits -- the exact shape the cell trait-row
+-- relies on). The love-coupled parts (fonts, primitives, renderer,
+-- text/button/bar nodes) are verified by booting the game.
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
--- Two patterns: files (lib/foo.lua) and packages with init.lua (lib/engine/ui).
+-- Two patterns: files (lib/foo.lua) and packages with init.lua (lib/love-ui).
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 
-local colors = require("lib.engine.ui.colors")
-local theme = require("lib.engine.ui.theme")
-local tween = require("lib.engine.ui.tween")
-local highlight_modes = require("lib.engine.ui.highlight-modes")
-local rect = require("lib.engine.ui.primitives.rect")
-local is_visible = require("lib.engine.ui.layout.is-visible")
-local layout = require("lib.engine.ui.layout")
+-- Colors go through the game facade -- the same module every game file requires --
+-- so this spec also proves the facade's apply() ran and re-exported the table.
+local colors = require("lib.engine.colors")
+local theme = require("lib.love-ui.theme.tokens")
+local tween = require("lib.love-ui.tween")
+local highlight_modes = require("lib.love-ui.highlight-modes")
+local rect = require("lib.love-ui.primitives.rect")
+local is_visible = require("lib.love-ui.layout.is-visible")
+local layout = require("lib.love-ui.layout")
 
 local checks = 0
 
@@ -46,6 +49,14 @@ check(
 local faded = colors.with_alpha(colors.ui.text, 0.5)
 check(faded[4] == 0.5 and faded[1] == colors.ui.text[1], "with_alpha sets alpha, keeps rgb")
 
+-- The facade's botworld-specific overrides are merged into the library table:
+-- the game namespace exists, and the ordinal tokens are the game's values (the
+-- library default for primary is the tan palette accent, a shared table -- the
+-- override must have replaced it wholesale, not mutated it).
+check(type(colors.game) == "table" and colors.game.mp ~= nil, "facade applies game namespace")
+check(type(colors.competitor_species) == "table", "facade applies competitor species")
+check(colors.primary ~= colors.palette.tan_light, "facade replaces ordinal primary token")
+
 -- Theme tokens used by the cell panel.
 check(
   theme.spacing.xs == 4
@@ -60,7 +71,7 @@ check(
 )
 check(theme.sizing.bar_height == 8, "sizing bar_height token")
 
--- Highlight modes (inlined, no define wrapper).
+-- Highlight modes (self-contained in the library, no define wrapper).
 check(
   highlight_modes.SELECTED == "selected" and highlight_modes.FOCUSED == "focused",
   "highlight modes"

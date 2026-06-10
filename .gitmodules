@@ -1,0 +1,3 @@
+[submodule "lib/love-ui"]
+	path = lib/love-ui
+	url = ../love-ui

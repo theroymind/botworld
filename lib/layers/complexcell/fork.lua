@@ -12,11 +12,13 @@
 -- complexcell.draw) and build declarative node trees through the canonical UI kit,
 -- reusing primitives.container for the modal backing and the cards -- the same
 -- retained-mode pipeline the panel uses (resolve -> renderer.draw -> hit_test).
-local ui = require("lib.engine.ui")
+local ui = require("lib.love-ui")
 local layout = ui.layout
 local renderer = ui.renderer
 local primitives = ui.primitives
-local colors = ui.colors
+-- Colors come through the game facade (NOT ui.colors): requiring it applies the
+-- botworld token overrides before any value below is captured at load time.
+local colors = require("lib.engine.colors")
 local theme = ui.theme
 local interaction = ui.interaction
 local rect = ui.primitives.rect

@@ -21,7 +21,7 @@
 -- exact. Starving cells dim (their entity-level `hunger` lowers alpha), and a
 -- held mitochondrion stamps a tiny inner mark on every cell.
 local fx = require("lib.engine.fx")
-local colors = require("lib.engine.ui.colors")
+local colors = require("lib.engine.colors")
 local cell_field = require("lib.layers.cell.cell_field")
 
 local view = {}
@@ -190,7 +190,7 @@ local LOCK_PUSH = 1.0 -- founder-lock zoom as a multiple of the stepped fit zoom
 local BLOOM_SCREEN_R = 24
 
 -- The palette, keyed by render kind: each kind BINDS a global color token (the
--- generic ordinals in lib/engine/ui/colors) to its role here at the view's edge.
+-- generic ordinals in lib/engine/colors) to its role here at the view's edge.
 -- No literal RGB and no per-layer color exports -- anything that needs "the cell
 -- hue" (e.g. the orchestrator's death-burst fx) reads the same global token.
 local PALETTE = {

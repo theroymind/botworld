@@ -2,6 +2,12 @@
 -- backgrounded scales keep producing) while only the active layer gets
 -- per-frame updates, drawing, and input. Tab cycles layers, esc quits.
 local clock = require("lib.engine.clock")
+-- Color facade FIRST among UI-touching requires: requiring it runs colors.apply()
+-- on the love-ui theme, so every botworld override (colors.game, the teal/green
+-- ordinal tokens, ...) is in place before any layer or library module captures a
+-- token or draws a frame.
+local colors = require("lib.engine.colors")
+assert(colors.game, "color facade must expose the game namespace")
 local layers = require("lib.engine.layers")
 local touch = require("lib.engine.touch")
 local music = require("lib.engine.music")
