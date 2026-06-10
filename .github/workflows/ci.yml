@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+# CI only reads the repo; never grant the default token write access.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -24,7 +28,13 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$LOVE_UI_DEPLOY_KEY" > ~/.ssh/love_ui_deploy
           chmod 600 ~/.ssh/love_ui_deploy
-          ssh-keyscan -t rsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # Pin GitHub's published SSH host keys (https://api.github.com/meta)
+          # rather than trusting whatever ssh-keyscan sees on the network.
+          cat >> ~/.ssh/known_hosts <<'HOST_KEYS'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          HOST_KEYS
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/love_ui_deploy -o IdentitiesOnly=yes"
           # .gitmodules uses a relative URL (../love-ui), which resolves to an
           # HTTPS github.com URL against the botworld origin. Route github.com over
@@ -32,9 +42,14 @@ jobs:
           git config --global url."git@github.com:".insteadOf "https://github.com/"
           git submodule sync --recursive
           git submodule update --init --recursive
+          # The key is only needed for this fetch; don't leave it on disk where
+          # later steps (including third-party actions) could read it.
+          rm -f ~/.ssh/love_ui_deploy
 
       - name: Cache APT packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        # Third-party action: pin to a full commit SHA so a moved tag can't
+        # swap in different code.
+        uses: awalsh128/cache-apt-pkgs-action@acb598e5ddbc6f68a970c5da0688d2f3a9f04d05 # v1.6.0
         with:
           packages: lua5.1 liblua5.1-0-dev luarocks
           version: 1.0
@@ -63,9 +78,13 @@ jobs:
           if [ ! -f /usr/local/bin/stylua ]; then
             STYLUA_VERSION="v2.4.0"
             curl -L "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-x86_64.zip" -o /tmp/stylua.zip
+            echo "f9c84c210712061cb03ab8354a34a5d4f5fcf1f369d2ce916bea3ab9f7addac8  /tmp/stylua.zip" | sha256sum -c -
             unzip /tmp/stylua.zip -d /usr/local/bin/
             rm /tmp/stylua.zip
           fi
+          # Verify the binary even on a cache hit -- a poisoned cache entry
+          # would bypass the download checksum above.
+          echo "c6c1829e20be251d444f8decc96f567ee5e1b6e57c9200489e4b1dc1253dec9e  /usr/local/bin/stylua" | sha256sum -c -
 
       - name: Lint
         run: |
