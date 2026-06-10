@@ -66,8 +66,6 @@ catalog.STAGE_BASE = 20 -- geometric stage-level cost base
 catalog.STAGE_GROWTH = 1.12 -- gentle growth: stack MANY levels (deep catalog, numbers climb)
 catalog.MITO_BASE = 25 -- geometric mitochondrion cost base
 catalog.MITO_GROWTH = 1.12 -- gentle growth: power keeps pace so throughput can reach the hundreds+
-catalog.STAB_BASE = 60 -- geometric stabilization cost base (a real, affordable counter-lever)
-catalog.STAB_GROWTH = 1.18 -- steeper than stages: stabilization is potent, so each level costs more
 
 -- A newly INTEGRATED stage comes online at ~this fraction of the line's current
 -- throughput (NOT level 1). A late unlock then dips the line modestly (it is still a
@@ -82,31 +80,36 @@ catalog.INTEGRATION_SEED_FRACTION = 0.6
 -- Ribosomes, Nucleus, Endomembrane (ER + Golgi), Cytoskeleton (transport), Membrane.
 catalog.STAGES = { "ribosomes", "nucleus", "er", "golgi", "transport", "membrane" }
 
--- id -> { label, flavor }. The view + panel read these for per-stage rows.
+-- id -> { label, flavor }. The view + panel read these for per-stage rows. FULL names,
+-- no abbreviations (the player asked "what is ER?") -- the label spells the organelle out
+-- and the flavor is a SHORT active-verb line naming the step it owns on the line. That
+-- verb is the only guidance: it implies which step speeds up when you level the stage
+-- (leaving the player to map a backed-up line to its organelle), without ever printing a
+-- "this increases X" hand-hold. Shown on every stage row (the panel's label column).
 catalog.STAGE_DEFS = {
   ribosomes = {
     label = "Ribosomes",
-    flavor = "the line's workers -- build the cell's parts",
+    flavor = "assemble the cell's parts",
   },
   nucleus = {
     label = "Nucleus",
-    flavor = "the blueprint vault that guides every build",
+    flavor = "direct the whole assembly line",
   },
   er = {
-    label = "ER (Folding)",
-    flavor = "folds and shapes each part into working form",
+    label = "Endoplasmic Reticulum",
+    flavor = "fold raw parts into working shape",
   },
   golgi = {
-    label = "Golgi (Packing)",
-    flavor = "packs, labels, and boxes the finished parts",
+    label = "Golgi Body",
+    flavor = "pack and label each finished part",
   },
   transport = {
-    label = "Cytoskeleton (Delivery)",
-    flavor = "road network that hauls cargo across the cell",
+    label = "Cytoskeleton",
+    flavor = "haul cargo across the cell",
   },
   membrane = {
-    label = "Membrane (Wall)",
-    flavor = "ships product out and seals the cell shut",
+    label = "Cell Membrane",
+    flavor = "export the product and seal the cell",
   },
 }
 
@@ -119,12 +122,15 @@ catalog.STAGE_DEFS = {
 -- spaced across the climb, not stacked in the opening minutes. nucleus has no
 -- predecessor gate (ribosomes are online from t=0), so it gates on `built` alone.
 -- Tuned against tools/phase2_lab.lua so the staggered reveals still FORK in ~10-13 min.
+-- `label` mirrors STAGE_DEFS[id].label so the self-revealing footer names the next beat
+-- with the SAME full word the stage row shows -- kept in sync by hand (both updated when a
+-- stage is renamed); next_gate() surfaces it to the teaser.
 catalog.GATES = {
   { id = "nucleus", at = 50, requires = nil, label = "Nucleus" },
-  { id = "er", at = 5000, requires = "nucleus", label = "ER (Folding)" },
-  { id = "golgi", at = 30000, requires = "er", label = "Golgi (Packing)" },
-  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton (Delivery)" },
-  { id = "membrane", at = 105000, requires = "transport", label = "Membrane (Wall)" },
+  { id = "er", at = 5000, requires = "nucleus", label = "Endoplasmic Reticulum" },
+  { id = "golgi", at = 30000, requires = "er", label = "Golgi Body" },
+  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton" },
+  { id = "membrane", at = 105000, requires = "transport", label = "Cell Membrane" },
 }
 
 catalog.FORK_AT = 180000 -- end-of-phase gate (~10 min building the full pipeline; raised
@@ -154,18 +160,24 @@ catalog.STRESS_FALL = 1 / 5 -- ~5s for a full surplus to clear accumulated stres
 catalog.STRESS_FAIL = 1.0 -- the orchestrator lyses the cell at stress >= this
 
 -- ===========================================================================
--- THE ROS PENDULUM (Pillar 2: symmetric stress). Today stress only rises on a power
--- DEFICIT; a surplus is consequence-free, so "buy mitochondria forever" is the
--- rewarded play -- the economy has a floor but no ceiling. Biology supplies the
--- ceiling: mitochondria respiring at high membrane potential but LOW ATP demand (the
--- resting "state-4" condition) leak electrons and produce REACTIVE OXYGEN SPECIES.
--- Matching production to demand minimises the leak. So idle over-capacity literally
--- damages the cell. We track balance_ratio = power / demand against a SAFE BAND:
--- below BALANCE_LO the line browns out (the existing deficit half); above
--- BALANCE_HI_eff idle respiratory capacity leaks -> ros rises, scaled by how far past
--- the band you are (maxing at ROS_RATIO_CAP). ros (0..1) integrates like stress and
--- (a) drags built output (the soft cut, Pillar 3) and (b) only when SUSTAINED past
--- ROS_LETHAL feeds the existing lethal stress -- a generous warning window.
+-- THE ROS PENDULUM (Pillar 2: symmetric stress). Stress alone would only rise on a power
+-- DEFICIT; a surplus would be consequence-free, so "buy mitochondria forever" would be the
+-- rewarded play -- a floor but no ceiling. Biology supplies the ceiling: mitochondria
+-- respiring at high membrane potential but LOW ATP demand (the resting "state-4" condition)
+-- leak electrons and produce REACTIVE OXYGEN SPECIES. Matching production to demand
+-- minimises the leak. So idle over-capacity literally damages the cell. We track
+-- balance_ratio = power / demand against a SAFE BAND: below BALANCE_LO the line browns out
+-- (the deficit half); above BALANCE_HI idle respiratory capacity leaks -> ros rises, scaled
+-- by how far past the band you are (maxing at ROS_RATIO_CAP). ros (0..1) integrates like
+-- stress and (a) drags built output (the soft cut, Pillar 3) and (b) only when SUSTAINED
+-- past ROS_LETHAL feeds the existing lethal stress -- a generous warning window.
+--
+-- The ceiling is a FIXED constant (no buyable counter-lever): the only honest fix for
+-- over-power is to stop over-building power and let demand catch up. An earlier antioxidant
+-- ("stabilization") track let the player LIFT this ceiling, which meant the more you bought
+-- the less over-power ever bit -- so both the antioxidants AND the over-power penalty read
+-- as pointless. Removing the lever pins the ceiling, so running hot is finally a real,
+-- felt cost the "power balance" gauge surfaces directly.
 -- ===========================================================================
 catalog.BALANCE_LO = 1.0 -- power/demand below this -> brownout (the deficit half, unchanged)
 catalog.BALANCE_HI = 1.6 -- top of the safe headroom band (a loose nod to phi as ideal reserve)
@@ -174,14 +186,6 @@ catalog.ROS_RISE = 1 / 40 -- ~40s of MAX surplus to fill ros from 0->1 (gentle; 
 catalog.ROS_FALL = 1 / 8 -- ~8s to clear ros once back inside the band (forgiving recovery)
 catalog.ROS_LETHAL = 0.8 -- ros sustained above this starts feeding the lethal stress tail
 catalog.ROS_LETHAL_RISE = 1 / 30 -- past ROS_LETHAL, how fast surplus-ros drives stress->fail (~30s)
-
--- STABILIZATION (Pillar 2's counter-lever): the cell's real antioxidant defenses
--- (superoxide dismutase / catalase / glutathione). A buyable `stab` level (a) lifts
--- the safe ceiling so you can run hotter before ros starts, and (b) speeds ros
--- clearance -- a SECOND valid strategy (run a deliberate surplus, defend it) instead
--- of perfectly matching power. Each stab level is also a machine, so it pays upkeep.
-catalog.STAB_TOLERANCE = 0.15 -- each stabilization level lifts BALANCE_HI (run hotter safely)
-catalog.STAB_CLEAR = 0.5 -- each level multiplies ros clearance speed (1 + STAB_CLEAR*stab)
 
 -- IMBALANCE CUTS BUILT (Pillar 3). The balance scalar no longer just dims the swarm:
 -- it multiplies minted built between MIN_EFF (worst case) and 1 (in-band). The ATP
@@ -222,11 +226,6 @@ end
 function catalog.stage_cost(level) return catalog.STAGE_BASE * catalog.STAGE_GROWTH ^ level end
 
 function catalog.mito_cost(mito) return catalog.MITO_BASE * catalog.MITO_GROWTH ^ (mito - 1) end
-
--- The NEXT stabilization level costs STAB_BASE * STAB_GROWTH ^ current_stab (geometric
--- like the others, but steeper -- stabilization is potent). `stab` is the count already
--- owned, so the first buy (stab 0) costs STAB_BASE. Mirrors the lab's stab_cost.
-function catalog.stabilization_cost(stab) return catalog.STAB_BASE * catalog.STAB_GROWTH ^ stab end
 
 -- ===========================================================================
 -- THE FOLD: state + constants -> the `rates` table sim.step consumes. This is the
@@ -278,17 +277,10 @@ function catalog.fold(state)
   -- while the stage merely sits available. Skipping the pipeline just forgoes the bonus.
   local value_mult = 1 + catalog.VALUE_PER_STAGE * math.max(unlocked_count - 1, 0)
 
-  -- Every stab level is also a machine drawing idle upkeep (so the counter-lever has a
-  -- running cost, not just a buy price) -- it joins mito + stage levels in the count.
-  local stab = state.stab or 0
-  local upkeep = catalog.UPKEEP_PER_MACHINE * (state.mito + levelsum + stab)
-
-  -- The stabilization-raised safe ceiling and ROS clearance multiplier (Pillar 2's
-  -- counter-lever). Folded HERE so the sim never sees `stab` -- it consumes scalars only,
-  -- exactly like every other rate. balance_hi_eff lifts the band you can run hot in;
-  -- stab_clear multiplies how fast ROS decays back down once inside it.
-  local balance_hi_eff = catalog.BALANCE_HI + catalog.STAB_TOLERANCE * stab
-  local stab_clear = 1 + catalog.STAB_CLEAR * stab
+  -- Idle upkeep: every mitochondrion and every stage level is a machine drawing a running
+  -- cost whether or not it adds throughput (so over-leveling a non-bottleneck stage is pure
+  -- loss). joins mito + the stage-level sum.
+  local upkeep = catalog.UPKEEP_PER_MACHINE * (state.mito + levelsum)
 
   return {
     power = power,
@@ -305,11 +297,14 @@ function catalog.fold(state)
     -- ROS pendulum + balance-scalar inputs (Pillars 2 & 3); the sim derives demand,
     -- balance_ratio, ROS integration, and the efficiency cut from these scalars.
     balance_lo = catalog.BALANCE_LO,
-    balance_hi_eff = balance_hi_eff,
+    -- The safe-power ceiling is now a FIXED constant (no antioxidant lever lifts it), so
+    -- over-power past it always bites. Threaded as balance_hi_eff for the sim/lab contract
+    -- (the "_eff" name is kept so the byte-for-byte mirrors don't churn) -- it just no
+    -- longer varies with state.
+    balance_hi_eff = catalog.BALANCE_HI,
     ros_ratio_cap = catalog.ROS_RATIO_CAP,
     ros_rise = catalog.ROS_RISE,
     ros_fall = catalog.ROS_FALL,
-    stab_clear = stab_clear,
     ros_lethal = catalog.ROS_LETHAL,
     ros_lethal_rise = catalog.ROS_LETHAL_RISE,
     min_eff = catalog.MIN_EFF,
@@ -503,7 +498,7 @@ end
 -- The ATP DEMAND the line is drawing right now: the cost of running the bottleneck
 -- (e * throughput) plus the idle upkeep of every machine. This is the same `demand`
 -- the sim's balance scalar uses (demand = e*T + upkeep); folded once here so the
--- balance-ratio + oxygen gauges agree with the economy byte-for-byte. Always > 0
+-- balance-ratio gauge agrees with the economy byte-for-byte. Always > 0
 -- (upkeep counts mito >= 1), so the divisions below are well-defined.
 function catalog.demand(state)
   local rates = catalog.fold(state)
@@ -519,10 +514,9 @@ function catalog.balance_ratio(state)
   return rates.power / demand
 end
 
--- The current safe-band CEILING for the balance ratio (BALANCE_HI lifted by stab). Above
--- this the cell leaks ROS; below BALANCE_LO it browns out. Surfaced so the view can class
--- the balance ratio as under (< LO) / ideal (in band) / over (> HI_eff) without inlining
--- the band math -- the stabilization-raised ceiling lives in the fold, not the renderer.
+-- The safe-band CEILING for the balance ratio (the fixed BALANCE_HI). Above this the cell
+-- leaks ROS; below BALANCE_LO it browns out. Surfaced so the view can class the balance
+-- ratio as under (< LO) / ideal (in band) / over (> HI) without inlining the band math.
 function catalog.balance_hi_eff(state) return catalog.fold(state).balance_hi_eff end
 
 -- The three balance-band classes the gauge surfaces (Pillar 5). Named so neither the
@@ -549,33 +543,6 @@ function catalog.balance_band(state)
     return catalog.BAND_IDEAL
   end
   return catalog.BAND_OVER
-end
-
--- OXYGEN / RESPIRATION gauge (Pillar 5, DISPLAYED metric only -- no economy hook). An
--- informational read on respiration LOAD: how much of the mitochondria's oxidative-
--- phosphorylation capacity (proportional to gross power -- O2 they can turn into ATP) is
--- actually being drawn by the line's ATP demand. Returns demand/power clamped to [0,1]:
---   ~1.0 -> state-3 respiration, supply matched to draw (healthy, no leak);
---   low   -> state-4: idle respiratory capacity with little demand -> electrons leak as
---            ROS (the over-power danger the ROS gauge then confirms).
--- This is the DISTINCT, biologically-named signal the design asks for (proposal s7): it
--- reads the SAME imbalance as the balance ratio from the respiration side, so a player
--- watching "respiration" sees low O2 use exactly when they are over-powered. Pure; power
--- is POWER_PER_MITO*mito*fuel >= POWER_PER_MITO (mito >= 1) so the divide is safe.
-function catalog.oxygen(state)
-  local rates = catalog.fold(state)
-  local power = rates.power
-  if power <= 0 then
-    return 0
-  end
-  local demand = rates.e_per_output * rates.throughput + rates.upkeep
-  local load = demand / power
-  if load < 0 then
-    return 0
-  elseif load > 1 then
-    return 1
-  end
-  return load
 end
 
 -- An ordered list of per-stage display rows for the view + panel. Each row carries

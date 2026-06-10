@@ -10,11 +10,15 @@ Phase 1 (the cell colony) is built and tuned. **Phase 2 is the next layer to bui
 doc is its design target — it is not yet implemented.** Everything past phase 2 is
 deliberately left open (see `GAME_PLAN.md`).
 
-> **Balance/biology revision in review — see `docs/PHASE_2_BALANCE.md`.** A first
-> playable draft surfaced that mitochondria are pure upside and the balance readout
-> is cosmetic. That proposal makes balance a two-sided pendulum (idle over-power
-> leaks ROS), adds a stabilization counter-lever and player-facing gauges, and gives
-> stages distinct rates (a real recipe ratio). Read it alongside this brief.
+> **Balance/biology revision LANDED — see `docs/PHASE_2_BALANCE.md` and
+> `docs/PHASE_2_ECONOMY.md`.** A first playable draft surfaced that mitochondria are
+> pure upside and the balance readout is cosmetic. The revision makes balance a
+> two-sided pendulum (idle over-power leaks ROS), gives stages distinct rates (a real
+> recipe ratio), and surfaces player-facing gauges. A later pass **removed** the
+> stabilization/antioxidant counter-lever and the oxygen gauge (they made over-power
+> never bite and read as clutter) and **fixed** the safe-power ceiling, so running hot
+> is now a real cost with the honest fix being to ease off power. Read it alongside
+> this brief.
 
 ## The fantasy
 
@@ -113,22 +117,23 @@ Milestone-flavored entries threaded through the catalog, in true evolutionary or
 
 The brief above is grounded in real biology on purpose — but a player should never need that
 background to read the cell. **Shipped rule** (in `lib/layers/complexcell/catalog.lua`,
-`lib/layers/complexcell.lua`, `lib/layers/complexcell/fork.lua`): keep the real organelle
-name as the named-beat reveal, but pair it with a **plain factory role**, and always spell out
-a warning's **consequence**. A biology fan recognises "Golgi"; everyone else reads "Packing."
-The whole cell reads as one assembly line — **build → fold → pack → deliver → ship** — so
-"feed the slowest stage" is intuitive without a strategy hint.
+`lib/layers/complexcell.lua`, `lib/layers/complexcell/fork.lua`): spell the **full organelle
+name** out as the label (the player asked "what is ER?" — no abbreviations), and pair each
+with a **short active-verb role** shown right on the buy row. That verb is the only guidance:
+it names the step the stage owns, so a backed-up line maps to its organelle without a "this
+increases X" hand-hold. The whole cell reads as one assembly line — **build → direct → fold →
+pack → deliver → ship** — so "feed the slowest stage" is intuitive.
 
-Stage glossary (bio term → in-game label → what it does):
+Stage glossary (bio term → in-game label → role line shown on the row):
 
-| Bio term | In-game label | Plain role |
-|----------|---------------|------------|
-| Ribosomes | Ribosomes | the line's workers — build the cell's parts |
-| Nucleus | Nucleus | the blueprint vault that guides every build |
-| Endoplasmic reticulum | **ER (Folding)** | folds and shapes each part into working form |
-| Golgi apparatus | **Golgi (Packing)** | packs, labels, and boxes the finished parts |
-| Cytoskeleton | **Cytoskeleton (Delivery)** | road network that hauls cargo across the cell |
-| Plasma membrane | **Membrane (Wall)** | ships product out and seals the cell shut |
+| Bio term | In-game label | Role line |
+|----------|---------------|-----------|
+| Ribosomes | Ribosomes | assemble the cell's parts |
+| Nucleus | Nucleus | direct the whole assembly line |
+| Endoplasmic reticulum | **Endoplasmic Reticulum** | fold raw parts into working shape |
+| Golgi apparatus | **Golgi Body** | pack and label each finished part |
+| Cytoskeleton | **Cytoskeleton** | haul cargo across the cell |
+| Plasma membrane | **Cell Membrane** | export the product and seal the cell |
 | Mitochondria | Mitochondria | power plants — make the ATP that runs everything |
 
 Readouts & warnings, in plain terms:
@@ -140,8 +145,10 @@ Readouts & warnings, in plain terms:
   lever): they name which side of the balance drove it — **"LOW POWER — the cell is dying"**
   vs **"POWER OVERLOAD — the cell is dying"**, and on death "The cell burst — low power" vs
   "… power overload." (Oxidative stress is two-sided now — a deficit *or* idle over-power —
-  so the old deficit-only "restore power" copy was dropped.) The vitals gauges are
-  de-jargoned to match: **cell stress · power balance · oxygen use · efficiency.**
+  so the old deficit-only "restore power" copy was dropped.) The vitals strip is trimmed to
+  the three gauges the player acts on: **power balance · cell stress · efficiency.** (The
+  earlier "oxygen use" row was demand/power — a restatement of power balance that barely
+  moved — so it was dropped as noise.)
 - The self-reveal teaser drops raw `built` targets for plain "something is forming…" →
   "almost ready" → "ready to build!"; the finale reads **"PATH CHOICE — become a plant or an
   animal."** The fork cards trade "sessile/motility" for "root down and grow" / "always on
