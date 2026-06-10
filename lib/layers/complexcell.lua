@@ -248,8 +248,11 @@ local function reset_fork_runtime()
   end
 end
 
-function complexcell.load()
-  intro_fade = 0 -- a resumed/loaded cell opens normally (only the seam plays the teal intro)
+-- The phase-2 audio assets: the endosymbiosis + manual ATP-tap one-shots and the three
+-- layered-score stems. Split out of load() so the SEAM entry (enter_from_seam) can bring
+-- them up too -- phase 2 is no longer eagerly loaded at boot, so its audio must load
+-- whichever way the phase is entered. Every load here is idempotent (safe to re-call).
+local function load_resources()
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
   sound.load("cytoplasm_active", "assets/sounds/cytoplasm_active.ogg") -- the manual ATP-tap beat
   -- The three vertical-remix stems (idempotent loads, paused at volume 0 until armed).
@@ -259,6 +262,11 @@ function complexcell.load()
   music.load("complexcell_layer1", "assets/music/complexcell_layer1.ogg", loop_stem)
   music.load("complexcell_layer2", "assets/music/complexcell_layer2.ogg", loop_stem)
   music.load("complexcell_layer3", "assets/music/complexcell_layer3.ogg", loop_stem)
+end
+
+function complexcell.load()
+  intro_fade = 0 -- a resumed/loaded cell opens normally (only the seam plays the teal intro)
+  load_resources()
   local data = DEV_FRESH_START and {} or (save.read(SAVE_NAME) or {})
   complexcell.state = build_state(data)
   reset_fork_runtime()
@@ -316,6 +324,7 @@ function complexcell.enter_from_seam(opts)
   reset_fork_runtime()
   view_state = view.new()
   intro_fade = INTRO_FADE -- open out of phase 1's teal flood, fading in over INTRO_FADE
+  load_resources() -- phase 2 isn't loaded at boot anymore; bring its audio up at the seam
   complexcell.start_layered_music() -- phase-2 score fades up out of the teal hand-off
   persist()
 end

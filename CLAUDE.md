@@ -59,7 +59,9 @@ other layers; they meet only in the orchestrator.
 - **Lua 5.1 / LuaJIT only.** No `table.unpack` (use `unpack`), no bitwise operators (use the
   `bit` library), no `//` integer division, no `goto`/labels, no `\z` string escape. Use
   `math.atan2 or math.atan`. Never put a `require()` (or any multi-return call) as the last
-  entry in a `{}` constructor — it expands and adds stray elements.
+  entry in a `{}` constructor — it expands and adds stray elements. LuaJIT caps a function at
+  **60 upvalues** — split a function that closes over more (hoist locals to module scope or
+  pass a table) before it hits the limit and crashes at load.
 - **Keep the pure core pure.** Economy/sim/trait modules must not touch `love.*`, global state,
   or each other. Idle and offline math runs on the pure core, so it can never depend on live
   agents — backgrounded and offline progression must stay deterministic.
@@ -79,3 +81,12 @@ matches the filename. Named functions, never functions defined inside functions.
 explicit `love.graphics.setColor` and reset to white when done; don't leak color state across
 draws. Before implementing, flag unclear boundaries or missing decisions and wait; while coding,
 surface code smells, magic literals, and growing complexity instead of working around them.
+Prefer the simplest thing that satisfies the request — a fixed value over a measurement system,
+a function over a framework. If a fix starts growing machinery, stop and confirm the approach
+before continuing.
+
+## Debugging
+
+Instrument first: add diagnostic logging and reason from observed behavior before touching
+logic. Don't open with `git diff`/history archaeology. One hypothesis at a time; if two
+attempts don't land, revert to the last working state and report the current theory.

@@ -32,6 +32,7 @@ local function approx(a, b) return math.abs(a - b) < 1e-9 end
 -- guards below are magnitude-agnostic (they assert live==offline), so these just keep
 -- the mirror faithful.
 local COMP_FRAC_MAX, COMP_TAU, COMP_COUNTER_GAIN = 0.68, 42, 2.0
+local COMP_MOTILITY_COUNTER = 0.05 -- share restored per Motility level (the dominant counter)
 local PRED_BASE, PRED_RAMP, PRED_TAU, PRED_MAX = 0.004, 0.010, 42, 0.25
 local PRED_EVASION_GAIN, PRED_MIT_CAP, PRED_FEAR, FEAR_FLOOR = 8.0, 0.97, 8.0, 0.0
 
@@ -51,22 +52,32 @@ local function evasion_mit(evasion)
   return 1 - m
 end
 
+-- Competition counter + your_share, mirroring cell.lua intake_for. Motility is the
+-- DOMINANT lever (COMP_MOTILITY_COUNTER restored per level); Chemotaxis and motility's
+-- own forage gain help via forage_mult x COMP_COUNTER_GAIN. counter clamps to [0,1].
+local function comp_counter(forage_mult, motility)
+  local c = COMP_MOTILITY_COUNTER * (motility or 0) + (forage_mult - 1) * COMP_COUNTER_GAIN
+  if c < 0 then
+    return 0
+  elseif c > 1 then
+    return 1
+  end
+  return c
+end
+local function your_share(forage_mult, motility, age)
+  return 1 / (1 + comp_frac(age) * (1 - comp_counter(forage_mult, motility)))
+end
+
 -- An intake PROVIDER mirroring cell.lua intake_for: it reads state.age each call and
 -- folds competition + predation-fear into the mult, forwarding pred_cull_frac for the
--- floorless cull. A modest forager (forage_mult) and evasion let us exercise the
--- counter-gates without fully neutralising the pressures. Toxicity is also active
+-- floorless cull. A modest forager (forage_mult), motility, and evasion let us exercise
+-- the counter-gates without fully neutralising the pressures. Toxicity is also active
 -- (tox_prod > tox_clear) so all THREE pressures bite at once -- the required guard.
-local function make_provider(forage_mult, evasion)
+local function make_provider(forage_mult, evasion, motility)
   return function(state)
     local age = state.age or 0
     local mult = 1
-    local counter = (forage_mult - 1) * COMP_COUNTER_GAIN
-    if counter < 0 then
-      counter = 0
-    elseif counter > 1 then
-      counter = 1
-    end
-    mult = mult * (1 / (1 + comp_frac(age) * (1 - counter)))
+    mult = mult * your_share(forage_mult, motility, age)
     local pred_cull_frac = pred_pressure(age) * evasion_mit(evasion)
     local fear = 1 - PRED_FEAR * pred_cull_frac
     if fear < FEAR_FLOOR then
@@ -169,9 +180,11 @@ end
 -- live/offline match we mirror its sub-step arithmetic: choose a total duration whose
 -- ceil(T/2) sub-steps divide T evenly, then drive the live sim with that exact dt.
 do
-  -- A modest forager + low evasion: pressures bite (the colony is contested) but it
-  -- still grows for a while -- a non-trivial, churning trajectory to match on.
-  local provider = make_provider(1.2, 0.05)
+  -- A modest forager + some motility + low evasion: pressures bite (the colony is
+  -- contested) but it still grows for a while -- a non-trivial, churning trajectory to
+  -- match on. Motility > 0 exercises the new competition counter term in BOTH the live
+  -- and offline paths, proving the age-keyed share replays deterministically.
+  local provider = make_provider(1.2, 0.05, 2)
 
   -- T = 600s -> ceil(600/2) = 300 sub-steps -> dt = 2.0 exactly.
   local total = 600
@@ -231,6 +244,41 @@ do
     "plain-table offline still matches live (backward compatible)"
   )
   check(live.age == off.age, "plain-table offline advances age identically")
+end
+
+-- ============================================================================
+-- MOTILITY as the dominant competition counter. Behaviour, derived from the
+-- constants (no magic share values): at the SAME forage_mult a mobile colony keeps
+-- more food share than an immobile one, a fully-mobile colony shrugs the tax off
+-- entirely, and an UNCOUNTERED colony still pays the full comp_frac crowding tax.
+-- ============================================================================
+do
+  local age = COMP_TAU * 3 -- deep into the saturated ramp, where competition bites hardest
+
+  -- Motility restores share the crowding tax took -- and more of it the more you level.
+  local immobile = your_share(1.0, 0, age)
+  local some = your_share(1.0, 3, age)
+  local more = your_share(1.0, 6, age)
+  check(some > immobile, "Motility restores food share the crowding tax took")
+  check(more > some, "more Motility restores more share (monotonic in level)")
+
+  -- A zero-counter colony eats the FULL crowding tax (share == 1/(1+comp_frac)).
+  check(
+    approx(immobile, 1 / (1 + comp_frac(age))),
+    "an immobile non-forager pays the full comp_frac crowding tax"
+  )
+
+  -- Enough Motility fully neutralises the throttle: counter saturates at 1 -> share -> 1.
+  check(comp_counter(1.0, 100) == 1, "high Motility saturates the counter at 1")
+  check(approx(your_share(1.0, 100, age), 1), "a fully-mobile colony shrugs the tax off entirely")
+
+  -- Motility is the DOMINANT lever: one level of it (even with no forage gain modeled)
+  -- restores more share than a forage-only counter of equal nominal strength would at
+  -- the matching forage lift -- i.e. its dedicated term adds on top of forage_mult.
+  check(
+    comp_counter(1.0, 1) > comp_counter(1.0, 0),
+    "a Motility level counters crowding even before its forage gain is counted"
+  )
 end
 
 print("all tests passed (" .. checks .. " checks)")

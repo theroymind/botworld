@@ -131,6 +131,11 @@ local GROWTH_RATE = 0.1 -- MIRRORS cell.lua: compounding surplus per cell (x mul
 local COMP_FRAC_MAX = 0.68 -- crowding share ceiling (0 = no competition) [retuned 2026-06-08 0.6->0.68; mirrored in cell.lua + cell_pressures_spec.lua]
 local COMP_TAU = 42 -- TIME scale (seconds) for the rival ramp to reach ~63% of the ceiling (keyed on elapsed run time; a persisted state.age replays it offline) [retuned 2026-06-08 50->42]
 local COMP_COUNTER_GAIN = 2.0 -- how strongly (forage_mult-1) restores your_share (0 = uncounterable)
+-- Motility is now the DOMINANT, explicit competition counter (a faster colony reaches
+-- food before the rivals do): each Motility level restores this much of your share ON
+-- TOP of its forage_mult contribution, so speed is THE answer to crowding while
+-- Chemotaxis stays a helper. Mirrored in cell.lua + cell_pressures_spec.lua.
+local COMP_MOTILITY_COUNTER = 0.05 -- share restored per Motility level (added to the forage counter)
 
 -- PREDATION (Pressure #3: a RAMPING threat -- a risk tax). A fractional cull applied
 -- AFTER each sim.step in the survival runs (a lab-only death term -- the closed-form
@@ -261,12 +266,14 @@ local function intake_for(cfg, population, t)
   -- to the mult so it scales ALL gain channels (photo + foraging + compounding),
   -- mirroring how the toxicity health factor throttles the whole intake side --
   -- this keeps it biting at millions-scale where raw forage is negligible.
-  -- COUNTER-GATE: sensing+motility lift forage_mult; COMP_COUNTER_GAIN turns that
-  -- into share RESTORATION, so a strong forager keeps your_share near 1 (rivals
-  -- can't crowd a colony that out-senses + out-swims them) while a non-forager eats
-  -- the full crowding tax. counter in [0,1]; effective tax = comp_frac * (1-counter).
+  -- COUNTER-GATE: Motility is the dominant lever (out-swim the rivals to the food),
+  -- restoring COMP_MOTILITY_COUNTER per level directly; Chemotaxis (and motility's own
+  -- forage gain) still help via forage_mult x COMP_COUNTER_GAIN. A mobile forager keeps
+  -- your_share near 1 while an immobile colony eats the full crowding tax. counter in
+  -- [0,1]; effective tax = comp_frac * (1-counter).
   if cfg.competition and t then
-    local counter = (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+    local motility = traits.level_of(tstate, "motility")
+    local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
     if counter < 0 then
       counter = 0
     elseif counter > 1 then
@@ -1226,6 +1233,7 @@ local SWEEPABLE = {
   COMP_FRAC_MAX = function(v) COMP_FRAC_MAX = v end,
   COMP_TAU = function(v) COMP_TAU = v end, -- time scale (s) of the competition ramp
   COMP_COUNTER_GAIN = function(v) COMP_COUNTER_GAIN = v end, -- the competition counter-gate
+  COMP_MOTILITY_COUNTER = function(v) COMP_MOTILITY_COUNTER = v end, -- Motility's dedicated counter (needs a motility-bearing ref to bite)
   PRED_BASE = function(v) PRED_BASE = v end,
   PRED_RAMP = function(v) PRED_RAMP = v end,
   PRED_TAU = function(v) PRED_TAU = v end, -- time scale (s) of the predation ramp
@@ -1240,8 +1248,8 @@ local function survival_sweep(knob, lo, hi, step)
   if not setter then
     print("unknown knob: " .. tostring(knob))
     print(
-      "sweepable: COMP_FRAC_MAX COMP_TAU COMP_COUNTER_GAIN PRED_BASE PRED_RAMP "
-        .. "PRED_TAU PRED_EVASION_GAIN PRED_MIT_CAP TOX_KILL_K TOX_TOLERANCE"
+      "sweepable: COMP_FRAC_MAX COMP_TAU COMP_COUNTER_GAIN COMP_MOTILITY_COUNTER "
+        .. "PRED_BASE PRED_RAMP PRED_TAU PRED_EVASION_GAIN PRED_MIT_CAP TOX_KILL_K TOX_TOLERANCE"
     )
     return
   end

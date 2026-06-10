@@ -1,10 +1,23 @@
--- Compact number display for incremental-scale values: integers below 1000
--- as-is, one decimal for fractions, K/M/B/T/Qa/Qi suffixes with ~3 significant
--- digits up to 1e21, scientific ("1.2e21") beyond. Pure Lua 5.1.
+-- Compact number display for incremental-scale values: integers below 100,000
+-- shown in full with thousand separators (2,500), one decimal for sub-1000
+-- fractions, K/M/B/T/Qa/Qi suffixes with ~3 significant digits from 100,000 up
+-- to 1e21, scientific ("1.2e21") beyond. Pure Lua 5.1.
 local format = {}
 
 local SUFFIXES = { "K", "M", "B", "T", "Qa", "Qi" }
 local LOG10 = math.log(10)
+-- Below this, render the exact integer with thousand separators rather than a
+-- K-suffix: abbreviation only earns its lost precision once a value hits six digits.
+local GROUP_THRESHOLD = 100000
+
+-- Insert thousand separators into a non-negative integer string ("12345" -> "12,345").
+local function group_thousands(digits)
+  local grouped, count = digits, nil
+  repeat
+    grouped, count = grouped:gsub("^(%d+)(%d%d%d)", "%1,%2")
+  until count == 0
+  return grouped
+end
 
 function format.number(n)
   if n ~= n or n == math.huge or n == -math.huge then
@@ -18,6 +31,9 @@ function format.number(n)
       return string.format("%d", n)
     end
     return string.format("%.1f", n)
+  end
+  if n < GROUP_THRESHOLD then
+    return group_thousands(string.format("%.0f", n))
   end
   -- Walk up suffix tiers; 999.5 is where "%.0f" starts rounding into the next tier.
   local value = n

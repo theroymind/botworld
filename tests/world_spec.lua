@@ -702,4 +702,53 @@ for _ = 1, 4000 do
 end
 check(confine_spawns >= 10, "bloom confine run observed enough spawns to be meaningful")
 
+-- ============================================================================
+-- COMPETITOR FORAGING (cosmetic). Under competition the rival crowd spawns and
+-- contends for the SAME motes. Invariants: rivals appear while competition is on,
+-- their eating never STRIPS the (instantly replenished) field, and clearing the
+-- crowd releases any mote a rival had claimed -- otherwise a claimed-but-orphaned
+-- mote would freeze out of the field forever (the bug the release loop guards).
+-- ============================================================================
+do
+  local function comp_opts(competition, pop)
+    return {
+      stats = { speed = 60, sense_range = 70, evasion = 0 },
+      target_population = pop,
+      aspect = 16 / 9,
+      competition = competition,
+      unlocked = {},
+      threats_enabled = false,
+    }
+  end
+
+  -- Rivals spawn while competition is active (even with no player cells present).
+  local rival_world = world.new({ rng = make_rng(7), aspect = 16 / 9 })
+  for _ = 1, 30 do
+    world.update(rival_world, FRAME, comp_opts(0.8, 0))
+  end
+  check(#rival_world.competitors > 0, "competitors spawn while competition is active")
+
+  -- No strip: rivals eat a mote each frame, but ensure_field tops the field back up,
+  -- so the count matches an uncontested world stepped the same way.
+  local calm_world = world.new({ rng = make_rng(7), aspect = 16 / 9 })
+  for _ = 1, 30 do
+    world.update(calm_world, FRAME, comp_opts(0, 0))
+  end
+  check(
+    #rival_world.foods == #calm_world.foods,
+    "rival eating leaves the field replenished (no strip)"
+  )
+
+  -- Claim-release: stage a rival mid-feed on a claimed mote, then dial competition to
+  -- 0. The crowd clears AND the mote is released (no cells in this step, so nothing
+  -- else re-claims it) -- so it rejoins the field instead of freezing out of it.
+  local m = rival_world.foods[1]
+  m.claimed = true
+  rival_world.competitors[1].feed_target = m
+  rival_world.competitors[1].feeding = 1.0
+  world.update(rival_world, FRAME, comp_opts(0, 0))
+  check(#rival_world.competitors == 0, "competition 0 clears the rival crowd")
+  check(not m.claimed, "clearing a feeding rival releases its claimed mote back to the field")
+end
+
 print("all tests passed (" .. checks .. " checks)")

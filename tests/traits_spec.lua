@@ -189,4 +189,59 @@ check(stale.levels.motility == 0, "stale load: missing level defaults to 0")
 check(traits.is_unlocked(stale, "predation"), "stale load: known unlock kept")
 check(stale.unlocked.ghost_unlock == nil, "stale load: unknown unlock dropped")
 
+-- Self-revealing evolutions teaser. reveal_stage classifies how close the colony is
+-- to a capability's reveal pop; the exact thresholds are an implementation detail, so
+-- assert BEHAVIOUR derived from each def's own `pop` gate, not the magic fractions.
+local photo = traits.unlocks()[1]
+local predation = traits.unlocks()[2]
+check(traits.reveal_stage(0, photo) == "hidden", "a tiny colony keeps the capability hidden")
+check(
+  traits.reveal_stage(photo.pop, photo) ~= "hidden",
+  "at the gate the capability is no longer hidden"
+)
+check(
+  traits.reveal_stage(photo.pop - 1, photo) == "named",
+  "just below the gate the capability is named"
+)
+
+-- The stage only ever advances as the colony grows (hidden -> silhouette -> named).
+local rank = { hidden = 0, silhouette = 1, named = 2 }
+local prev = -1
+for p = 0, predation.pop do
+  local r = rank[traits.reveal_stage(p, predation)]
+  check(r >= prev, "reveal stage never regresses as the colony grows")
+  prev = r
+end
+
+-- The teaser passes through an unnamed silhouette before it names the capability.
+local saw_silhouette = false
+for p = 0, predation.pop do
+  if traits.reveal_stage(p, predation) == "silhouette" then
+    saw_silhouette = true
+  end
+end
+check(saw_silhouette, "the teaser passes through an unnamed silhouette stage")
+
+-- next_teaser points at the first capability that is neither revealed nor evolved.
+local teaser_state = traits.new()
+check(
+  traits.next_teaser(teaser_state, 0).id == "photosynthesis",
+  "teaser points at the first capability"
+)
+check(
+  traits.next_teaser(teaser_state, photo.pop).id == "predation",
+  "a revealed capability is skipped (it has its own buy row) -- tease the next one"
+)
+traits.unlock(teaser_state, "photosynthesis")
+check(
+  traits.next_teaser(teaser_state, 0).id == "predation",
+  "an evolved capability is skipped by the teaser"
+)
+traits.unlock(teaser_state, "predation")
+check(traits.next_teaser(teaser_state, 0) == nil, "nothing left to tease once all are evolved")
+check(
+  traits.next_teaser(traits.new(), predation.pop) == nil,
+  "nothing to tease when every capability is already revealed"
+)
+
 print("all tests passed (" .. checks .. " checks)")

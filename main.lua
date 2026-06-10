@@ -49,8 +49,11 @@ function love.load(arg)
   layers.register("cell", cell)
   layers.register("complexcell", complexcell)
   layers.register("solar", solar)
-  layers.load_all()
+  -- Load ONLY the phase we boot into. A phase you haven't reached must never load or
+  -- tick (else it produces -- and leaks toasts -- in the background behind the active
+  -- phase); each later phase loads when it is first entered (the seam loads phase 2).
   local start = resolve_start_layer(arg)
+  layers.load(start)
   layers.switch(start)
   -- Score the boot layer. Booting STRAIGHT into phase 2 for debugging (`love . phase2`)
   -- skips the endosymbiosis seam that normally hands off the music, so the phase-1 BGM
@@ -91,7 +94,12 @@ end
 
 function love.keypressed(key)
   if key == "tab" then
-    layers.switch(next_layer_name())
+    -- Debug cycler: bring the target phase up on first visit (idempotent), since phases
+    -- are no longer all loaded at boot -- otherwise tabbing to an unentered phase would
+    -- draw an unloaded layer.
+    local nxt = next_layer_name()
+    layers.load(nxt)
+    layers.switch(nxt)
   elseif key == "escape" then
     love.event.quit()
   else

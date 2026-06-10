@@ -1,10 +1,10 @@
--- Standalone spec for lib/engine/economy.lua (+ format.lua sanity checks).
+-- Standalone spec for lib/engine/economy.lua.
 -- Plain Lua 5.1, no framework. Run from the repo root: lua tests/economy_spec.lua
+-- (Number-formatting lives in its own tests/format_spec.lua.)
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. package.path
 
 local economy = require("lib.engine.economy")
-local format = require("lib.engine.format")
 
 local checks = 0
 
@@ -180,22 +180,5 @@ check(stale:amount("biomass") == 5, "stale load: known resource kept")
 check(stale:amount("krypton") == 0, "stale load: unknown resource dropped")
 check(stale:generator_owned("ghost") == 0, "stale load: unknown generator dropped")
 check(not stale:upgrade_purchased("phantom"), "stale load: unknown upgrade dropped")
-
--- format.number sanity.
-check(format.number(0) == "0", "format 0")
-check(format.number(7) == "7", "format small integer")
-check(format.number(999) == "999", "format just below 1000")
-check(format.number(12.5) == "12.5", "format fraction, one decimal")
-check(format.number(-12.5) == "-12.5", "format negative fraction")
-check(format.number(-1234) == "-1.23K", "format negative thousands")
-check(format.number(1000) == "1.00K", "format 1000")
-check(format.number(1234) == "1.23K", "format thousands")
-check(format.number(45600000) == "45.6M", "format millions")
-check(format.number(789e9) == "789B", "format billions")
-check(format.number(999999) == "1.00M", "format rounds up across tiers")
-check(format.number(1e15) == "1.00Qa", "format quadrillions")
-check(format.number(2.5e18) == "2.50Qi", "format quintillions")
-check(format.number(1.2e21) == "1.2e21", "format scientific past Qi")
-check(format.number(9.99e22) == "1.0e23", "format scientific mantissa rounds up")
 
 print("all tests passed (" .. checks .. " checks)")

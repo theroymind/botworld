@@ -116,6 +116,14 @@ for _, def in ipairs(UNLOCKS) do
   UNLOCK_BY_ID[def.id] = def
 end
 
+-- Self-revealing teaser thresholds (UI ONLY). A not-yet-revealed capability stays
+-- HIDDEN while the colony is tiny, surfaces as an unnamed silhouette as it grows,
+-- then is NAMED just before the colony reaches its `pop` gate (at which point
+-- is_revealed flips and it becomes a real buy row). Fractions of the gate, echoing
+-- phase 2's catalog.reveal break points so the two phases tease at the same cadence.
+local SILHOUETTE_AT = 0.5 -- pop fraction of the gate at which an unnamed tease appears
+local NAMED_AT = 0.75 -- pop fraction at which the capability is named
+
 function traits.new()
   return {
     levels = {
@@ -196,6 +204,11 @@ end
 
 function traits.def(id) return BY_ID[id] end
 
+-- The current level of one trait (0 if unleveled / unknown). A read accessor so
+-- callers (e.g. the competition counter) can key on a raw level without reaching
+-- into the state's internal `levels` table.
+function traits.level_of(state, id) return state.levels[id] or 0 end
+
 -- A trait row is available once it has no lock, or once its gating unlock has
 -- fired. Locked rows show as "reach colony N" in the panel.
 function traits.is_available(state, id)
@@ -250,6 +263,34 @@ function traits.is_revealed(_state, id, pop)
     return false
   end
   return (pop or 0) >= def.pop
+end
+
+-- Classify how close the colony is to a not-yet-revealed capability's reveal pop,
+-- for the self-revealing teaser: "hidden" (< SILHOUETTE_AT of the gate), "silhouette"
+-- (>= SILHOUETTE_AT, unnamed), "named" (>= NAMED_AT, the capability is named). There
+-- is no "ready" stage -- at/above the gate is_revealed flips and the capability shows
+-- as a real buy row instead of a teaser. Mirrors phase 2's catalog.reveal stair-step.
+function traits.reveal_stage(pop, def)
+  local frac = (pop or 0) / def.pop
+  if frac >= NAMED_AT then
+    return "named"
+  elseif frac >= SILHOUETTE_AT then
+    return "silhouette"
+  end
+  return "hidden"
+end
+
+-- The next capability the teaser should hint at: the first one (in reach order) that
+-- is neither already evolved nor yet revealed. A revealed-but-unbought capability is
+-- skipped -- it shows as its own buy row, so the footer teases the beat BEYOND it. nil
+-- once nothing remains to tease (everything is revealed or evolved).
+function traits.next_teaser(state, pop)
+  for _, def in ipairs(UNLOCKS) do
+    if not state.unlocked[def.id] and not traits.is_revealed(state, def.id, pop) then
+      return def
+    end
+  end
+  return nil
 end
 
 -- Closed-form income multiplier from fired unlocks: each opened channel is an

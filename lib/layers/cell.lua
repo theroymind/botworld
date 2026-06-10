@@ -123,6 +123,13 @@ local TOX_KILL_K = 0.005 -- fraction of the colony killed per second per unit of
 local COMP_FRAC_MAX = 0.68 -- crowding share ceiling (rivals eventually take ~40% of an uncountered colony's food)
 local COMP_TAU = 42 -- time scale (s) for the rival ramp to reach ~63% of the ceiling
 local COMP_COUNTER_GAIN = 2.0 -- how strongly (forage_mult-1) restores your_share (0 = uncounterable)
+-- Motility is now the DOMINANT, explicit competition counter: a faster colony reaches
+-- food before the rivals do, so each Motility level restores this much of your food
+-- share ON TOP of its forage_mult contribution. Leaning into the "outrun rivals" verb
+-- makes speed THE answer to crowding while Chemotaxis (via forage_mult) stays a helper.
+-- Starting value; lab-tuned so a few levels visibly relieve the tax yet an IMMOBILE
+-- colony still pays the full crowding cost. [tune via sim_lab counters/survsweep]
+local COMP_MOTILITY_COUNTER = 0.05 -- share restored per Motility level (added to the forage counter)
 
 -- PREDATION (ramping cull + a fear/harassment intake throttle -- the death-spiral):
 --   pred_pressure(age) = clamp(PRED_BASE + PRED_RAMP*(age/PRED_TAU), .., PRED_MAX)
@@ -177,7 +184,6 @@ local TOGGLE_BTN_W = 26 -- square minimize/expand toggle pinned to the title row
 -- stays reachable so it can be expanded again). In-memory only -- a fresh launch
 -- opens expanded.
 local panel_collapsed = false
-local BAR_COLOR = colors.secondary -- energy bar rides the global nourishment token
 
 -- VITALITY BAND thresholds -- a qualitative weak->strong read driven by PER-CAPITA
 -- net replication (net_rate / population), so it's SCALE-INVARIANT: the same per-cell
@@ -269,10 +275,13 @@ local function intake_for(state)
   -- COMPETITION throttle (mirrors sim_lab intake_for): rivals thin your share of
   -- the food as the lineage ages. Applied to `mult` so it scales ALL gain channels
   -- (photo + foraging + the compounding climb), keeping it biting at millions-scale.
-  -- COUNTER-GATE: sensing+motility lift forage_mult; COMP_COUNTER_GAIN turns that
-  -- into share RESTORATION, so a strong forager keeps your_share near 1 while a
-  -- non-forager eats the full crowding tax. counter in [0,1]; tax = comp_frac*(1-counter).
-  local counter = (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+  -- COUNTER-GATE: Motility is the dominant lever -- a faster colony reaches food first,
+  -- so COMP_MOTILITY_COUNTER per Motility level restores your share directly. Chemotaxis
+  -- (and motility's own forage gain) still help via forage_mult x COMP_COUNTER_GAIN. A
+  -- mobile forager keeps your_share near 1 while an immobile colony eats the full
+  -- crowding tax. counter in [0,1]; tax = comp_frac*(1-counter).
+  local motility = traits.level_of(state.traits, "motility")
+  local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
   if counter < 0 then
     counter = 0
   elseif counter > 1 then
@@ -794,53 +803,36 @@ local function toggle_button_node()
   }
 end
 
--- One trait row: a fill-width label column (name + level over a concrete hint)
--- and a right-pinned level-up button, or a dim "colony N" notice while locked.
+-- One trait row: a fill-width label column (name + level over a concrete hint) and a
+-- right-pinned level-up button. Built ONLY for AVAILABLE traits -- the panel skips a
+-- trait still gated behind an unfired evolution, so the Photosynthesis trait stays out
+-- of this list until the Photosynthesis capability is evolved (then it appears here as
+-- a normal levelable row -- the evolution "becomes" the trait, never a "needs X" gate).
 local function trait_row(state, id)
   local def = traits.def(id)
   local level = state.traits.levels[id]
-  local available = traits.is_available(state.traits, id)
-
-  local label_color = available and colors.ui.text or colors.with_alpha(colors.ui.text, 0.4)
-  local hint_color = available and colors.ui.text_faint
-    or colors.with_alpha(colors.ui.text_faint, 0.6)
 
   local label_col = layout.vstack({
-    layout.text(string.format("%s   Lv %d", def.label, level), { color = label_color }),
-    layout.text(traits.hint(id), { color = hint_color }),
+    layout.text(string.format("%s   Lv %d", def.label, level), { color = colors.ui.text }),
+    layout.text(traits.hint(id), { color = colors.ui.text_faint }),
   }, { gap = 2 })
 
-  local right
-  if available then
-    local cost = traits.cost(state.traits, id)
-    local affordable = sim.can_spend(state.sim, cost)
-    right = action_button_node({
-      label = "level up",
-      sublabel = format.number(cost) .. " bm",
-      enabled = affordable,
-      w = BTN_W,
-      h = TRAIT_BTN_H,
-      id = "trait_" .. id,
-      on_click = function()
-        if sim.spend(state.sim, cost) then
-          traits.level(state.traits, id)
-          persist()
-        end
-      end,
-    })
-  else
-    -- The row is gated behind a milestone EVOLUTION (e.g. the photosynthesis trait
-    -- needs the photosynthesis capability bought first). Name the gate rather than a
-    -- colony size, since reaching the colony only OFFERS the purchase now.
-    local gate = traits.def(id)
-    local gate_label = (gate and gate.locked_until == "photosynthesis") and "needs Photosynthesis"
-      or "locked"
-    right = layout.text(gate_label, {
-      color = colors.with_alpha(colors.ui.text_muted, 0.6),
-      align = "center",
-      w = BTN_W,
-    })
-  end
+  local cost = traits.cost(state.traits, id)
+  local affordable = sim.can_spend(state.sim, cost)
+  local right = action_button_node({
+    label = "level up",
+    sublabel = format.number(cost) .. " bm",
+    enabled = affordable,
+    w = BTN_W,
+    h = TRAIT_BTN_H,
+    id = "trait_" .. id,
+    on_click = function()
+      if sim.spend(state.sim, cost) then
+        traits.level(state.traits, id)
+        persist()
+      end
+    end,
+  })
 
   return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
 end
@@ -877,41 +869,39 @@ local function organelle_children(state)
 end
 
 -- The EVOLUTIONS section: the milestone capabilities the player BUYS (formerly
--- auto-granted). One row per not-yet-owned capability -- a buy button gated on
--- biomass once the colony has grown enough to REVEAL it, or a dim "colony N"
--- teaser before then. Owned capabilities drop out of this section (photosynthesis
--- becomes a normal levelable trait; phagocytosis just switches hunting on). nil
--- once every capability is evolved, so the section disappears when spent out.
+-- auto-granted). One row per REVEALED-but-unbought capability -- a buy button gated
+-- on biomass once the colony has grown enough to REVEAL it. A capability the colony
+-- has not yet revealed is NOT listed here (no spoiler); it is teased only by the
+-- self-revealing footer until it reveals. Owned capabilities drop out of this section
+-- (photosynthesis becomes a normal levelable trait; phagocytosis just switches hunting
+-- on). nil while nothing is revealed and once every capability is evolved, so the
+-- section appears only when there is a capability to buy.
 local function capability_children(state)
   local pop = state.sim.population
   local rows = {}
   for _, def in ipairs(traits.unlocks()) do
-    if not traits.is_unlocked(state.traits, def.id) then
+    -- Only REVEALED-but-unbought capabilities show as rows. A not-yet-revealed
+    -- capability is no longer dumped here (no "colony N" spoiler) -- it is teased
+    -- only by the self-revealing footer until the colony reaches its gate.
+    if
+      not traits.is_unlocked(state.traits, def.id) and traits.is_revealed(state.traits, def.id, pop)
+    then
       local label_col = layout.vstack({
         layout.text(def.label, { color = colors.ui.text }),
         layout.text(def.tell, { color = colors.ui.text_faint }),
       }, { gap = 2 })
 
-      local right
-      if traits.is_revealed(state.traits, def.id, pop) then
-        local cost = traits.unlock_cost(def.id)
-        local affordable = sim.can_spend(state.sim, cost)
-        right = action_button_node({
-          label = "evolve",
-          sublabel = format.number(cost) .. " bm",
-          enabled = affordable,
-          w = BTN_W,
-          h = TRAIT_BTN_H,
-          id = "unlock_" .. def.id,
-          on_click = function() buy_unlock(def.id) end,
-        })
-      else
-        right = layout.text(string.format("colony %d", def.pop), {
-          color = colors.with_alpha(colors.ui.text_muted, 0.6),
-          align = "center",
-          w = BTN_W,
-        })
-      end
+      local cost = traits.unlock_cost(def.id)
+      local affordable = sim.can_spend(state.sim, cost)
+      local right = action_button_node({
+        label = "evolve",
+        sublabel = format.number(cost) .. " bm",
+        enabled = affordable,
+        w = BTN_W,
+        h = TRAIT_BTN_H,
+        id = "unlock_" .. def.id,
+        on_click = function() buy_unlock(def.id) end,
+      })
       table.insert(rows, layout.hstack({ label_col, right }, { gap = theme.spacing.sm }))
     end
   end
@@ -968,10 +958,7 @@ end
 -- and the on_click closures capture the current state. Stacked groups (header /
 -- traits / organelles / footer) inside a PAD-padded vstack.
 local function build_panel(state)
-  local intake = intake_for(state)
   local pop = state.sim.population
-  local div_cost = sim.div_cost(pop, intake.div_mult)
-  local energy_ratio = math.max(0, math.min(state.sim.energy / div_cost, 1))
 
   -- Title row: the "biomass N" headline (fill width) pushes the minimize/expand
   -- toggle to the right edge. Collapsed, this row is the whole panel.
@@ -1025,20 +1012,17 @@ local function build_panel(state)
       bg_color = colors.with_alpha(colors.ui.white, 0.12),
     })
   )
-  -- The energy reserve filling toward the next division (banks biomass on cross).
-  table.insert(
-    header,
-    layout.bar(energy_ratio, {
-      h = 10,
-      color = BAR_COLOR,
-      bg_color = colors.with_alpha(colors.ui.white, 0.12),
-    })
-  )
 
   -- Trait list: concrete, direct levels. No slots, no splicing.
   local trait_children = { layout.text("traits", { color = colors.ui.text_dim }) }
   for _, id in ipairs(TRAIT_IDS) do
-    table.insert(trait_children, trait_row(state, id))
+    -- Skip a trait still gated behind an unfired evolution (the Photosynthesis trait
+    -- until the Photosynthesis capability is evolved): it shows in the evolutions
+    -- section as an "evolve" purchase, then appears here as a levelable row -- never as
+    -- a "needs Photosynthesis" gate in this list.
+    if traits.is_available(state.traits, id) then
+      table.insert(trait_children, trait_row(state, id))
+    end
   end
 
   local groups = {
@@ -1056,11 +1040,22 @@ local function build_panel(state)
     table.insert(groups, layout.vstack(organelle_group, { gap = theme.spacing.xs }))
   end
 
-  local nxt = traits.next_unlock(state.traits)
-  local footer_text = nxt
-      and string.format("next: %s — evolve for %s bm", nxt.label, format.number(nxt.cost or 0))
-    or "all capabilities evolved"
-  table.insert(groups, layout.text(footer_text, { color = colors.ui.text_muted }))
+  -- Self-revealing teaser for the next capability the colony has not yet revealed:
+  -- a silhouette as the colony grows toward the gate, then the named capability just
+  -- before it reveals (where it becomes a real "evolve" row above). No spoiler cost,
+  -- no "next:" -- and a fresh tiny colony (still hidden) or a fully-evolved one (nil)
+  -- simply gets no footer line. Mirrors phase 2's self-revealing footer.
+  local nxt = traits.next_teaser(state.traits, state.sim.population)
+  local stage = nxt and traits.reveal_stage(state.sim.population, nxt)
+  local tease
+  if stage == "named" then
+    tease = string.format("%s — almost ready", nxt.label)
+  elseif stage == "silhouette" then
+    tease = "something is forming in the colony…"
+  end
+  if tease then
+    table.insert(groups, layout.text(tease, { color = colors.ui.text_muted }))
+  end
 
   return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
 end

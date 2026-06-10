@@ -3,6 +3,9 @@ dist/
 logs/
 build/
 
+# Per-machine Claude Code settings (local-only; skills under .claude/skills/ are tracked).
+.claude/settings.local.json
+
 # Scratch dir for raw .wav stems awaiting wav->ogg conversion (see assets/music).
 audio/tmp/
 

@@ -227,6 +227,15 @@ local COMPETITOR_FULL = 110 -- rival microbes on a 1280x720 canvas at competitio
 local COMPETITOR_DENSITY = COMPETITOR_FULL / (1280 * 720)
 local COMPETITOR_MAX = 340 -- readability cap on the rival crowd at any field size (raised from 200 with the denser crowd)
 local COMPETITOR_DRIFT = 14 -- rival brownian speed, world units/sec (their own gentle wander)
+-- COSMETIC rival foraging: a competitor that drifts within COMPETITOR_SENSE of a mote
+-- darts at it (COMPETITOR_CHASE) and parks COMPETITOR_FEED_TIME to engulf it. The
+-- engulf pause + sense gate are the natural throttle -- most of the crowd is drifting
+-- at any moment, so 340 rivals never strip the (instantly replenished) field. Sense is
+-- a touch under a cell's so rivals notice only nearby food; chase sits near a cell's
+-- swim pace so they read as background life, not a frantic race.
+local COMPETITOR_SENSE = 60 -- how near a mote a rival notices and chases (world units)
+local COMPETITOR_CHASE = 38 -- a rival's chase speed toward a sensed mote (world units/sec)
+local COMPETITOR_FEED_TIME = 2.4 -- seconds a rival parks to engulf a mote (its throttle)
 
 -- Per-instance SIZE VARIETY for the non-player actors (predators + competitors): each
 -- one draws a private size scale at spawn so the dish shows a real spread of body
@@ -691,7 +700,7 @@ local function nearest_food(grid, foods, x, y, range)
           local f = foods[idx]
           local dx, dy = f.x - x, f.y - y
           local d2 = dx * dx + dy * dy
-          if not f.claimed and d2 < best then
+          if not f.claimed and not f.dead and d2 < best then
             best = d2
             found = idx
           end
@@ -927,6 +936,91 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
   compact(state.foods)
   compact(state.prey)
   return engulfs, engulf_points
+end
+
+-- COSMETIC rival foraging: the neutral competitor crowd hunts the SAME motes the
+-- player's cells do, so the closed-form nutrient competition reads on screen as rivals
+-- snatching your food. Pure decoration -- it consumes motes (instantly topped back up
+-- by ensure_field) but feeds NOTHING into the economy, and like the rest of world.lua
+-- it runs only in update() (never offline), so idle/offline math stays deterministic.
+-- Mirrors the cell roam/latch/engulf arm (claim -> ease on -> mark dead) but lighter:
+-- no births, separation, prey, or starvation. A rival chases only a mote within
+-- COMPETITOR_SENSE and parks COMPETITOR_FEED_TIME to engulf it, then rests through the
+-- FED_PULSE swell before seeking again -- so most of the crowd drifts at any moment.
+-- Rivals target only UNCLAIMED motes and claim their own, so they never contend with
+-- the player's cells for the same morsel. Runs BEFORE step_cells and compacts the
+-- eaten motes, so the cells' own forage hash is built on a clean field.
+local function step_competitors(state, dt)
+  local grid = build_hash(state.foods)
+  local w, h = state.field_w, state.field_h
+  for i = 1, #state.competitors do
+    local c = state.competitors[i]
+    if c.fed then
+      c.fed = c.fed - dt -- drain the post-meal swell / brief rest
+      if c.fed <= 0 then
+        c.fed = nil
+      end
+    end
+
+    if c.feeding then
+      -- === engulfing: ease onto the claimed morsel, drain the timer ===
+      local m = c.feed_target
+      if not m or m.dead then
+        c.feeding = nil -- morsel vanished underneath us: roam next frame
+        c.feed_target = nil
+      else
+        local k = math.min(1, FEED_APPROACH * dt)
+        c.vx, c.vy = 0, 0
+        c.x = c.x + (m.x - c.x) * k
+        c.y = c.y + (m.y - c.y) * k
+        c.feeding = c.feeding - dt
+        if c.feeding <= 0 then
+          m.dead = true -- consumed (compacted below; ensure_field replaces it)
+          m.claimed = nil
+          c.feeding = nil
+          c.feed_target = nil
+          c.fed = FED_PULSE -- the swell the view pulses, doubling as a brief rest
+        end
+      end
+    else
+      -- === roaming: chase the nearest UNCLAIMED mote in range, else gently mill ===
+      -- (skip seeking while resting through the post-meal swell, so rivals pace out).
+      local food_i = (not c.fed) and nearest_food(grid, state.foods, c.x, c.y, COMPETITOR_SENSE)
+      if food_i then
+        local m = state.foods[food_i]
+        local dx, dy = m.x - c.x, m.y - c.y
+        local d = math.sqrt(dx * dx + dy * dy) + 1e-6
+        c.vx = c.vx + (dx / d) * COMPETITOR_CHASE * STEER_GAIN * dt
+        c.vy = c.vy + (dy / d) * COMPETITOR_CHASE * STEER_GAIN * dt
+        local damp = math.max(0, 1 - CELL_DAMPING * dt)
+        c.vx, c.vy = c.vx * damp, c.vy * damp
+        local sp = math.sqrt(c.vx * c.vx + c.vy * c.vy)
+        if sp > COMPETITOR_CHASE then
+          c.vx, c.vy = c.vx / sp * COMPETITOR_CHASE, c.vy / sp * COMPETITOR_CHASE
+        end
+        c.x = (c.x + c.vx * dt) % w
+        c.y = (c.y + c.vy * dt) % h
+        -- Contact -> latch + claim + begin the engulf pause (consumed on completion).
+        local cx, cy = m.x - c.x, m.y - c.y
+        if cx * cx + cy * cy <= CONSUME_RADIUS * CONSUME_RADIUS then
+          c.feeding = COMPETITOR_FEED_TIME
+          c.feed_target = m
+          m.claimed = true
+        end
+      else
+        -- Ambient milling: gentle random re-aim, clamp to drift speed, toroidal wrap.
+        c.x = (c.x + c.vx * dt) % w
+        c.y = (c.y + c.vy * dt) % h
+        c.vx = c.vx + rsign(state) * COMPETITOR_DRIFT * dt
+        c.vy = c.vy + rsign(state) * COMPETITOR_DRIFT * dt
+        local sp = math.sqrt(c.vx * c.vx + c.vy * c.vy)
+        if sp > COMPETITOR_DRIFT then
+          c.vx, c.vy = c.vx / sp * COMPETITOR_DRIFT, c.vy / sp * COMPETITOR_DRIFT
+        end
+      end
+    end
+  end
+  compact(state.foods)
 end
 
 -- True when (x, y) falls inside rect r ({ x, y, w, h }).
@@ -1221,20 +1315,27 @@ function world.update(state, dt, opts)
   end
 
   -- Neutral competitor microbes: maintain a target count that scales with the
-  -- closed-form competition ramp (opts.competition, nil-safe -> 0) AND the field
-  -- size, then drift them with the shared drift_field wander so they wrap the
-  -- toroidal realm like every other entity. They are spawned through the same
-  -- ensure_field path (an entity + a frozen render component), NOT fed to
-  -- step_cells (cells never forage them) and NOT seen by step_predators (which only
-  -- iterates state.cells), so they neither eat nor are eaten nor are hunted. When
-  -- competition is 0/absent the target is 0; clear any existing crowd outright, the
-  -- way prey is cleared when predation is off -- so dialing competition back to 0
-  -- empties the rivals rather than freezing a stale crowd.
+  -- closed-form competition ramp (opts.competition, nil-safe -> 0) AND the field size,
+  -- then forage them (step_competitors: drift, but dart at and engulf nearby motes) so
+  -- the rival crowd visibly contends for the SAME food. They are spawned through the
+  -- ensure_field path (an entity + a frozen render component), still NOT seen by
+  -- step_predators (so they are never hunted) and they feed NOTHING into the economy --
+  -- their mote-eating is cosmetic (the field replenishes instantly). Runs BEFORE
+  -- step_cells so the eaten motes are compacted out before the cells build their forage
+  -- hash. When competition is 0/absent the target is 0; release any morsels the crowd
+  -- had claimed, then clear it outright (the way prey clears when predation is off) so
+  -- dialing competition back to 0 empties the rivals without freezing claimed motes.
   local comp_target = competitor_target(state, opts.competition)
   if comp_target > 0 then
     ensure_competitors(state, comp_target) -- per-instance species tint (the view colors it)
-    drift_field(state, state.competitors, dt, COMPETITOR_DRIFT)
+    step_competitors(state, dt)
   elseif #state.competitors > 0 then
+    for i = 1, #state.competitors do
+      local m = state.competitors[i].feed_target
+      if m then
+        m.claimed = nil -- release the morsel so it rejoins the field
+      end
+    end
     state.competitors = {}
   end
 
