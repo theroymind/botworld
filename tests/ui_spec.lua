@@ -31,22 +31,40 @@ end
 local function approx(a, b) return math.abs(a - b) < 1e-6 end
 
 -- Colors: palette is rgba, ui tokens present, with_alpha + hex parse correct.
-check(type(colors.palette.tan_light) == "table" and #colors.palette.tan_light == 4, "palette is rgba")
+check(
+  type(colors.palette.tan_light) == "table" and #colors.palette.tan_light == 4,
+  "palette is rgba"
+)
 check(approx(colors.palette.tan_light[1], 0xa6 / 255), "hex parses red channel")
 check(approx(colors.palette.tan_light[2], 0x88 / 255), "hex parses green channel")
 check(approx(colors.palette.tan_light[3], 0x4a / 255), "hex parses blue channel")
 check(colors.ui.text ~= nil and colors.ui.accent ~= nil, "ui tokens text + accent")
-check(colors.ui.text_dim ~= nil and colors.ui.text_muted ~= nil and colors.ui.text_faint ~= nil, "ui dim tokens")
+check(
+  colors.ui.text_dim ~= nil and colors.ui.text_muted ~= nil and colors.ui.text_faint ~= nil,
+  "ui dim tokens"
+)
 local faded = colors.with_alpha(colors.ui.text, 0.5)
 check(faded[4] == 0.5 and faded[1] == colors.ui.text[1], "with_alpha sets alpha, keeps rgb")
 
 -- Theme tokens used by the cell panel.
-check(theme.spacing.xs == 4 and theme.spacing.sm == 8 and theme.spacing.md == 12 and theme.spacing.lg == 16, "spacing scale")
-check(theme.font.sm == "hud_small" and theme.font.md == "hud" and theme.font.lg == "hud_lg", "font tokens incl lg")
+check(
+  theme.spacing.xs == 4
+    and theme.spacing.sm == 8
+    and theme.spacing.md == 12
+    and theme.spacing.lg == 16,
+  "spacing scale"
+)
+check(
+  theme.font.sm == "hud_small" and theme.font.md == "hud" and theme.font.lg == "hud_lg",
+  "font tokens incl lg"
+)
 check(theme.sizing.bar_height == 8, "sizing bar_height token")
 
 -- Highlight modes (inlined, no define wrapper).
-check(highlight_modes.SELECTED == "selected" and highlight_modes.FOCUSED == "focused", "highlight modes")
+check(
+  highlight_modes.SELECTED == "selected" and highlight_modes.FOCUSED == "focused",
+  "highlight modes"
+)
 
 -- Rect geometry spine.
 local r = rect(10, 20, 100, 50)
@@ -64,8 +82,14 @@ check(not r:contains(5, 5) and not r:contains(200, 200), "rect contains outside"
 
 -- Tween: easing endpoints + a linear integration to completion.
 check(tween.linear(0.5) == 0.5, "tween linear identity")
-check(approx(tween.ease_out_cubic(0), 0) and approx(tween.ease_out_cubic(1), 1), "ease_out_cubic endpoints")
-check(approx(tween.ease_in_out_quad(0), 0) and approx(tween.ease_in_out_quad(1), 1), "ease_in_out_quad endpoints")
+check(
+  approx(tween.ease_out_cubic(0), 0) and approx(tween.ease_out_cubic(1), 1),
+  "ease_out_cubic endpoints"
+)
+check(
+  approx(tween.ease_in_out_quad(0), 0) and approx(tween.ease_in_out_quad(1), 1),
+  "ease_in_out_quad endpoints"
+)
 tween.clear()
 local obj = { v = 0 }
 tween.to(obj, "v", 10, 1.0, tween.linear)
@@ -78,7 +102,10 @@ check(tween.count() == 0, "tween entry cleared after completion")
 -- is-visible: default true, explicit false, function predicate.
 check(is_visible({}) == true, "node visible by default")
 check(is_visible({ visible = false }) == false, "explicit hidden")
-check(is_visible({ visible = function() return false end }) == false, "function visibility predicate")
+check(
+  is_visible({ visible = function() return false end }) == false,
+  "function visibility predicate"
+)
 
 -- Resolve: vstack stacks children top-to-bottom with the gap; content height sums.
 local v1 = layout.node({ h = 10 })
@@ -96,8 +123,14 @@ local fill = layout.node({ w = "fill", h = 30 })
 local fixed = layout.node({ w = 40, h = 30 })
 local hs = layout.hstack({ fill, fixed }, { gap = 10, padding = 0 })
 layout.resolve(hs, rect(0, 0, 200, 50))
-check(fill.resolved_rect.x == 0 and fill.resolved_rect.w == 150, "hstack fill child = inner - fixed - gap")
-check(fixed.resolved_rect.x == 160 and fixed.resolved_rect.w == 40, "hstack fixed child pinned right")
+check(
+  fill.resolved_rect.x == 0 and fill.resolved_rect.w == 150,
+  "hstack fill child = inner - fixed - gap"
+)
+check(
+  fixed.resolved_rect.x == 160 and fixed.resolved_rect.w == 40,
+  "hstack fixed child pinned right"
+)
 check(hs.resolved_rect.h == 30, "hstack content height = tallest child")
 
 -- Resolve: a node whose height is a FUNCTION of width is evaluated with the width it

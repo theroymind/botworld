@@ -15,9 +15,7 @@ local function check(condition, label)
   end
 end
 
-local function approx(a, b)
-  return math.abs(a - b) < 1e-9
-end
+local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
 -- A small seeded LCG so runs are reproducible without love.math.
 local function make_rng(seed)
@@ -64,26 +62,41 @@ local field_grown = field_after_update(1000, 16 / 9)
 local field_huge = field_after_update(5000000, 16 / 9)
 
 check(math.abs(field1.w - world.BASE_FIELD) < 1, "pop 1 -> field_w approx BASE_FIELD")
-check(math.abs(field1.h - world.BASE_FIELD / (16 / 9)) < 1, "pop 1 -> field_h approx BASE_FIELD/aspect")
+check(
+  math.abs(field1.h - world.BASE_FIELD / (16 / 9)) < 1,
+  "pop 1 -> field_h approx BASE_FIELD/aspect"
+)
 check(field_grown.w > field1.w, "field grows with population (pop 1000 > pop 1)")
 check(math.abs(field_huge.w - world.MAX_FIELD) < 1, "huge pop clamps at MAX_FIELD")
 
 -- Stepped tiers: the field is a STEP function of population. It HOLDS within a
 -- tier and JUMPS exactly at a threshold, instead of climbing continuously.
 check(math.abs(field_after_update(1, 16 / 9).w - 440) < 1, "tier 1: pop 1 -> 440")
-check(math.abs(field_after_update(299, 16 / 9).w - 440) < 1, "tier 1 holds below the next threshold (pop 299 -> 440)")
+check(
+  math.abs(field_after_update(299, 16 / 9).w - 440) < 1,
+  "tier 1 holds below the next threshold (pop 299 -> 440)"
+)
 check(math.abs(field_after_update(300, 16 / 9).w - 1360) < 1, "tier 2: pop 300 steps to 1360")
 check(math.abs(field_after_update(999, 16 / 9).w - 1360) < 1, "tier 2 holds (pop 999 -> 1360)")
 check(math.abs(field_after_update(1000, 16 / 9).w - 2580) < 1, "tier 3: pop 1000 -> 2580")
 check(math.abs(field_after_update(3000, 16 / 9).w - 3330) < 1, "tier 4: pop 3000 -> 3330")
 check(math.abs(field_after_update(10000, 16 / 9).w - 3980) < 1, "tier 5: pop 10000 -> 3980")
 check(math.abs(field_after_update(30000, 16 / 9).w - 4500) < 1, "tier 6: pop 30000 -> 4500")
-check(math.abs(field_after_update(50000, 16 / 9).w - 4720) < 1, "tier 7: pop 50000 -> 4720 (added mid-band step)")
+check(
+  math.abs(field_after_update(50000, 16 / 9).w - 4720) < 1,
+  "tier 7: pop 50000 -> 4720 (added mid-band step)"
+)
 check(math.abs(field_after_update(100000, 16 / 9).w - 5010) < 1, "tier 8: pop 100000 -> 5010")
 check(math.abs(field_after_update(300000, 16 / 9).w - 5430) < 1, "tier 9: pop 300000 -> 5430")
-check(math.abs(field_after_update(500000, 16 / 9).w - 5620) < 1, "tier 10: pop 500000 -> 5620 (added mid-band step)")
+check(
+  math.abs(field_after_update(500000, 16 / 9).w - 5620) < 1,
+  "tier 10: pop 500000 -> 5620 (added mid-band step)"
+)
 check(math.abs(field_after_update(1000000, 16 / 9).w - 5860) < 1, "tier 11: pop 1000000 -> 5860")
-check(math.abs(field_after_update(3000000, 16 / 9).w - 6220) < 1, "tier 12: pop 3000000 -> 6220 (max)")
+check(
+  math.abs(field_after_update(3000000, 16 / 9).w - 6220) < 1,
+  "tier 12: pop 3000000 -> 6220 (max)"
+)
 
 -- RECENTRE on a tier step: the field grows anchored at the origin, so without a
 -- shift the old realm's inhabitants would strand in the top-left corner of the
@@ -218,11 +231,24 @@ local wrap_opts = {
 world.update(w, FRAME, wrap_opts) -- establish the pop-1 field + founder
 local wrap_field = world.snapshot(w).field.w
 -- Replace the founder with one already past the right edge, moving further right.
-w.cells = { { x = wrap_field + 40, y = 50, vx = 180, vy = 0, age = 1, seed = 0.5, render = { kind = "cell" } } }
+w.cells = {
+  {
+    x = wrap_field + 40,
+    y = 50,
+    vx = 180,
+    vy = 0,
+    age = 1,
+    seed = 0.5,
+    render = { kind = "cell" },
+  },
+}
 world.update(w, FRAME, wrap_opts)
 local wrapped_x = w.cells[1].x
 check(wrapped_x >= 0 and wrapped_x < wrap_field, "a cell stays inside the wrapped field")
-check(wrapped_x < wrap_field * 0.3, "a cell past the edge wraps to near 0 (endless realm), not pinned at the margin")
+check(
+  wrapped_x < wrap_field * 0.3,
+  "a cell past the edge wraps to near 0 (endless realm), not pinned at the margin"
+)
 
 -- Separation: crowded cells push apart (anti-clumping for survivability). With
 -- sense_range 0 there's no food chasing to confound it -- two cells almost on
@@ -249,7 +275,10 @@ local sep_before = cell_dist(w.cells[1], w.cells[2])
 for _ = 1, 20 do
   world.update(w, FRAME, sep_opts)
 end
-check(cell_dist(w.cells[1], w.cells[2]) > sep_before, "crowded cells separate (anti-clumping for survivability)")
+check(
+  cell_dist(w.cells[1], w.cells[2]) > sep_before,
+  "crowded cells separate (anti-clumping for survivability)"
+)
 
 -- Before predation, no prey and no predators exist.
 w = world.new({ rng = make_rng(3), aspect = 16 / 9 })
@@ -346,7 +375,9 @@ local function spread(foods, cx, cy)
       count = count + 1
     end
   end
-  if count == 0 then return 0 end
+  if count == 0 then
+    return 0
+  end
   return total / count
 end
 
@@ -388,7 +419,10 @@ local steady = {
 local r_killed, r_engulfs, r_deaths = world.update(rw, FRAME, steady)
 check(r_killed == 0, "no predators -> zero killed")
 check(r_engulfs == 0, "no predation -> zero prey engulfs")
-check(type(r_deaths) == "table" and #r_deaths == 0, "a steady colony reports an empty death-points table")
+check(
+  type(r_deaths) == "table" and #r_deaths == 0,
+  "a steady colony reports an empty death-points table"
+)
 
 -- Cells track HUNGER (seconds since the last meal), so the view can dim the
 -- starving and reconcile can cull them first.
@@ -556,7 +590,10 @@ check(total_engulfs > 0, "prey fully engulfed over a hunting run are counted")
 -- swarm_center: the mean cell position (inside the field), and the field centre
 -- when the swarm is empty.
 local cx, cy = world.swarm_center(ew)
-check(cx >= 0 and cx <= ew.field_w and cy >= 0 and cy <= ew.field_h, "swarm_center lands inside the field")
+check(
+  cx >= 0 and cx <= ew.field_w and cy >= 0 and cy <= ew.field_h,
+  "swarm_center lands inside the field"
+)
 local empty = world.new({ rng = make_rng(1), aspect = 16 / 9 })
 local ecx, ecy = world.swarm_center(empty)
 check(
@@ -602,19 +639,25 @@ check(
 -- BLOOM SAFE ZONE: with a bloom_exclude rect (the orchestrator's screen UI
 -- projected into world space), spawned blooms never land inside it -- even when
 -- the rect covers most of the spawn band (forcing the nudge-left fallback).
-local bw = world.new({ rng = make_rng(11), aspect = 16 / 9 })
-local excl = { x = bw.field_w * 0.5, y = 0, w = bw.field_w * 0.5, h = bw.field_h }
+local excl_world = world.new({ rng = make_rng(11), aspect = 16 / 9 })
+local excl =
+  { x = excl_world.field_w * 0.5, y = 0, w = excl_world.field_w * 0.5, h = excl_world.field_h }
 local bloom_spawns = 0
 for _ = 1, 4000 do
-  world.update(bw, FRAME, { target_population = 1, bloom_exclude = excl })
-  for i = #bw.blooms, 1, -1 do
-    local b = bw.blooms[i]
+  world.update(excl_world, FRAME, { target_population = 1, bloom_exclude = excl })
+  for i = #excl_world.blooms, 1, -1 do
+    local bloom = excl_world.blooms[i]
     bloom_spawns = bloom_spawns + 1
     check(
-      not (b.x >= excl.x and b.x <= excl.x + excl.w and b.y >= excl.y and b.y <= excl.y + excl.h),
+      not (
+          bloom.x >= excl.x
+          and bloom.x <= excl.x + excl.w
+          and bloom.y >= excl.y
+          and bloom.y <= excl.y + excl.h
+        ),
       "bloom never spawns inside the exclusion rect"
     )
-    table.remove(bw.blooms, i)
+    table.remove(excl_world.blooms, i)
   end
 end
 check(bloom_spawns >= 10, "bloom safe-zone run observed enough spawns to be meaningful")
@@ -634,19 +677,27 @@ check(spawned_any, "blooms spawn normally when no exclusion rect is given")
 -- BLOOM CONFINE (founder lock): with a bloom_confine rect (the locked camera
 -- frame projected into world space), every spawned bloom lands WITHIN it -- even
 -- when the rect is a small window far from the field's usual interior band.
-local cw = world.new({ rng = make_rng(11), aspect = 16 / 9 })
-local conf = { x = cw.field_w * 0.30, y = cw.field_h * 0.40, w = cw.field_w * 0.20, h = cw.field_h * 0.20 }
+local conf_world = world.new({ rng = make_rng(11), aspect = 16 / 9 })
+local conf = {
+  x = conf_world.field_w * 0.30,
+  y = conf_world.field_h * 0.40,
+  w = conf_world.field_w * 0.20,
+  h = conf_world.field_h * 0.20,
+}
 local confine_spawns = 0
 for _ = 1, 4000 do
-  world.update(cw, FRAME, { target_population = 1, bloom_confine = conf })
-  for i = #cw.blooms, 1, -1 do
-    local b = cw.blooms[i]
+  world.update(conf_world, FRAME, { target_population = 1, bloom_confine = conf })
+  for i = #conf_world.blooms, 1, -1 do
+    local bloom = conf_world.blooms[i]
     confine_spawns = confine_spawns + 1
     check(
-      b.x >= conf.x and b.x <= conf.x + conf.w and b.y >= conf.y and b.y <= conf.y + conf.h,
+      bloom.x >= conf.x
+        and bloom.x <= conf.x + conf.w
+        and bloom.y >= conf.y
+        and bloom.y <= conf.y + conf.h,
       "bloom always spawns inside the confine rect"
     )
-    table.remove(cw.blooms, i)
+    table.remove(conf_world.blooms, i)
   end
 end
 check(confine_spawns >= 10, "bloom confine run observed enough spawns to be meaningful")

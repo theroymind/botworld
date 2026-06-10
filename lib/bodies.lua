@@ -46,9 +46,7 @@ local planet_color = {}
 -- Must match palette() in the swarm vertex shader.
 local function planet_palette(planet_index)
   local t = 2 * math.pi * planet_index / PLANET_COUNT
-  return 0.55 + 0.45 * math.cos(t),
-    0.55 + 0.45 * math.cos(t + 2.1),
-    0.55 + 0.45 * math.cos(t + 4.2)
+  return 0.55 + 0.45 * math.cos(t), 0.55 + 0.45 * math.cos(t + 2.1), 0.55 + 0.45 * math.cos(t + 4.2)
 end
 
 local function load_planets()

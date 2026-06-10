@@ -178,13 +178,9 @@ function swarm.load(bodies_module)
   build_meshes()
 end
 
-function swarm.add(n)
-  swarm.count = math.min(swarm.count + n, MAX_DRONES)
-end
+function swarm.add(n) swarm.count = math.min(swarm.count + n, MAX_DRONES) end
 
-function swarm.clear()
-  swarm.count = 0
-end
+function swarm.clear() swarm.count = 0 end
 
 function swarm.update(dt)
   elapsed = elapsed + dt

@@ -203,9 +203,7 @@ local FEAR_FLOOR = 0.0 -- min surviving fraction of intake under max fear (0 -> 
 -- colony grows. 0 at pop 0, climbing toward COMP_FRAC_MAX with population scale
 -- COMP_POP_TAU, then SATURATING (flat past a few hundred cells so it never re-caps
 -- the millions climb). Pure; only used when cfg.competition is set (else never called).
-local function comp_frac(t)
-  return COMP_FRAC_MAX * (1 - math.exp(-(t or 0) / COMP_TAU))
-end
+local function comp_frac(t) return COMP_FRAC_MAX * (1 - math.exp(-(t or 0) / COMP_TAU)) end
 
 -- Forward declarations: the ramping predation pressure and the evasion mitigation
 -- are defined in the SURVIVAL section below (with the cull that uses them), but
@@ -222,7 +220,7 @@ local pred_pressure, evasion_mitigation
 -- build (its evasion level). The `t` arg is the gate flag ONLY (survival/survsweep pass
 -- a time; scenario/growth omit it) -- the pressure itself is now keyed on population.
 -- Returns 0 when predation is off / no time supplied.
-local function effective_pred_pressure(cfg, population, t)
+local function effective_pred_pressure(cfg, _population, t)
   if not (cfg.predation and t) then
     return 0
   end
@@ -354,7 +352,8 @@ local function run(cfg, opts)
       peak_rate = state.div_rate
     end
     if t % 5 < dt then
-      curve[#curve + 1] = { t = t, pop = state.population, rate = state.div_rate, biomass = state.biomass }
+      curve[#curve + 1] =
+        { t = t, pop = state.population, rate = state.div_rate, biomass = state.biomass }
     end
     -- Steady state: population has not changed for a sustained window.
     if state.population == last_pop then
@@ -485,7 +484,9 @@ local function scenario_table()
   print("")
   print("cell-layer balance lab -- carrying capacity & growth per config")
   print(string.rep("-", 78))
-  print(string.format("%-30s %8s %9s %9s %10s", "scenario", "K (pop)", "t->50%", "t->90%", "peak/min"))
+  print(
+    string.format("%-30s %8s %9s %9s %10s", "scenario", "K (pop)", "t->50%", "t->90%", "peak/min")
+  )
   print(string.rep("-", 78))
   for _, s in ipairs(SCENARIOS) do
     local r = run(s.cfg)
@@ -753,7 +754,7 @@ local function survival_run(cfg, feed_each, checkpoints, max_t)
   local grew = false
   -- Death attribution accumulators + the peak / post-peak-trough population trackers.
   local d_tox, d_starv, d_pred = 0, 0, 0
-  local peak, peak_t, trough = 1, 0, nil
+  local peak, trough = 1, nil
   -- Optional time-to-target tracker (cfg.reach_target): the first moment the colony
   -- crosses a population, e.g. the 1,000,000 phase-1 exit. nil if never reached.
   local reach_target, reach_t = cfg.reach_target, nil
@@ -811,7 +812,7 @@ local function survival_run(cfg, feed_each, checkpoints, max_t)
     -- high-water mark). A new peak RESETS the trough so it only ever measures the
     -- decline that follows the final peak -- not the founder's pre-growth pop of 1.
     if state.population > peak then
-      peak, peak_t = state.population, t
+      peak = state.population
       trough = state.population
     elseif state.population < (trough or peak) then
       trough = state.population
@@ -882,23 +883,21 @@ end
 -- A founder config (bare single cell, photosynthesis milestone fired) with all
 -- three pressures available; overrides layer trait levels / unlocks / flags.
 local function survivor_cfg(overrides)
-  return base_cfg(
-    (function()
-      local o = {
-        toxicity = true,
-        competition = true,
-        predation = true,
-        growth_rate = GROWTH_RATE,
-        unlocked = { photosynthesis = true },
-      }
-      if overrides then
-        for k, v in pairs(overrides) do
-          o[k] = v
-        end
+  return base_cfg((function()
+    local o = {
+      toxicity = true,
+      competition = true,
+      predation = true,
+      growth_rate = GROWTH_RATE,
+      unlocked = { photosynthesis = true },
+    }
+    if overrides then
+      for k, v in pairs(overrides) do
+        o[k] = v
       end
-      return o
-    end)()
-  )
+    end
+    return o
+  end)())
 end
 
 -- Per-pressure death-share string: "tox40/comp31/pred29" where comp is the
@@ -908,9 +907,7 @@ local function fmt_attrib(st)
   if st.deaths <= 0 then
     return "      no deaths      "
   end
-  local function p(x)
-    return math.floor(100 * x / st.deaths + 0.5)
-  end
+  local function p(x) return math.floor(100 * x / st.deaths + 0.5) end
   return string.format("tox%2d/comp%2d/pred%2d", p(st.d_tox), p(st.d_starv), p(st.d_pred))
 end
 
@@ -982,7 +979,10 @@ local function survival()
     for i = 1, #checkpoints do
       local s = samples[i]
       io.write(
-        string.format("%9s", string.format("%s/%d%%", fmt_pop(s.pop), math.floor(s.health * 100 + 0.5)))
+        string.format(
+          "%9s",
+          string.format("%s/%d%%", fmt_pop(s.pop), math.floor(s.health * 100 + 0.5))
+        )
       )
     end
     io.write(
@@ -1038,7 +1038,12 @@ local function survival()
   end
   -- Build set for the race table. maxed = fully countered; mid = partial; founder = none.
   local function maxed_surv()
-    return maxed_cfg({ toxicity = true, competition = true, predation = true, growth_rate = GROWTH_RATE })
+    return maxed_cfg({
+      toxicity = true,
+      competition = true,
+      predation = true,
+      growth_rate = GROWTH_RATE,
+    })
   end
   -- A tended MID build: partial counters across the board, both milestones unlocked
   -- (it has long since passed the phagocytosis pop gate, so it earns that income).
@@ -1112,7 +1117,13 @@ local function counters()
   print("counters -- each trait vs ITS pressure, in isolation (LOW vs HIGH counter build)")
   print(string.rep("-", 92))
   print(
-    string.format("%-12s %-22s %-22s %-30s", "pressure", "LOW build", "HIGH build", "result (HIGH outlasts LOW)")
+    string.format(
+      "%-12s %-22s %-22s %-30s",
+      "pressure",
+      "LOW build",
+      "HIGH build",
+      "result (HIGH outlasts LOW)"
+    )
   )
   print(string.rep("-", 92))
 
@@ -1139,7 +1150,12 @@ local function counters()
       "predation",
       string.format("evasion 0  tr=%d", p_lo.trough),
       string.format("evasion 5  tr=%d", p_hi.trough),
-      string.format("trough +%d  (net %s->%s)", p_hi.trough - p_lo.trough, fmt_net(p_lo_mn), fmt_net(p_hi_mn))
+      string.format(
+        "trough +%d  (net %s->%s)",
+        p_hi.trough - p_lo.trough,
+        fmt_net(p_lo_mn),
+        fmt_net(p_hi_mn)
+      )
     )
   )
 
@@ -1152,7 +1168,12 @@ local function counters()
       "competition",
       string.format("sense/moto 0/0 tr=%s", fmt_pop(c_lo.trough)),
       string.format("sense/moto 5/5 tr=%s", fmt_pop(c_hi.trough)),
-      string.format("trough +%s  (net %s->%s)", fmt_pop(c_hi.trough - c_lo.trough), fmt_net(c_lo_mn), fmt_net(c_hi_mn))
+      string.format(
+        "trough +%s  (net %s->%s)",
+        fmt_pop(c_hi.trough - c_lo.trough),
+        fmt_net(c_lo_mn),
+        fmt_net(c_hi_mn)
+      )
     )
   )
   print(string.rep("-", 92))
@@ -1187,7 +1208,9 @@ local function counters()
       m_ext and ("EXTINCT @ " .. fmt_t(m_ext)) or "SURVIVES (contested but alive)"
     )
   )
-  print("contested = trough net/min goes NEGATIVE (late game is a fight); survives = no extinction.")
+  print(
+    "contested = trough net/min goes NEGATIVE (late game is a fight); survives = no extinction."
+  )
   print("")
 end
 
@@ -1236,11 +1259,7 @@ local function survival_sweep(knob, lo, hi, step)
   local checkpoints = { 60, 180, 300 }
   print("")
   print(
-    string.format(
-      "survsweep '%s' on the reference build (%s; tox+comp+pred ON)",
-      knob,
-      REF_LABEL
-    )
+    string.format("survsweep '%s' on the reference build (%s; tox+comp+pred ON)", knob, REF_LABEL)
   )
   print(string.rep("-", 56))
   print(string.format("%14s %14s %14s", knob, "extinction", "min net/min"))
@@ -1258,7 +1277,9 @@ local function survival_sweep(knob, lo, hi, step)
     )
   end
   print(string.rep("-", 56))
-  print("lower extinction time / more-negative net = the knob is pushing the colony toward failure.")
+  print(
+    "lower extinction time / more-negative net = the knob is pushing the colony toward failure."
+  )
   print("")
 end
 

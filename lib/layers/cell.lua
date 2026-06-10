@@ -217,9 +217,7 @@ local COLLAPSE_ANIM = 2.6 -- length of the game-over beat before the fresh reloa
 -- growing share of the food as the lineage ages, climbing toward COMP_FRAC_MAX with
 -- time scale COMP_TAU, then saturating (it never re-caps the millions climb). Pure;
 -- keyed on the lineage clock so offline replays the same ramp position.
-local function comp_frac(age)
-  return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU))
-end
+local function comp_frac(age) return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU)) end
 
 -- The ramping PREDATION pressure (mirrors sim_lab.pred_pressure): the per-second
 -- cull fraction climbs LINEARLY with elapsed lineage time (a rising clock is what
@@ -420,9 +418,7 @@ end
 -- ends purely because the population reached 0, the natural end of the die-off. As
 -- long as a single cell survives, feeding or leveling cleanup can still turn it
 -- around. Returns true the moment the colony is wiped out.
-local function is_extinct()
-  return cell.state.sim.population <= 0
-end
+local function is_extinct() return cell.state.sim.population <= 0 end
 
 -- Begin the game-over beat: freeze the sim, shake + flash red, toast the cause.
 -- The overlay runs for COLLAPSE_ANIM, then cell.update reloads a fresh lineage.
@@ -804,9 +800,7 @@ local function toggle_button_node()
         id = "panel_toggle",
       })
     end,
-    on_click = function()
-      panel_collapsed = not panel_collapsed
-    end,
+    on_click = function() panel_collapsed = not panel_collapsed end,
     resolved_rect = nil,
   }
 end

@@ -16,13 +16,14 @@ local function check(condition, label)
   end
 end
 
-local function approx(a, b)
-  return math.abs(a - b) < 1e-9
-end
+local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
 -- A fresh controller holds an empty effect list.
 local ctrl = fx.new()
-check(type(ctrl.effects) == "table" and #ctrl.effects == 0, "new() controller has an empty effects list")
+check(
+  type(ctrl.effects) == "table" and #ctrl.effects == 0,
+  "new() controller has an empty effects list"
+)
 
 -- add appends and returns the effect; a custom effect entity drives the lifecycle.
 local e = {

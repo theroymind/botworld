@@ -24,15 +24,9 @@ local function armed()
   transition.begin(t, {
     x = 100,
     y = 200,
-    on_focus = function(x, y, mult)
-      log.focus[#log.focus + 1] = { x = x, y = y, mult = mult }
-    end,
-    on_shake = function()
-      log.shake = log.shake + 1
-    end,
-    on_reset = function()
-      log.resets = log.resets + 1
-    end,
+    on_focus = function(x, y, mult) log.focus[#log.focus + 1] = { x = x, y = y, mult = mult } end,
+    on_shake = function() log.shake = log.shake + 1 end,
+    on_reset = function() log.resets = log.resets + 1 end,
   })
   return t, log
 end

@@ -50,8 +50,14 @@ check(
   "with mitochondrion held but below the chloroplast gate -> nothing eligible"
 )
 local elig2 = organelles.next_eligible(with_mito, chloro_gate, true)
-check(elig2 and elig2.id == "chloroplast", "chloroplast is eligible once mitochondrion is held and its gate is met")
-check(organelles.def("chloroplast").needs == "mitochondrion", "chloroplast declares its mitochondrion prerequisite")
+check(
+  elig2 and elig2.id == "chloroplast",
+  "chloroplast is eligible once mitochondrion is held and its gate is met"
+)
+check(
+  organelles.def("chloroplast").needs == "mitochondrion",
+  "chloroplast declares its mitochondrion prerequisite"
+)
 
 -- Nothing is eligible once both are held.
 check(
@@ -66,7 +72,10 @@ check(organelles.photo_bonus(set) == 0, "neutral photo bonus with nothing held")
 check(organelles.acquire(set, "mitochondrion"), "acquire returns true on first add")
 check(not organelles.acquire(set, "mitochondrion"), "re-acquiring is a no-op")
 check(not organelles.acquire(set, "ghost"), "acquire rejects an unknown id")
-check(organelles.intake_mult(set) == 2, "mitochondrion doubles the intake mult (+1.0 -> the energy revolution)")
+check(
+  organelles.intake_mult(set) == 2,
+  "mitochondrion doubles the intake mult (+1.0 -> the energy revolution)"
+)
 check(organelles.photo_bonus(set) == 0, "mitochondrion adds no light income")
 organelles.acquire(set, "chloroplast")
 check(organelles.photo_bonus(set) == 40, "chloroplast adds flat light income")

@@ -277,25 +277,15 @@ local STARVE_FLOOR = 1 -- never retire the colony below this many cells
 local HASH_CELL = 64 -- spatial-hash bucket size
 
 -- rng helpers (state.rng returns [0,1)).
-local function rnd(state)
-  return state.rng()
-end
+local function rnd(state) return state.rng() end
 
-local function rand_range(state, a, b)
-  return a + state.rng() * (b - a)
-end
+local function rand_range(state, a, b) return a + state.rng() * (b - a) end
 
-local function rsign(state)
-  return state.rng() * 2 - 1
-end
+local function rsign(state) return state.rng() * 2 - 1 end
 
-local function rint(state, n)
-  return math.floor(state.rng() * n) + 1
-end
+local function rint(state, n) return math.floor(state.rng() * n) + 1 end
 
-local function clamp(v, lo, hi)
-  return math.max(lo, math.min(hi, v))
-end
+local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
 -- The field side for a given colony size: the largest tier whose population
 -- threshold the colony has reached. A step function, so the fit-camera holds
@@ -329,9 +319,7 @@ end
 
 -- The MENACE scalar: tier rank mapped to 0..1 (0 at the founder tier, 1 at the top).
 -- Predator density/cadence ramp on this, so "grown more = more risk" reads on screen.
-local function menace_for_population(pop)
-  return (tier_rank(pop) - 1) / (#FIELD_TIERS - 1)
-end
+local function menace_for_population(pop) return (tier_rank(pop) - 1) / (#FIELD_TIERS - 1) end
 
 -- How many ambient food motes to keep at the current field size. NOT constant
 -- density: the base motes-per-pixel rate (44 on a 1280x720 canvas) is divided
@@ -373,9 +361,7 @@ function world.new(opts)
   opts = opts or {}
   local aspect = opts.aspect or (16 / 9)
   return {
-    rng = opts.rng or function()
-      return 0.5
-    end,
+    rng = opts.rng or function() return 0.5 end,
     field_w = BASE_FIELD,
     field_h = BASE_FIELD / aspect,
     cells = {},
@@ -429,9 +415,7 @@ function world.hit_bloom(state, x, y, radius)
 end
 
 -- The first active bloom, for keyboard feeding when the mouse isn't on one.
-function world.any_bloom(state)
-  return state.blooms[1]
-end
+function world.any_bloom(state) return state.blooms[1] end
 
 -- A cell's division quota: how many morsels it must eat before it may split,
 -- drawn fresh in [DIVIDE_FOOD_MIN, DIVIDE_FOOD_MAX] for each (re)birth.
@@ -509,9 +493,10 @@ local function retire_hungriest(state, k)
   for i = 1, #state.cells do
     order[i] = i
   end
-  table.sort(order, function(a, b)
-    return (state.cells[a].hunger or 0) > (state.cells[b].hunger or 0)
-  end)
+  table.sort(
+    order,
+    function(a, b) return (state.cells[a].hunger or 0) > (state.cells[b].hunger or 0) end
+  )
   local doomed = {}
   for i = 1, k do
     doomed[order[i]] = true
@@ -851,7 +836,13 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
           c.feed_kind = nil
           c.eaten = c.eaten + 1
           if c.eaten >= c.need and births > 0 then
-            new_cell(state, c.x + rsign(state) * CELL_SPAWN_SPREAD, c.y + rsign(state) * CELL_SPAWN_SPREAD, c.x, c.y)
+            new_cell(
+              state,
+              c.x + rsign(state) * CELL_SPAWN_SPREAD,
+              c.y + rsign(state) * CELL_SPAWN_SPREAD,
+              c.x,
+              c.y
+            )
             births = births - 1
             c.eaten = 0
             c.need = div_need(state)
@@ -864,12 +855,14 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
       local food_i, food_d2 = nearest_food(grid, state.foods, c.x, c.y, sense)
       local tx, ty, target_kind, target_idx
       if food_i then
-        tx, ty, target_kind, target_idx = state.foods[food_i].x, state.foods[food_i].y, "food", food_i
+        tx, ty, target_kind, target_idx =
+          state.foods[food_i].x, state.foods[food_i].y, "food", food_i
       end
       if hunt_prey then
         local prey_i, prey_d2 = nearest_prey(state.prey, c.x, c.y, sense)
         if prey_i and (not food_i or prey_d2 < food_d2) then
-          tx, ty, target_kind, target_idx = state.prey[prey_i].x, state.prey[prey_i].y, "prey", prey_i
+          tx, ty, target_kind, target_idx =
+            state.prey[prey_i].x, state.prey[prey_i].y, "prey", prey_i
         end
       end
 
@@ -921,7 +914,8 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
       if target_kind then
         local dx, dy = tx - c.x, ty - c.y
         if dx * dx + dy * dy <= CONSUME_RADIUS * CONSUME_RADIUS then
-          local entity = (target_kind == "food") and state.foods[target_idx] or state.prey[target_idx]
+          local entity = (target_kind == "food") and state.foods[target_idx]
+            or state.prey[target_idx]
           c.feeding = FEED_TIME / feed_rate
           c.feed_target = entity
           c.feed_kind = target_kind -- remember food vs prey for the engulf count
@@ -936,9 +930,7 @@ local function step_cells(state, dt, stats, tempo, hunt_prey, births)
 end
 
 -- True when (x, y) falls inside rect r ({ x, y, w, h }).
-local function in_rect(r, x, y)
-  return x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h
-end
+local function in_rect(r, x, y) return x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h end
 
 local function step_blooms(state, dt, exclude, confine)
   state.bloom_timer = state.bloom_timer - dt

@@ -95,9 +95,7 @@ function economy.new(defs)
   return self
 end
 
-function eco.tick(self, dt)
-  accrue(self, dt)
-end
+function eco.tick(self, dt) accrue(self, dt) end
 
 -- Units/sec of `resource` across all generators, with upgrade and prestige multipliers.
 function eco.rate(self, resource)

@@ -388,7 +388,7 @@ local function resolve(e, t, amul)
   return size, color, alpha
 end
 
-local function draw_square(e, t, zoom, amul)
+local function draw_square(e, t, _zoom, amul)
   local size, color, alpha = resolve(e, t, amul)
   if size <= 0 or alpha <= 0 then
     return
@@ -398,7 +398,7 @@ local function draw_square(e, t, zoom, amul)
   love.graphics.rectangle("fill", e.x - half, e.y - half, size, size)
 end
 
-local function draw_circle(e, t, zoom, amul)
+local function draw_circle(e, t, _zoom, amul)
   local size, color, alpha = resolve(e, t, amul)
   if size <= 0 or alpha <= 0 then
     return
@@ -644,7 +644,7 @@ function view.draw_world(state, snap, opts)
   -- above that simulated count once the colony outgrows it, keeping the teeming-mass
   -- look at scale for a few uniforms of CPU cost. swarm_count is the colony-driven
   -- visible sample; the simulated set draws 1:1 and the field draws the remainder.
-  local cells = snap.cells
+  -- Reuse the `cells` resolved above (snap.cells or {}) -- same simulated set.
   local n = #cells
   local swarm_count = (opts and opts.swarm_count) or n
   -- The field draws only the swarm ABOVE the simulated cap -- the real boids cover

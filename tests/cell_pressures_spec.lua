@@ -22,9 +22,7 @@ local function check(condition, label)
     error("FAILED: " .. label, 2)
   end
 end
-local function approx(a, b)
-  return math.abs(a - b) < 1e-9
-end
+local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
 -- The lab's locked pressure constants (mirrored in cell.lua). Kept here so the test
 -- exercises the SAME age-keyed ramps the real intake fold builds, independent of the
@@ -37,9 +35,7 @@ local COMP_FRAC_MAX, COMP_TAU, COMP_COUNTER_GAIN = 0.68, 42, 2.0
 local PRED_BASE, PRED_RAMP, PRED_TAU, PRED_MAX = 0.004, 0.010, 42, 0.25
 local PRED_EVASION_GAIN, PRED_MIT_CAP, PRED_FEAR, FEAR_FLOOR = 8.0, 0.97, 8.0, 0.0
 
-local function comp_frac(age)
-  return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU))
-end
+local function comp_frac(age) return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU)) end
 local function pred_pressure(age)
   local p = PRED_BASE + PRED_RAMP * (math.max(age or 0, 0) / PRED_TAU)
   if p > PRED_MAX then
@@ -129,16 +125,27 @@ do
   culled.population = 50
   -- A pure cull intake: no income, just predation, so it can only fall.
   for _ = 1, 400 do
-    sim.step(culled, 0.5, { mult = 1, upkeep_per_cell = 0, forage_per_cell = 0, photo = 0, pred_cull_frac = 0.05 })
+    sim.step(
+      culled,
+      0.5,
+      { mult = 1, upkeep_per_cell = 0, forage_per_cell = 0, photo = 0, pred_cull_frac = 0.05 }
+    )
   end
-  check(culled.population == 0, "a relentless predation cull drives the colony to literal extinction (no floor at 1)")
+  check(
+    culled.population == 0,
+    "a relentless predation cull drives the colony to literal extinction (no floor at 1)"
+  )
 end
 
 -- net_rate tracks births minus all deaths: positive while a fed colony grows.
 do
   local g = sim.new()
   for _ = 1, 400 do
-    sim.step(g, 0.5, { mult = 1, forage_per_cell = 6, forage_cap = 1000, upkeep_per_cell = 2, growth_per_cell = 2 })
+    sim.step(
+      g,
+      0.5,
+      { mult = 1, forage_per_cell = 6, forage_cap = 1000, upkeep_per_cell = 2, growth_per_cell = 2 }
+    )
   end
   check(g.net_rate > 0, "net_rate is positive while a growing colony out-births its deaths")
 end
@@ -219,7 +226,10 @@ do
   end
   local off = sim.new()
   sim.offline(off, total, I)
-  check(live.population == off.population, "plain-table offline still matches live (backward compatible)")
+  check(
+    live.population == off.population,
+    "plain-table offline still matches live (backward compatible)"
+  )
   check(live.age == off.age, "plain-table offline advances age identically")
 end
 
