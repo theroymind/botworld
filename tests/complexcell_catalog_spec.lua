@@ -41,15 +41,38 @@ check(catalog.POWER_PER_MITO == 10, "POWER_PER_MITO")
 check(catalog.UPKEEP_PER_MACHINE == 0.25, "UPKEEP_PER_MACHINE")
 check(catalog.WASTE_COEF == 0, "WASTE_COEF")
 check(catalog.E_PER_OUTPUT == 1.0, "E_PER_OUTPUT")
-check(catalog.BUFFER_MAX == 5000, "BUFFER_MAX")
+check(catalog.BUFFER_BASE == 5000, "BUFFER_BASE (ATP cap at built 0)")
+check(catalog.BUFFER_BUILT_REF == 20000, "BUFFER_BUILT_REF (built per extra BUFFER_BASE)")
 check(catalog.BROWNOUT_RESERVE == 0.3, "BROWNOUT_RESERVE")
 check(catalog.FUEL_FACTOR == 1.0, "FUEL_FACTOR")
-check(catalog.STAGE_RATE == 5, "STAGE_RATE")
+-- Pillar 1: STAGE_RATE is now a PER-STAGE table, not a scalar. Each stage carries a
+-- distinct per-level capacity; every STAGES entry must have a rate.
+check(type(catalog.STAGE_RATE) == "table", "STAGE_RATE is a per-stage table (Pillar 1)")
+check(catalog.STAGE_RATE.ribosomes == 12, "ribosomes rate (high-throughput translation)")
+check(catalog.STAGE_RATE.nucleus == 6, "nucleus rate")
+check(catalog.STAGE_RATE.er == 4, "er rate (the classic rate-limiter)")
+check(catalog.STAGE_RATE.golgi == 6, "golgi rate")
+check(catalog.STAGE_RATE.transport == 8, "transport rate")
+check(catalog.STAGE_RATE.membrane == 4, "membrane rate (frontier bottleneck)")
 check(catalog.STAGE_BASE == 20, "STAGE_BASE")
 check(approx(catalog.STAGE_GROWTH, 1.12), "STAGE_GROWTH")
 check(catalog.MITO_BASE == 25, "MITO_BASE")
 check(approx(catalog.MITO_GROWTH, 1.12), "MITO_GROWTH")
+check(catalog.STAB_BASE == 60, "STAB_BASE")
+check(approx(catalog.STAB_GROWTH, 1.18), "STAB_GROWTH")
 check(catalog.FORK_AT == 180000, "FORK_AT")
+-- Pillar 2/3: the ROS pendulum + balance-cut constants.
+check(catalog.BALANCE_LO == 1.0, "BALANCE_LO")
+check(catalog.BALANCE_HI == 1.6, "BALANCE_HI")
+check(catalog.ROS_RATIO_CAP == 3.0, "ROS_RATIO_CAP")
+check(catalog.ROS_LETHAL == 0.8, "ROS_LETHAL")
+check(catalog.STAB_TOLERANCE == 0.15, "STAB_TOLERANCE")
+check(catalog.STAB_CLEAR == 0.5, "STAB_CLEAR")
+check(catalog.MIN_EFF == 0.4, "MIN_EFF")
+-- Every STAGES entry has a rate (the single lookup point must never miss).
+for _, id in ipairs(catalog.STAGES) do
+  check(type(catalog.STAGE_RATE[id]) == "number", "STAGE_RATE has a number for " .. id)
+end
 
 -- STAGES order matches the science-ordered pipeline.
 do
@@ -66,17 +89,49 @@ end
 -- fold: power, throughput (min over unlocked), excess, upkeep, pass-through.
 -- ---------------------------------------------------------------------------
 do
-  -- One mito, ribosomes at level 1: power = 10*1, throughput = 5*1, no excess,
-  -- upkeep = 0.25 * (mito 1 + levels 1) = 0.5. Pass-throughs carry the constants.
+  -- One mito, ribosomes at level 1: power = 10*1, throughput = ribosomes_rate(12)*1, no
+  -- excess, upkeep = 0.25 * (mito 1 + levels 1) = 0.5. Pass-throughs carry the constants.
   local r = catalog.fold(state())
   check(approx(r.power, 10), "fold power = POWER_PER_MITO * mito * fuel")
-  check(approx(r.throughput, 5), "fold throughput = stage_rate * level (single stage)")
+  check(
+    approx(r.throughput, catalog.STAGE_RATE.ribosomes),
+    "fold throughput = stage_rate[id] * level (single stage, per-stage rate)"
+  )
   check(approx(r.excess, 0), "fold excess 0 with no overbuilt stage")
   check(approx(r.upkeep, 0.5), "fold upkeep = UPKEEP_PER_MACHINE * (mito + levelsum)")
   check(approx(r.waste_coef, catalog.WASTE_COEF), "fold passes waste_coef")
   check(approx(r.e_per_output, catalog.E_PER_OUTPUT), "fold passes e_per_output")
-  check(approx(r.buffer_max, catalog.BUFFER_MAX), "fold passes buffer_max")
+  -- The cap is state-derived now: at built 0 the fold threads exactly BUFFER_BASE.
+  check(approx(r.buffer_max, catalog.BUFFER_BASE), "fold buffer_max = BUFFER_BASE at built 0")
   check(approx(r.brownout_reserve, catalog.BROWNOUT_RESERVE), "fold passes brownout_reserve")
+  -- Pillar 2/3 fields: with no stab, the safe ceiling is the bare BALANCE_HI and ROS
+  -- clearance is the bare 1x; the ROS constants pass through for the sim.
+  check(approx(r.balance_lo, catalog.BALANCE_LO), "fold passes balance_lo")
+  check(approx(r.balance_hi_eff, catalog.BALANCE_HI), "fold balance_hi_eff = BALANCE_HI at stab 0")
+  check(approx(r.stab_clear, 1), "fold stab_clear = 1 at stab 0")
+  check(approx(r.ros_ratio_cap, catalog.ROS_RATIO_CAP), "fold passes ros_ratio_cap")
+  check(approx(r.min_eff, catalog.MIN_EFF), "fold passes min_eff")
+end
+
+do
+  -- STABILIZATION folds into the safe ceiling, ROS clearance, AND the upkeep machine
+  -- count. stab 3: balance_hi_eff = BALANCE_HI + 3*STAB_TOLERANCE; stab_clear = 1 +
+  -- 3*STAB_CLEAR; upkeep counts mito + levelsum + stab.
+  local s = state()
+  s.stab = 3
+  local r = catalog.fold(s)
+  check(
+    approx(r.balance_hi_eff, catalog.BALANCE_HI + 3 * catalog.STAB_TOLERANCE),
+    "stab lifts balance_hi_eff by STAB_TOLERANCE per level"
+  )
+  check(
+    approx(r.stab_clear, 1 + 3 * catalog.STAB_CLEAR),
+    "stab speeds ros clearance by STAB_CLEAR per level"
+  )
+  check(
+    approx(r.upkeep, catalog.UPKEEP_PER_MACHINE * (1 + 1 + 3)),
+    "stab counts as a machine in upkeep (mito + levelsum + stab)"
+  )
 end
 
 do
@@ -87,31 +142,41 @@ do
 end
 
 do
-  -- Throughput is the MIN over unlocked; excess is the sum above that min. Two
-  -- unlocked stages (ribosomes lvl 4, nucleus lvl 1): caps 20 and 5, throughput 5,
-  -- excess = (20 - 5) = 15. levelsum = 5 -> upkeep = 0.25*(1+5) = 1.5.
+  -- Throughput is the MIN over unlocked; excess is the sum above that min. Two unlocked
+  -- stages (ribosomes lvl 4, nucleus lvl 1): caps = rate*level. nucleus pins the line
+  -- (its cap < ribosomes' cap), ribosomes is excess above it. Derived from the per-stage
+  -- rates so the check isn't a magic number. levelsum = 5 -> upkeep = 0.25*(1+5) = 1.5.
+  local rib_cap = catalog.STAGE_RATE.ribosomes * 4
+  local nuc_cap = catalog.STAGE_RATE.nucleus * 1
+  local bottleneck = math.min(rib_cap, nuc_cap)
   local s = state({
     mito = 1,
     unlocked = { ribosomes = true, nucleus = true },
     stages = { ribosomes = 4, nucleus = 1 },
   })
   local r = catalog.fold(s)
-  check(approx(r.throughput, 5), "throughput = min capacity over unlocked stages")
-  check(approx(r.excess, 15), "excess = sum of capacity above the bottleneck")
+  check(approx(r.throughput, bottleneck), "throughput = min capacity over unlocked stages")
+  check(
+    approx(r.excess, (rib_cap - bottleneck) + (nuc_cap - bottleneck)),
+    "excess = sum above the bottleneck"
+  )
   check(approx(r.upkeep, 1.5), "upkeep folds the full level sum")
 end
 
 do
-  -- A LOCKED stage with a level does NOT count toward throughput/excess (only
-  -- unlocked stages do), but its level STILL counts toward upkeep (per the lab fold:
-  -- levelsum sums all stages). Here only ribosomes is unlocked.
+  -- A LOCKED stage with a level does NOT count toward throughput/excess (only unlocked
+  -- stages do), but its level STILL counts toward upkeep (levelsum sums all stages).
+  -- Here only ribosomes is unlocked.
   local s = state({
     mito = 1,
     unlocked = { ribosomes = true },
     stages = { ribosomes = 2, er = 9 },
   })
   local r = catalog.fold(s)
-  check(approx(r.throughput, 10), "locked stage ignored for throughput")
+  check(
+    approx(r.throughput, catalog.STAGE_RATE.ribosomes * 2),
+    "locked stage ignored for throughput"
+  )
   check(approx(r.excess, 0), "locked stage ignored for excess")
   check(approx(r.upkeep, 0.25 * (1 + 11)), "every stage level counts toward upkeep")
 end
@@ -125,6 +190,92 @@ check(approx(catalog.stage_cost(5), 20 * 1.12 ^ 5), "stage_cost(5) = base * grow
 check(approx(catalog.mito_cost(1), 25), "mito_cost(1) = MITO_BASE (growth^0)")
 check(approx(catalog.mito_cost(2), 25 * 1.12), "mito_cost(2) = base * growth^1")
 check(approx(catalog.mito_cost(6), 25 * 1.12 ^ 5), "mito_cost(6) = base * growth^(mito-1)")
+-- stabilization_cost: geometric in the stab count already owned (stab 0 -> base).
+check(approx(catalog.stabilization_cost(0), 60), "stabilization_cost(0) = STAB_BASE")
+check(approx(catalog.stabilization_cost(1), 60 * 1.18), "stabilization_cost(1) = base * growth^1")
+check(
+  approx(catalog.stabilization_cost(4), 60 * 1.18 ^ 4),
+  "stabilization_cost(4) = base * growth^4"
+)
+
+-- ---------------------------------------------------------------------------
+-- buffer_max: the ATP cap now SCALES with `built` instead of pinning at a fixed wall.
+-- It floors at BUFFER_BASE (built 0), is non-decreasing in built, stays finite, and
+-- reaches BUFFER_BASE * (1 + FORK_AT/BUFFER_BUILT_REF) by the FORK -- ~10x with the
+-- shipped constants. Every expectation is derived from the source constants.
+-- ---------------------------------------------------------------------------
+do
+  check(
+    approx(catalog.buffer_max(state({ built = 0 })), catalog.BUFFER_BASE),
+    "buffer_max at built 0 is exactly BUFFER_BASE"
+  )
+  -- One BUFFER_BUILT_REF of built adds exactly one more BUFFER_BASE of headroom.
+  check(
+    approx(catalog.buffer_max(state({ built = catalog.BUFFER_BUILT_REF })), 2 * catalog.BUFFER_BASE),
+    "buffer_max gains one BUFFER_BASE per BUFFER_BUILT_REF of built"
+  )
+  -- By the FORK the cap is ~10x the base (1 + FORK_AT/BUFFER_BUILT_REF).
+  local fork_cap = catalog.BUFFER_BASE * (1 + catalog.FORK_AT / catalog.BUFFER_BUILT_REF)
+  check(
+    approx(catalog.buffer_max(state({ built = catalog.FORK_AT })), fork_cap),
+    "buffer_max by the FORK = BUFFER_BASE * (1 + FORK_AT/BUFFER_BUILT_REF)"
+  )
+  check(fork_cap >= 10 * catalog.BUFFER_BASE - 1e-9, "the FORK cap is ~10x BUFFER_BASE")
+  -- Floor + finite + non-decreasing across a sweep of growing built.
+  local prev = nil
+  for _, b in ipairs({ 0, 50, 5000, 30000, 105000, 180000, 1e7 }) do
+    local cap = catalog.buffer_max(state({ built = b }))
+    check(cap >= catalog.BUFFER_BASE, "buffer_max never dips below BUFFER_BASE (built " .. b .. ")")
+    check(cap == cap and cap < math.huge, "buffer_max stays finite (built " .. b .. ")")
+    if prev then
+      check(cap >= prev, "buffer_max is non-decreasing in built (built " .. b .. ")")
+    end
+    prev = cap
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- build_rate: the read-only "+N /s" headline readout. Mirrors the sim's mint EXACTLY --
+-- output * value_mult * efficiency_factor, where efficiency_factor = MIN_EFF +
+-- (1-MIN_EFF) * balance_scalar -- and RISES with efficiency (a better-balanced cell at the
+-- same output mints more built). Derived from the source constants + the sim's own scalar.
+-- ---------------------------------------------------------------------------
+do
+  -- A concrete state with a known output: build_rate must equal the sim's mint factors.
+  local s = state({ mito = 5, unlocked = { ribosomes = true }, stages = { ribosomes = 4 } })
+  s.output = catalog.fold(s).throughput -- as if fully powered (O = T)
+  local r = catalog.fold(s)
+  local eff_factor = catalog.MIN_EFF + (1 - catalog.MIN_EFF) * sim.balance_scalar(r, s.ros or 0)
+  check(
+    approx(catalog.build_rate(s), s.output * (r.value_mult or 1) * eff_factor),
+    "build_rate = output * value_mult * efficiency_factor (mirrors the sim mint)"
+  )
+
+  -- Zero output -> zero build rate (nothing is flowing down the line).
+  local s0 = state()
+  s0.output = 0
+  check(approx(catalog.build_rate(s0), 0), "build_rate is 0 when output is 0")
+
+  -- RISES with efficiency: ros drag lowers the balance scalar, so the SAME output mints a
+  -- strictly lower build_rate -- the felt payoff of staying balanced.
+  local s_lo = state({ mito = 5, unlocked = { ribosomes = true }, stages = { ribosomes = 4 } })
+  s_lo.output = catalog.fold(s_lo).throughput
+  local s_hi = sim.load(sim.serialize(s_lo))
+  s_hi.output = s_lo.output
+  s_hi.ros = 0.5 -- worse balance via ros drag
+  check(
+    catalog.build_rate(s_hi) < catalog.build_rate(s_lo),
+    "lower efficiency (ros drag) mints a lower build_rate at the same output"
+  )
+
+  -- value_mult lifts it too: a longer integrated pipeline mints MORE per unit of output,
+  -- which build_rate folds in (the same carrot that rewards building the cell out).
+  local s_long = state({
+    unlocked = { ribosomes = true, nucleus = true },
+    stages = { ribosomes = 4, nucleus = 4 },
+  })
+  check(catalog.fold(s_long).value_mult > 1, "two integrated stages raise value_mult above 1")
+end
 
 -- ---------------------------------------------------------------------------
 -- discover_gates: DISCOVER (not unlock) stages at thresholds, return new ids. The
@@ -206,11 +357,13 @@ do
     catalog.stage_unlock_cost("transport") < catalog.stage_unlock_cost("membrane"),
     "membrane is the steepest integration"
   )
-  -- All integration costs fit inside the ATP buffer ceiling (so they're saveable).
+  -- All integration costs fit inside the ATP buffer ceiling at its SMALLEST (built 0 ->
+  -- BUFFER_BASE), so every beat is saveable from the very start; the cap only grows from
+  -- there. (BUFFER_BASE is the strictest case, so checking it covers every later built.)
   for _, g in ipairs(catalog.GATES) do
     check(
-      catalog.stage_unlock_cost(g.id) <= catalog.BUFFER_MAX,
-      g.id .. " integration cost is inside BUFFER_MAX (saveable)"
+      catalog.stage_unlock_cost(g.id) <= catalog.BUFFER_BASE,
+      g.id .. " integration cost is inside BUFFER_BASE (saveable from built 0)"
     )
   end
 end
@@ -227,8 +380,9 @@ do
   check(catalog.unlock_stage(s, "nucleus") == false, "unlock_stage refuses an un-discovered stage")
   check(not s.unlocked.nucleus, "the un-discovered stage stays locked")
 
-  -- Discovered on an EARLY line (ribosomes lvl 1, throughput 5): the seed floors at 1,
-  -- so the first unlock still opens at level 1 (0.6 * 5 / 5 = 0.6 -> floor to 1).
+  -- Discovered on an EARLY line (ribosomes lvl 1, throughput = ribosomes_rate): the seed
+  -- floors at 1, so the first unlock still opens at level 1 (the seed fraction of one
+  -- ribosome level, divided by the nucleus rate, rounds below 1 -> floor to 1).
   s = state({ built = 50 })
   catalog.discover_gates(s)
   check(catalog.unlock_stage(s, "nucleus") == true, "unlock_stage integrates a discovered stage")
@@ -246,17 +400,25 @@ do
 end
 
 do
-  -- SOFTEN THE COLLAPSE: on a BUILT-UP line, a freshly integrated stage seeds near the
-  -- line (a modest dip) instead of cratering to level 1. With ribosomes lvl 20 (cap 100,
-  -- throughput 100), nucleus seeds at 0.6*100/5 = 12, so the line dips 100 -> 60 (12*5),
-  -- not 100 -> 5. The dip is recoverable in a few levels, never a hard re-grind.
-  local s = state({ built = 50, unlocked = { ribosomes = true }, stages = { ribosomes = 20 } })
+  -- SOFTEN THE COLLAPSE: on a BUILT-UP line, a freshly integrated stage seeds NEAR the
+  -- line (a modest dip) instead of cratering to level 1. The seed is
+  -- floor(INTEGRATION_SEED_FRACTION * line / nucleus_rate + 0.5); its cap = seed *
+  -- nucleus_rate lands near INTEGRATION_SEED_FRACTION of the line, so the line dips
+  -- modestly. Derived from the constants (no magic numbers) so it holds under re-tuning.
+  local rib_level = 20
+  local line = catalog.STAGE_RATE.ribosomes * rib_level
+  local nuc_rate = catalog.STAGE_RATE.nucleus
+  local seed = math.floor((catalog.INTEGRATION_SEED_FRACTION * line) / nuc_rate + 0.5)
+  local s =
+    state({ built = 50, unlocked = { ribosomes = true }, stages = { ribosomes = rib_level } })
   catalog.discover_gates(s)
-  check(catalog.fold(s).throughput == 100, "pre-integration line throughput is 100")
+  check(catalog.fold(s).throughput == line, "pre-integration line throughput is the ribosomes cap")
   catalog.unlock_stage(s, "nucleus")
-  check(s.stages.nucleus == 12, "integration seeds near the line (0.6 * 100/5 = 12), not level 1")
-  check(catalog.fold(s).throughput == 60, "the line dips modestly (100 -> 60), not to a crater")
-  check(s.stages.nucleus * catalog.STAGE_RATE < 100, "the new stage still opens BELOW the line")
+  check(s.stages.nucleus == seed, "integration seeds near the line (seed-fraction / stage rate)")
+  check(catalog.fold(s).throughput == seed * nuc_rate, "the line dips to the new bottleneck cap")
+  check(seed * nuc_rate < line, "the new stage still opens BELOW the line (a dip, not a crater)")
+  -- And the dip is MODEST: the new bottleneck holds at least ~half the line (forgiving).
+  check(seed * nuc_rate >= line * 0.4, "the dip is modest (recoverable, not a crater)")
 end
 
 -- ---------------------------------------------------------------------------
@@ -268,14 +430,15 @@ end
 do
   -- One unlocked stage (ribosomes): value_mult is the neutral 1.0; a discovered-but-
   -- unintegrated stage does NOT change throughput -- the line runs at full rate.
+  local rib_full = catalog.STAGE_RATE.ribosomes * 4
   local s = state({ built = 50, unlocked = { ribosomes = true }, stages = { ribosomes = 4 } })
   check(approx(catalog.fold(s).value_mult, 1), "value_mult is 1 with only ribosomes")
-  check(approx(catalog.fold(s).throughput, 20), "full throughput (5*4) with one stage")
+  check(approx(catalog.fold(s).throughput, rib_full), "full throughput (rate*level) with one stage")
 
   catalog.discover_gates(s) -- discovers nucleus; it is available but NOT integrated
   check(catalog.has_pending_integration(s), "the discovered stage is pending integration")
   check(
-    approx(catalog.fold(s).throughput, 20),
+    approx(catalog.fold(s).throughput, rib_full),
     "an available-but-unintegrated stage does NOT throttle the line (no crippling)"
   )
   check(approx(catalog.fold(s).value_mult, 1), "an unintegrated stage earns no value bonus")
@@ -305,11 +468,17 @@ do
     stages = { ribosomes = 5, nucleus = 2, er = 3 },
   })
   check(catalog.bottleneck_id(s) == "nucleus", "bottleneck is the lowest stage_rate*level")
-  -- Tie at the lowest cap breaks by STAGES order (ribosomes before nucleus).
+  -- Tie at the lowest CAP breaks by STAGES order (ribosomes before nucleus). With per-stage
+  -- rates the EQUAL-cap levels differ: pick levels so the caps match (rate*level equal).
+  -- ribosomes rate 12 at lvl 1 == nucleus rate 6 at lvl 2 == cap 12.
   local tie = state({
     unlocked = { ribosomes = true, nucleus = true },
-    stages = { ribosomes = 2, nucleus = 2 },
+    stages = { ribosomes = 1, nucleus = 2 },
   })
+  check(
+    catalog.STAGE_RATE.ribosomes * 1 == catalog.STAGE_RATE.nucleus * 2,
+    "the tie setup really has equal caps"
+  )
   check(catalog.bottleneck_id(tie) == "ribosomes", "bottleneck ties break by STAGES order")
   check(catalog.bottleneck_id(state()) == "ribosomes", "single unlocked stage is the bottleneck")
 end
@@ -391,25 +560,30 @@ do
     unlocked = { ribosomes = true, nucleus = true },
     stages = { ribosomes = 4, nucleus = 1 },
   })
+  local rib_cap = catalog.STAGE_RATE.ribosomes * 4
+  local nuc_cap = catalog.STAGE_RATE.nucleus * 1
   local rows = catalog.stage_snapshot(s)
   check(#rows == #catalog.STAGES, "stage_snapshot has one row per stage, in order")
   check(rows[1].id == "ribosomes" and rows[2].id == "nucleus", "rows preserve STAGES order")
-  check(rows[1].cap == 20 and rows[2].cap == 5, "row cap = stage_rate * level")
+  check(rows[1].cap == rib_cap and rows[2].cap == nuc_cap, "row cap = stage_rate[id] * level")
   check(rows[1].unlocked and rows[2].unlocked, "unlocked flag set for online stages")
   check(rows[3].unlocked == false, "locked stage row reads unlocked=false")
-  -- nucleus (cap 5) is the bottleneck (throughput 5); ribosomes (cap 20) is above.
+  -- nucleus (smaller cap) is the bottleneck; ribosomes (larger cap) is above it.
+  check(nuc_cap < rib_cap, "the snapshot setup really has nucleus below ribosomes")
   check(
     rows[2].is_bottleneck and not rows[1].is_bottleneck,
     "is_bottleneck marks the pinning stage"
   )
-  -- congestion: ribosomes (20 - 5)/max(5,1) = 3 -> clamped to 1; bottleneck = 0.
+  -- congestion: ribosomes (rib_cap - nuc_cap)/max(nuc_cap,1) is well above 1 -> clamps to
+  -- 1; the bottleneck reads 0.
   check(approx(rows[1].congestion, 1), "an overbuilt stage congestion clamps to 1")
   check(approx(rows[2].congestion, 0), "the bottleneck stage has 0 congestion")
-  -- A modestly-overbuilt stage gives a fractional, unclamped congestion: ribosomes
-  -- cap 6 over throughput 5 -> (6-5)/5 = 0.2.
+  -- A modestly-overbuilt stage gives a fractional, unclamped congestion. Pick a ribosomes
+  -- level whose cap sits exactly 20% above the nucleus bottleneck: cap = 1.2 * nuc_cap.
+  local rib_level_mod = (1.2 * nuc_cap) / catalog.STAGE_RATE.ribosomes
   local s2 = state({
     unlocked = { ribosomes = true, nucleus = true },
-    stages = { ribosomes = 6 / 5, nucleus = 1 },
+    stages = { ribosomes = rib_level_mod, nucleus = 1 },
   })
   local rows2 = catalog.stage_snapshot(s2)
   check(approx(rows2[1].congestion, 0.2), "congestion is fractional below the clamp")
@@ -461,9 +635,12 @@ do
       fork_time = t
       break
     end
-    -- The `balanced` buy: integrate the next beat when affordable, else take the
-    -- cheaper of a mitochondrion vs. the bottleneck. Loop so a fat buffer can chain a
-    -- few cheap buys in one step (capped).
+    -- The `balanced` buy (mirrors the lab's reference policy): integrate the next beat
+    -- when affordable, else take the cheaper of a mitochondrion vs. the bottleneck -- BUT
+    -- never buy more power while the line is already OVER the safe band (balance_ratio >
+    -- balance_hi_eff), since idle over-power leaks ROS and bleeds output (Pillar 2/3).
+    -- Running hot, feed the bottleneck instead (raising demand pulls the ratio back into
+    -- band). This is the sensible player reading the ROS gauge -- the GOOD play under test.
     local buys = 0
     while buys < 50 do
       if try_integrate(s) then
@@ -472,7 +649,10 @@ do
         local id = catalog.bottleneck_id(s)
         local mc = catalog.mito_cost(s.mito)
         local sc = id and catalog.stage_cost(s.stages[id] or 0) or math.huge
-        local mito_first = mc <= sc
+        local r = catalog.fold(s)
+        local demand = r.e_per_output * r.throughput + r.upkeep
+        local over_band = demand > 0 and (r.power / demand) > r.balance_hi_eff
+        local mito_first = (mc <= sc) and not (over_band and id)
         local cost = mito_first and mc or sc
         if cost > s.energy then
           break
@@ -538,67 +718,113 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- efficiency: pure [0,1] scalar; flow_balance * power_adequacy, ease-out quad.
+-- efficiency (Pillar 3): the PEAK-IN-BAND balance scalar in [0,1]. It is the byte-for-
+-- byte mirror of sim.balance_scalar(fold(state), state.ros); it PEAKS inside the safe
+-- band and falls off BOTH sides (deficit AND surplus), unlike the old one-sided clamp.
 -- ---------------------------------------------------------------------------
+
+-- Helper: build a single-ribosomes-stage state at level L with M mitochondria, so
+-- throughput = ribosomes_rate*L (no excess), and we can place balance_ratio precisely.
+local function single_stage(M, L)
+  return state({ mito = M, unlocked = { ribosomes = true }, stages = { ribosomes = L } })
+end
+
 do
-  -- Well-matched, well-powered: all unlocked stages equal level -> no excess;
-  -- plenty of power -> flow_balance = 1, power_adequacy = 1 -> efficiency ~1.
-  -- State: 3 unlocked stages each at level 4 (cap 20 each), 10 mitochondria
-  -- (power = 100). demand = throughput(20)*1 + upkeep(0.25*(10+12)) = 25.5;
-  -- power 100 >> demand -> power_adequacy = 1; excess = 0 -> flow_balance = 1.
-  local s = state({
-    mito = 10,
-    unlocked = { ribosomes = true, nucleus = true, er = true },
-    stages   = { ribosomes = 4, nucleus = 4, er = 4 },
-  })
-  local eff = catalog.efficiency(s)
-  check(eff >= 0 and eff <= 1, "efficiency is in [0,1] for a balanced, well-powered state")
-  check(eff > 0.9, "efficiency > 0.9 for a well-matched, well-powered state")
+  -- IN-BAND: choose mito so balance_ratio = power/demand lands inside [BALANCE_LO,
+  -- BALANCE_HI]. With ribosomes lvl 4 (cap 48), demand = 48 + 0.25*(M+4). Solve for M so
+  -- the ratio sits mid-band (~1.3): scan M and assert we found an in-band one at eff == 1.
+  local L = 4
+  local in_band_state = nil
+  for M = 1, 200 do
+    local r = catalog.fold(single_stage(M, L))
+    local demand = r.e_per_output * r.throughput + r.upkeep
+    local ratio = r.power / demand
+    if ratio >= catalog.BALANCE_LO and ratio <= catalog.BALANCE_HI then
+      in_band_state = single_stage(M, L)
+      break
+    end
+  end
+  check(in_band_state ~= nil, "an in-band mito count exists for the test line")
+  local eff_band = catalog.efficiency(in_band_state)
+  check(approx(eff_band, 1), "efficiency PEAKS at 1.0 inside the safe band (no excess, ros 0)")
 
-  -- Overbuild ribosomes far above the bottleneck: excess spikes, flow_balance falls.
-  -- Same mito (10), but ribosomes level 20 (cap 100) vs nucleus/er level 1 (cap 5).
-  -- throughput = 5, excess = (100-5)+(5-5) = 95 -> flow_balance = 5/100 = 0.05.
-  local s_over = state({
-    mito = 10,
-    unlocked = { ribosomes = true, nucleus = true, er = true },
-    stages   = { ribosomes = 20, nucleus = 1, er = 1 },
-  })
-  local eff_over = catalog.efficiency(s_over)
-  check(eff_over >= 0 and eff_over <= 1, "efficiency is in [0,1] for an overbuilt state")
-  check(eff_over < eff, "overbuilding one stage far above the bottleneck lowers efficiency")
+  -- DEFICIT: fewer mitochondria -> ratio below BALANCE_LO -> deficit slope < 1.
+  local deficit = single_stage(1, L) -- 1 mito, demand ~49 -> ratio ~0.2
+  local eff_def = catalog.efficiency(deficit)
+  check(eff_def >= 0 and eff_def < 1, "a power deficit pulls efficiency below the peak")
 
-  -- Power-starved: throughput demand >> available power -> power_adequacy << 1.
-  -- 10 unlocked stages all at level 4, only 1 mitochondrion (power = 10).
-  -- throughput = 20, demand = 20*1 + upkeep(0.25*(1+6*4 or similar)) >> 10.
-  -- Use a straightforward case: ribosomes level 10 (cap 50), nucleus level 10,
-  -- er level 10, all unlocked -> throughput=50, demand=50+upkeep, power=10.
-  local s_starved = state({
+  -- SURPLUS / OVER-POWER (the NEW two-sided behaviour): pile on mitochondria so the ratio
+  -- climbs PAST BALANCE_HI -> the surplus slope drops efficiency. This is what makes
+  -- over-building power visible -- the old clamp hid it entirely.
+  local over = single_stage(40, L) -- power 400 vs demand ~59 -> ratio ~6.8 >> ROS_RATIO_CAP
+  local eff_over = catalog.efficiency(over)
+  check(eff_over >= 0 and eff_over < 1, "OVER-power pulls efficiency below the peak (two-sided)")
+  check(
+    approx(eff_over, 0),
+    "past ROS_RATIO_CAP the power side hits 0 (massive idle over-capacity)"
+  )
+  check(eff_band > eff_over, "the in-band state out-mints a wildly over-powered one")
+
+  -- EXCESS (flow imbalance): overbuild one stage far above the bottleneck -> flow_balance
+  -- falls even when power is in band. ribosomes lvl 20 (cap 240) vs nucleus lvl 1 (cap 6):
+  -- throughput 6, big excess. Power chosen in-band for the tiny throughput.
+  local s_excess = state({
     mito = 1,
-    unlocked = { ribosomes = true, nucleus = true, er = true },
-    stages   = { ribosomes = 10, nucleus = 10, er = 10 },
+    unlocked = { ribosomes = true, nucleus = true },
+    stages = { ribosomes = 20, nucleus = 1 },
   })
-  local eff_starved = catalog.efficiency(s_starved)
-  check(eff_starved >= 0 and eff_starved <= 1, "efficiency is in [0,1] for a power-starved state")
-  -- demand = 50*1 + 0.25*(1+30) = 50 + 7.75 = 57.75; power = 10 -> adequacy ~0.17
-  check(eff_starved < 0.5, "efficiency is clearly low in a power-starved (brownout) state")
+  local eff_excess = catalog.efficiency(s_excess)
+  check(eff_excess >= 0 and eff_excess < 1, "overbuilding above the bottleneck lowers efficiency")
 
-  -- Bounds: efficiency of a completely empty/zero state (no unlocked, mito=1).
-  -- throughput = 0 -> flow_balance = 0 -> raw = 0 -> eased = 0.
-  local s_empty = sim.load({})   -- fresh state: mito=1, nothing unlocked
-  local eff_empty = catalog.efficiency(s_empty)
-  check(eff_empty >= 0 and eff_empty <= 1, "efficiency is in [0,1] for an empty state")
-  check(eff_empty == 0, "efficiency is 0 when throughput is 0 (no unlocked stages)")
+  -- ROS DRAG: the same state with accumulated ros mints strictly less than with ros 0.
+  local s_ros_lo = single_stage(2, L)
+  local s_ros_hi = single_stage(2, L)
+  s_ros_hi.ros = 0.5
+  check(
+    catalog.efficiency(s_ros_hi) < catalog.efficiency(s_ros_lo) + 1e-12,
+    "accumulated ros drags efficiency down (the soft cut)"
+  )
+  check(
+    approx(catalog.efficiency(s_ros_hi), catalog.efficiency(s_ros_lo) * 0.5),
+    "ros drag scales the scalar by exactly (1 - ros)"
+  )
 
-  -- Bounds: a state so heavily over-powered that power_adequacy would naively > 1
-  -- must still clamp to [0,1].
-  local s_huge = state({
-    mito = 9999,
-    unlocked = { ribosomes = true },
-    stages   = { ribosomes = 1 },
-  })
-  local eff_huge = catalog.efficiency(s_huge)
-  check(eff_huge >= 0 and eff_huge <= 1, "efficiency is in [0,1] even with extreme over-power")
-  check(eff_huge > 0.9, "efficiency near 1 when power is massive and line is balanced")
+  -- EMPTY: no unlocked stages -> throughput 0 -> flow_balance 0 -> efficiency 0.
+  local s_empty = sim.load({})
+  check(catalog.efficiency(s_empty) == 0, "efficiency is 0 when throughput is 0 (no stages)")
+end
+
+-- THE MIRROR: catalog.efficiency(state) must EQUAL sim.balance_scalar(fold(state),
+-- state.ros) for every state -- the live readout and the sim's built-yield cut can never
+-- drift (the same discipline that keeps fold mirrored to the lab). Check across deficit,
+-- in-band, surplus, overbuilt, and ros-loaded states.
+do
+  local cases = {
+    single_stage(1, 4), -- deficit
+    single_stage(5, 4), -- near/in band
+    single_stage(40, 4), -- wild surplus
+    state({ -- overbuilt flow imbalance
+      mito = 3,
+      unlocked = { ribosomes = true, nucleus = true },
+      stages = { ribosomes = 20, nucleus = 1 },
+    }),
+  }
+  -- A ros-loaded variant of each, and a stabilized variant (stab raises the ceiling).
+  for i = 1, #cases do
+    cases[#cases + 1] = (function()
+      local c = cases[i]
+      local d = sim.load(sim.serialize(c))
+      d.ros = 0.37
+      d.stab = 2
+      return d
+    end)()
+  end
+  for idx, c in ipairs(cases) do
+    local eff = catalog.efficiency(c)
+    local scalar = sim.balance_scalar(catalog.fold(c), c.ros or 0)
+    check(approx(eff, scalar), "efficiency mirrors sim.balance_scalar exactly (case " .. idx .. ")")
+    check(eff >= 0 and eff <= 1, "efficiency stays in [0,1] (case " .. idx .. ")")
+  end
 end
 
 print("all tests passed (" .. checks .. " checks)")

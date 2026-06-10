@@ -15,6 +15,7 @@ return {
   highlight_modes = require("lib.engine.ui.highlight-modes"),
   interaction = require("lib.engine.ui.interaction-state"),
   tween = require("lib.engine.ui.tween"),
+  toast = require("lib.engine.ui.toast"),
   primitives = {
     rect = require("lib.engine.ui.primitives.rect"),
     text = require("lib.engine.ui.primitives.text"),

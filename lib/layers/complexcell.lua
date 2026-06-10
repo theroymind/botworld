@@ -39,6 +39,7 @@ local colors = ui.colors
 local theme = ui.theme
 local interaction = ui.interaction
 local tween = ui.tween
+local toast = ui.toast
 local rect = ui.primitives.rect
 local text = ui.primitives.text
 local button = ui.primitives.button
@@ -53,7 +54,6 @@ local OFFLINE_CAP = 8 * 3600 -- credit at most 8h of time away
 -- Autosaves still write during play (harmlessly unread). Flip to false to restore
 -- the real idle behaviour: resume the saved cell + offline catch-up.
 local DEV_FRESH_START = true
-local TOAST_SECONDS = 4
 
 -- COLLAPSE -- the phase-2 lose state, mirroring cell.lua's extinction beat. When the
 -- sim's oxidative stress saturates (state.stress >= catalog.STRESS_FAIL, a power
@@ -78,24 +78,75 @@ local STRESS_WARN = 0.4
 local TAP_POWER_SECONDS = 2.5 -- a tap is worth this many seconds of gross ATP power
 local ATP_TAP_COOLDOWN_MIN = 5 -- shortest gap between taps (seconds)
 local ATP_TAP_COOLDOWN_MAX = 10 -- longest gap; each tap rolls a fresh cd in [MIN, MAX]
-local ATP_TAP_PITCH_SPREAD = 0.12 -- +/- pitch jitter on the beat so repeats don't read identical
 local atp_tap_cooldown = 0 -- remaining lockout, drained in update()
+-- A stable 0..1 seed naming WHICH mitochondrion shows the "feed me" pulse this ready-window
+-- (the view maps it to a bean index). Re-rolled when the cooldown expires (see update), so the
+-- cue hops to a fresh power plant each window. Cosmetic only -- never feeds the sim.
+local atp_tap_seed = 0
 
 local PANEL_MARGIN = 16 -- gap from the window edge (panel x is computed each frame)
 local PANEL_Y = 16
 local PANEL_W = 320
-local PANEL_H = 540
-local PAD = 16
-local BTN_W = 96 -- fixed-width action button, pinned right by the fill label column
-local BTN_H = 52 -- tall enough that the cost sublabel (at r.y+r.h-16) clears the flavor text
+-- The panel hugs its content (draw stamps the resolved height into _panel_h), so
+-- PANEL_H is only the resolve budget + the pre-first-draw fallback. We size that budget
+-- to the room the panel actually has on screen: from PANEL_Y down to the window bottom.
+-- The compact row rhythm below is tuned so even the WORST CASE -- all six assembly-line
+-- stages online AND the optional brownout + dying header lines -- resolves to ~700px,
+-- which fits this budget on the 720px window without overflow (the old layout ran ~986px
+-- and pushed the bottom stages + footer off-screen, the bug this redesign fixes). The
+-- panel hugs its content, so shorter states end well above the bottom; only the full
+-- pipeline reaches near the window edge, and never past it.
+local WINDOW_H_FALLBACK = 720 -- design height before the first draw learns the live window
+local PANEL_BOTTOM_MARGIN = 0 -- the full pipeline may reach the window bottom edge (still on-screen)
+local PANEL_H = WINDOW_H_FALLBACK - PANEL_Y - PANEL_BOTTOM_MARGIN
+local PAD = 12 -- panel inner padding (tighter than phase 1 to claw back vertical room)
+-- The read-only VITALS sit boxed at the top of the panel (their own container, lifted
+-- above the build levers). Layout nodes carry no background, so complexcell.draw stamps a
+-- bordered box behind the vitals vstack's resolved rect, expanded outward by this many px
+-- so the border breathes around the gauge column rather than crowding the text.
+local VITALS_BOX_PAD = 6
+-- A consistent BUY-ROW rhythm across the whole panel: every purchasable line -- power,
+-- stabilization, each unlocked stage's level-up, each discovered stage's integrate --
+-- is a fill-width label column beside a right-pinned action pill. BTN_W fits the widest
+-- verb ("integrate") over the widest cost ("180K atp") on the pill's two centred lines.
+local BTN_W = 92 -- fixed-width action pill, pinned right by the fill label column
+-- COMPACT TWO-LINE PILL: the verb sits over a dim cost line INSIDE the pill (see
+-- action_button_node). Folding the cost into the button -- instead of a third label-column
+-- line -- lets a stage row be a single label line, so six stage rows stay short. BTN_H is
+-- the min height for two snug hud_small lines (~17px each) with a little breathing room.
+local BTN_H = 34
+-- The pill's verb (top line) and cost (bottom line) split BTN_H. The verb gets the upper
+-- portion, the cost the lower; this fraction is the verb's share so the two read as a
+-- title-over-subtitle pair rather than two equal lines crowding the pill.
+local PILL_VERB_FRACTION = 0.52
 local BAR_COLOR = colors.secondary -- the ATP buffer bar rides the global nourishment token
+-- A buy row's cost string, rendered as the pill's dim second line. Named so the cost is
+-- never inlined ad hoc and reads consistently across power / stabilization / stage rows.
+local COST_SUFFIX = " atp"
+
+-- GAUGES (Pillar 5). The vitals strip reads the catalog's pure derived metrics and
+-- surfaces them as biologically-named percentages/labels -- NO "what to upgrade" text;
+-- the gauges only show state and the player reasons out the lever. The balance-ratio
+-- band classes (catalog.BAND_*) map to a one-word verdict + a color token here, at the
+-- view's edge (the catalog never names a color). under -> brownout warning (accent),
+-- ideal -> in-band (nourishment green), over -> ROS leak (threat red).
+local BAND_LABEL = {} -- catalog band class -> verdict word the gauge prints
+local BAND_COLOR = {} -- catalog band class -> color token the gauge tints
+BAND_LABEL[catalog.BAND_UNDER] = "under"
+BAND_LABEL[catalog.BAND_IDEAL] = "ideal"
+BAND_LABEL[catalog.BAND_OVER] = "over"
+BAND_COLOR[catalog.BAND_UNDER] = colors.ui.accent
+BAND_COLOR[catalog.BAND_IDEAL] = colors.secondary
+BAND_COLOR[catalog.BAND_OVER] = colors.quaternary
+-- ROS reads as a rising danger: tint the readout toward the threat token once it climbs
+-- past this fraction (the same warning band the soft cut is already biting in). Below it
+-- the cell is calm, so the metric stays a quiet dim readout.
+local ROS_WARN_FRAC = 0.4
 
 complexcell.state = nil
 
 local view_state
 local save_accum = 0
-local toast_text
-local toast_timer = 0
 -- SEAM INTRO: phase 1's endosymbiosis dive ends on a full-screen teal flood (the cell's
 -- own colour, as the camera plunges inside). enter_from_seam arms this brief teal sheet
 -- that fades OUT over INTRO_FADE seconds, so phase 2 opens straight out of that same teal
@@ -142,11 +193,6 @@ local fork_mode = nil
 complexcell._panel_h = PANEL_H
 complexcell._panel_x = PANEL_MARGIN
 
-local function set_toast(message)
-  toast_text = message
-  toast_timer = TOAST_SECONDS
-end
-
 local function persist()
   save.write(SAVE_NAME, {
     sim = sim.serialize(complexcell.state.sim),
@@ -189,6 +235,7 @@ local function reset_fork_runtime()
   collapsing = false
   collapse_anim = 0
   atp_tap_cooldown = 0
+  atp_tap_seed = love.math.random() -- the tap opens off cooldown, so prime a bean for its cue
   transition_state = transition.new()
   if complexcell.state.fork_choice then
     fork_armed = true
@@ -320,6 +367,18 @@ local function choose_kingdom(id)
   end
 end
 
+-- The lethal problem in plain words, named by which side of the balance band drove the
+-- stress: a power DEFICIT ("low power") or idle OVER-power ("power overload"). Oxidative
+-- stress is two-sided now (the ROS pendulum), so the warning + lysis toast must state the
+-- ACTUAL cause, not assume a deficit. States the problem only -- no fix hint (the player
+-- reads the vitals and picks the lever).
+local function lethal_problem(s)
+  if catalog.balance_band(s) == catalog.BAND_OVER then
+    return "power overload"
+  end
+  return "low power"
+end
+
 -- Begin the LYSIS game-over beat (the phase-2 sibling of cell.lua's begin_collapse):
 -- freeze the sim, flash + shake red, toast the cause, play a death sound. The overlay
 -- runs for COLLAPSE_ANIM, then update() wipes the save and seeds a fresh cell -- the
@@ -327,7 +386,9 @@ end
 local function begin_collapse()
   collapsing = true
   collapse_anim = COLLAPSE_ANIM
-  set_toast("The cell burst — too long without power. A new cell begins")
+  toast.show(
+    string.format("The cell burst — %s. A new cell begins", lethal_problem(complexcell.state.sim))
+  )
   sound.play("endosymbiosis")
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(
@@ -363,7 +424,7 @@ function complexcell.tick(tick_dt)
   local newly = catalog.discover_gates(s)
   for _, id in ipairs(newly) do
     local def = catalog.STAGE_DEFS[id]
-    set_toast(string.format("Discovered %s — spend ATP to bring it online", def.label))
+    toast.show(string.format("Discovered %s — spend ATP to bring it online", def.label))
     persist()
   end
 
@@ -388,6 +449,10 @@ function complexcell.update(dt)
   -- Drain the manual ATP-tap lockout so the cytoplasm click rearms after the cooldown.
   if atp_tap_cooldown > 0 then
     atp_tap_cooldown = math.max(0, atp_tap_cooldown - dt)
+    if atp_tap_cooldown <= 0 then
+      -- Rearmed: pick a fresh power plant for the next tap cue (cosmetic; see atp_tap_seed).
+      atp_tap_seed = love.math.random()
+    end
   end
   tween.update(dt) -- advance the UI kit's hover/press lighten transitions
   view.update(view_state, dt) -- the interior keeps animating beneath the overlay
@@ -398,9 +463,7 @@ function complexcell.update(dt)
   -- save and seed a fresh cell (the same reset as [r], via enter_from_seam). Mirrors
   -- cell.update's collapsing branch.
   if collapsing then
-    if toast_timer > 0 then
-      toast_timer = toast_timer - dt
-    end
+    toast.update(dt)
     collapse_anim = collapse_anim - dt
     if collapse_anim <= 0 then
       save.remove(SAVE_NAME)
@@ -415,15 +478,11 @@ function complexcell.update(dt)
   -- clean. The choice modal is revealed by on_reset at the white peak.
   if transition.active(transition_state) then
     transition.update(transition_state, dt)
-    if toast_timer > 0 then
-      toast_timer = toast_timer - dt
-    end
+    toast.update(dt)
     return
   end
 
-  if toast_timer > 0 then
-    toast_timer = toast_timer - dt
-  end
+  toast.update(dt)
 
   -- Live-only arming (mirrors cell.lua, where the finale arms from update, not the
   -- backgrounded tick): the first frame `built` crosses the FORK gate, play the
@@ -453,7 +512,7 @@ local function build_snapshot(s, tap_ready)
   return {
     built = s.built,
     energy = s.energy,
-    buffer_max = catalog.BUFFER_MAX,
+    buffer_max = catalog.buffer_max(s),
     output = s.output,
     throughput = catalog.fold(s).throughput,
     brownout = s.brownout,
@@ -465,16 +524,29 @@ local function build_snapshot(s, tap_ready)
     -- 0..1 oxidative stress (power deficit). The view may dim/redden the cell as it
     -- climbs toward STRESS_FAIL (the lysis threshold).
     stress = s.stress,
-    -- Whether the manual ATP tap is off cooldown and usable RIGHT NOW: drives the
-    -- centre "feed me" ring (the phase-1 bloom analogue). Cosmetic; never feeds the sim.
+    -- Pillar-5 gauge readouts (pure derived math from the catalog). The view surfaces
+    -- these as biologically-named metrics; none feeds back into the economy.
+    ros = s.ros or 0,
+    oxygen = catalog.oxygen(s),
+    balance_ratio = catalog.balance_ratio(s),
+    balance_band = catalog.balance_band(s),
+    -- Whether the manual ATP tap is off cooldown and usable RIGHT NOW: primes a random
+    -- mitochondrion with a pulsing "feed me" halo. Cosmetic; never feeds the sim.
     tap_ready = tap_ready,
+    -- Which power plant carries that pulse this window (0..1 -> bean index in the view).
+    -- Stable until the tap is spent, then re-rolled on rearm. Cosmetic.
+    tap_seed = atp_tap_seed,
   }
 end
 
--- A themed action button carrying a dim cost/flavor sublabel and an affordability
--- gate -- the same composition cell.lua uses: primitives.button decoration plus two
--- stacked text lines in a custom draw_fn node, registering the hover zone + on_click
--- only when enabled.
+-- A themed TWO-LINE action pill with an affordability gate: the verb (e.g. "level up")
+-- over a dim cost line ("180K atp"), both centred inside one compact BTN_H pill. Folding
+-- the cost INTO the pill -- rather than spending a third label-column line on it -- is what
+-- lets a stage row collapse to a single label line, so six stage rows stay short and the
+-- whole panel fits the window. button.draw paints the decoration + border (and the hover
+-- lighten) and registers the hover zone over the full pill; we then stamp the two text
+-- lines ourselves so the verb sits in the upper portion and the cost in the lower. The
+-- on_click fires only when enabled; a disabled pill dims its border and both lines.
 local function action_button_node(opts)
   local enabled = opts.enabled
   return {
@@ -482,29 +554,58 @@ local function action_button_node(opts)
     w = opts.w,
     h = opts.h,
     draw_fn = function(r)
-      local tcol = enabled and colors.ui.white or colors.with_alpha(colors.ui.text, 0.35)
+      -- Decoration + border + hover zone over the whole pill, with no label of its own --
+      -- we draw the verb/cost lines below so they can split the pill vertically.
       button.draw(r, "", {
         font = "hud_small",
         id = enabled and opts.id or nil,
         opacity = enabled and nil or 0.18,
       })
-      local label_y = r.y + math.max(2, math.floor((r.h - 28) / 2))
-      text(
-        rect(r.x, label_y, r.w, 14),
-        opts.label,
-        { font = "hud", color = tcol, align = "center" }
-      )
-      if opts.sublabel then
-        text(rect(r.x, r.y + r.h - 16, r.w, 12), opts.sublabel, {
-          font = "hud_small",
-          color = colors.with_alpha(tcol, 0.6),
-          align = "center",
-        })
-      end
+      local verb_color = enabled and colors.ui.white or colors.with_alpha(colors.ui.text, 0.35)
+      local cost_color = enabled and colors.ui.text_muted
+        or colors.with_alpha(colors.ui.text_muted, 0.35)
+      local verb_h = math.floor(r.h * PILL_VERB_FRACTION)
+      text(rect(r.x, r.y, r.w, verb_h), opts.label, {
+        font = "hud_small",
+        align = "center",
+        color = verb_color,
+      })
+      text(rect(r.x, r.y + verb_h, r.w, r.h - verb_h), format.number(opts.cost) .. COST_SUFFIX, {
+        font = "hud_small",
+        align = "center",
+        color = cost_color,
+      })
     end,
     on_click = enabled and opts.on_click or nil,
     resolved_rect = nil,
   }
+end
+
+-- The shared BUY ROW -- the one builder EVERY purchasable line routes through (power,
+-- stabilization, each unlocked stage's level-up, each discovered stage's integrate), so
+-- the rows share an identical structure, gap rhythm, and pill (the user flagged the old
+-- per-builder rows as inconsistent). A fill-width label column -- a bright title over an
+-- OPTIONAL faint descriptor -- beside the two-line cost pill. The descriptor is omitted
+-- for stage rows (the stage name already carries its function), keeping those rows a
+-- single line so all six fit; power/stabilization keep their one-line descriptor.
+local function buy_row(opts)
+  local col_children = { layout.text(opts.title, { color = colors.ui.text }) }
+  if opts.descriptor then
+    table.insert(col_children, layout.text(opts.descriptor, { color = colors.ui.text_faint }))
+  end
+  local label_col = layout.vstack(col_children, { gap = 2 })
+
+  local pill = action_button_node({
+    label = opts.label,
+    cost = opts.cost,
+    enabled = opts.enabled,
+    w = BTN_W,
+    h = BTN_H, -- a fixed compact pill; the hstack tops it against the title line
+    id = opts.id,
+    on_click = opts.on_click,
+  })
+
+  return layout.hstack({ label_col, pill }, { gap = theme.spacing.sm })
 end
 
 -- Buy the next mitochondrion (a power plant): deduct its cost from the ATP buffer
@@ -514,6 +615,21 @@ local function buy_mito(s)
   if s.energy >= cost then
     s.energy = s.energy - cost
     s.mito = s.mito + 1
+    persist()
+  end
+end
+
+-- Buy the next stabilization level (the antioxidant counter-lever): deduct its
+-- geometric ATP cost from the buffer and bump state.stab. Mirrors buy_mito exactly --
+-- the orchestrator owns the spend, the catalog only prices it (stabilization_cost) and
+-- the fold reads state.stab. Each level lifts the safe ROS ceiling + speeds ROS
+-- clearance (see catalog.STAB_TOLERANCE/STAB_CLEAR). Clamped at affordability.
+local function buy_stabilization(s)
+  local cost = catalog.stabilization_cost(s.stab or 0)
+  if s.energy >= cost then
+    s.energy = s.energy - cost
+    s.stab = (s.stab or 0) + 1
+    view.spawn(view_state, fx.flash({ color = colors.primary, alpha = 0.16, life = 0.35 }))
     persist()
   end
 end
@@ -539,7 +655,7 @@ local function integrate_stage(s, id)
     s.energy = s.energy - cost
     if catalog.unlock_stage(s, id) then
       local def = catalog.STAGE_DEFS[id]
-      set_toast(string.format("%s is online", def.label))
+      toast.show(string.format("%s is online", def.label))
       view.spawn(
         view_state,
         fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 })
@@ -569,76 +685,167 @@ local function tap_atp(s, x, y)
     + love.math.random() * (ATP_TAP_COOLDOWN_MAX - ATP_TAP_COOLDOWN_MIN)
   -- Burst scales with gross ATP power (mitochondria), so it stays a useful nudge late.
   local burst = catalog.fold(s).power * TAP_POWER_SECONDS
-  s.energy = math.min(s.energy + burst, catalog.BUFFER_MAX)
+  s.energy = math.min(s.energy + burst, catalog.buffer_max(s))
   view.spawn(view_state, fx.pulse({ x = x, y = y, color = colors.secondary_bright }))
   view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.08, life = 0.15 }))
-  sound.play("cytoplasm_active", { volume = 0.8, pitch_spread = ATP_TAP_PITCH_SPREAD })
+  sound.play("cytoplasm_active", { volume = 0.8 })
 end
 
--- One DISCOVERED-but-locked stage row: the stage label + flavor and an "integrate"
--- action button carrying the steep one-time ATP unlock cost, enabled on the buffer.
--- These sit in the assembly-line group alongside the unlocked level-up rows; once
--- integrated the stage falls through to the normal stage_row level-up path.
+-- One DISCOVERED-but-locked stage row: the stage name (its parenthetical already names
+-- the function) marked "(locked)" beside an "integrate" pill carrying the steep one-time
+-- ATP unlock cost, enabled on the buffer. A single label line -- no flavor -- so six stage
+-- rows stay compact; the cost rides inside the pill. These sit in the assembly-line group
+-- alongside the unlocked level-up rows; once integrated the stage falls through to the
+-- normal stage_row level-up path. Routes through the shared buy_row for a uniform rhythm.
 local function discovered_row(s, row)
-  local label_col = layout.vstack({
-    layout.text(string.format("%s   (locked)", row.label), { color = colors.ui.text }),
-    layout.text(row.flavor, { color = colors.ui.text_faint }),
-  }, { gap = 2 })
-
   local cost = catalog.stage_unlock_cost(row.id)
-  local affordable = s.energy >= cost
-  local right = action_button_node({
+  return buy_row({
+    title = string.format("%s   (locked)", row.label),
+    cost = cost,
     label = "integrate",
-    sublabel = format.number(cost) .. " atp",
-    enabled = affordable,
-    w = BTN_W,
-    h = BTN_H,
+    enabled = s.energy >= cost,
     id = "integrate_" .. row.id,
     on_click = function() integrate_stage(s, row.id) end,
   })
-
-  return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
 end
 
--- One pipeline-stage row: a fill-width label column (name + level over its flavor)
--- and a right-pinned level-up button gated on the ATP buffer. Built only for
--- UNLOCKED stages (locked beats are teased by the self-revealing footer instead).
+-- One pipeline-stage row: the stage name + level beside a right-pinned level-up pill
+-- (verb over the next geometric ATP cost), gated on the buffer. A single label line --
+-- the stage name carries its own function -- so all six stage rows fit; the cost lives in
+-- the pill. Built only for UNLOCKED stages (locked beats are teased by the footer). No
+-- bottleneck highlight: every stage row reads the same, so the player reasons the line
+-- from the cell's own flow, not from the panel pointing at a stage. Shares buy_row.
 local function stage_row(s, row)
-  -- No bottleneck highlight: every stage row reads the same. The player reads the line
-  -- from the cell's own flow, not from the panel telling them which stage to feed.
-  local label_col = layout.vstack({
-    layout.text(string.format("%s   Lv %d", row.label, row.level), { color = colors.ui.text }),
-    layout.text(row.flavor, { color = colors.ui.text_faint }),
-  }, { gap = 2 })
-
   local cost = catalog.stage_cost(row.level)
-  local affordable = s.energy >= cost
-  local right = action_button_node({
+  return buy_row({
+    title = string.format("%s   Lv %d", row.label, row.level),
+    cost = cost,
     label = "level up",
-    sublabel = format.number(cost) .. " atp",
-    enabled = affordable,
-    w = BTN_W,
-    h = BTN_H,
+    enabled = s.energy >= cost,
     id = "stage_" .. row.id,
     on_click = function() buy_stage(s, row.id) end,
   })
+end
 
-  return layout.hstack({ label_col, right }, { gap = theme.spacing.sm })
+-- One vitals GAUGE line: a dim "name" label on the left and a right-aligned "value"
+-- string tinted by `color`. A compact two-column row (the name takes the fill, the value
+-- hugs the right) so the strip reads like a meter list. Pure presentation -- the caller
+-- has already turned the catalog's pure metric into the value string + color token.
+local function gauge_row(name, value, color)
+  return layout.hstack({
+    layout.text(name, { color = colors.ui.text_faint }),
+    layout.text(value, { color = color, align = "right" }),
+  }, { gap = theme.spacing.sm })
+end
+
+-- VITALS (Pillar 5): the biologically-named gauge strip. Surfaces the four read-only
+-- metrics the player reasons from -- oxidative stress (ROS), the balance ratio vs. its
+-- safe band, oxygen/respiration load, and build efficiency -- with NO hint about which
+-- lever fixes them. Every figure is pure catalog math (folded once via the snapshot's
+-- gauge fields); the verdict word + color for the balance ratio come from the BAND_*
+-- maps. Values are percentages except the balance ratio (a multiplier vs. the band).
+local function vitals_group(snap)
+  local children = { layout.text("vitals", { color = colors.ui.text_dim }) }
+
+  -- Oxidative stress (ROS), 0-100%. Tints toward the threat token once it climbs into
+  -- the warning band, so a leaking cell reads red without any "buy stabilization" text.
+  local ros = snap.ros or 0
+  local ros_color = (ros >= ROS_WARN_FRAC) and colors.quaternary or colors.ui.text_muted
+  table.insert(
+    children,
+    gauge_row("cell stress", string.format("%d%%", math.floor(ros * 100 + 0.5)), ros_color)
+  )
+
+  -- Balance ratio = power / demand, with its under/ideal/over verdict from the band map.
+  -- The number is the ratio (a multiplier), the word + color tell which side of the band.
+  local band = snap.balance_band
+  local band_word = BAND_LABEL[band] or BAND_LABEL[catalog.BAND_IDEAL]
+  local band_color = BAND_COLOR[band] or colors.ui.text_muted
+  table.insert(
+    children,
+    gauge_row(
+      "power balance",
+      string.format("%.2fx  %s", snap.balance_ratio or 0, band_word),
+      band_color
+    )
+  )
+
+  -- Oxygen / respiration load, 0-100%: how much of the mitochondria's O2 capacity the
+  -- line actually draws. Low = idle respiratory capacity (the leak condition the ROS
+  -- gauge confirms). A plain dim readout -- it is informational, not a pass/fail.
+  table.insert(
+    children,
+    gauge_row(
+      "oxygen use",
+      string.format("%d%%", math.floor((snap.oxygen or 0) * 100 + 0.5)),
+      colors.ui.text_muted
+    )
+  )
+
+  -- Build efficiency: the Pillar-3 balance scalar as a single percent ("running at N%").
+  table.insert(
+    children,
+    gauge_row(
+      "efficiency",
+      string.format("%d%%", math.floor((snap.efficiency or 1) * 100 + 0.5)),
+      colors.ui.text_muted
+    )
+  )
+
+  return children
+end
+
+-- STABILIZATION buy row (Pillar 2's counter-lever), mirroring the mitochondria power row
+-- through the shared buy_row: the current antioxidant level + a one-line descriptor and a
+-- "build" pill carrying the next geometric ATP cost, enabled on the buffer. Buying lifts
+-- the safe ROS ceiling + speeds ROS clearance (catalog.STAB_TOLERANCE/STAB_CLEAR), so a
+-- player watching the vitals can defend a deliberate surplus instead of trimming power --
+-- a second valid strategy. The descriptor is kept to one line so the row stays compact.
+local function stabilization_group(s)
+  local cost = catalog.stabilization_cost(s.stab or 0)
+  return {
+    layout.text("stabilization", { color = colors.ui.text_dim }),
+    buy_row({
+      title = string.format("Antioxidants   x%d", s.stab or 0),
+      descriptor = "clears oxidative stress safely",
+      cost = cost,
+      label = "build",
+      enabled = s.energy >= cost,
+      id = "build_stab",
+      on_click = function() buy_stabilization(s) end,
+    }),
+  }
 end
 
 -- The whole panel as a declarative node tree, rebuilt each frame so dynamic values
--- and the on_click closures capture the current state. Stacked groups (header /
--- power / stages / footer) inside a PAD-padded vstack. Mirrors cell.lua's build_panel.
+-- and the on_click closures capture the current state. Stacked groups -- header, the
+-- boxed read-only vitals, then the build levers (power, stabilization, assembly line),
+-- footer -- inside a PAD-padded vstack, on one consistent gap rhythm (xs within a group,
+-- sm between groups). Every purchasable line
+-- routes through buy_row (label column + two-line cost pill), so the rows are uniform
+-- and compact: a stage row is a single label line, so all six stages plus the optional
+-- brownout + dying header lines still resolve within the window height (the height story
+-- is on the PANEL_H comment). Mirrors cell.lua's build_panel.
 local function build_panel(s)
   local rates = catalog.fold(s)
-  local buffer_ratio = math.max(0, math.min(s.energy / catalog.BUFFER_MAX, 1))
+  local buffer_ratio = math.max(0, math.min(s.energy / catalog.buffer_max(s), 1))
 
   -- HEADER: the headline built total, the ATP buffer bar, the live output/throughput
   -- readouts, and the brownout tell only when the line is power-starved.
   local header = {}
+  -- The headline built total, with the live BUILD RATE beside it ("+N /s"). The rate
+  -- mirrors the sim's mint exactly (catalog.build_rate), so tuning a stage or trimming
+  -- power moves it immediately -- the felt payoff that makes meticulous balancing pay off.
   table.insert(
     header,
-    layout.text("built  " .. format.number(s.built), { size = "lg", color = colors.ui.text })
+    layout.text(
+      string.format(
+        "built  %s   (+%s /s)",
+        format.number(s.built),
+        format.number(catalog.build_rate(s))
+      ),
+      { size = "lg", color = colors.ui.text }
+    )
   )
   -- The phase-1 colony, now a frozen statistic carried across the seam.
   local carry = complexcell.state.carry
@@ -655,7 +862,10 @@ local function build_panel(s)
   end
   table.insert(
     header,
-    layout.text(string.format("ATP energy  %s", format.number(s.energy)), { color = colors.ui.text_dim })
+    layout.text(
+      string.format("ATP energy  %s", format.number(s.energy)),
+      { color = colors.ui.text_dim }
+    )
   )
   table.insert(
     header,
@@ -677,40 +887,42 @@ local function build_panel(s)
     )
   )
   if s.brownout then
+    -- Kept to one line (the column is the full panel inner width) so the header stays
+    -- compact even when this warning and the dying line are both present.
     table.insert(
       header,
-      layout.text("BROWNOUT — not enough power, production slowed", { color = colors.ui.accent })
+      layout.text("BROWNOUT — low power, production slowed", { color = colors.ui.accent })
     )
   end
-  -- OXIDATIVE STRESS warning: as the power-deficit stress climbs past STRESS_WARN it
-  -- creeps toward STRESS_FAIL (lysis). Surfaced on the accent token, like BROWNOUT, so
-  -- the player can power the cell back out before it dies.
+  -- DYING warning: as stress climbs past STRESS_WARN it creeps toward STRESS_FAIL (lysis).
+  -- Stress is two-sided (deficit OR over-power), so we name the actual problem -- "low
+  -- power" / "power overload" -- and state it only, no fix hint. Surfaced on the accent
+  -- token, like BROWNOUT, so the player can rebalance before it dies.
   if s.stress and s.stress > STRESS_WARN then
     table.insert(
       header,
-      layout.text("OXIDATIVE STRESS — the cell is dying! restore power", { color = colors.ui.accent })
+      layout.text(
+        string.format("%s — the cell is dying", lethal_problem(s):upper()),
+        { color = colors.ui.accent }
+      )
     )
   end
 
-  -- POWER: the mitochondria count + a build-mitochondrion button (ATP).
+  -- POWER: the mitochondria count + a build-mitochondrion pill, through the shared buy_row
+  -- so it reads identically to stabilization. The one-line descriptor stays short enough
+  -- not to wrap (keeping the row two lines tall).
   local mito_cost = catalog.mito_cost(s.mito)
   local power_group = {
     layout.text("power", { color = colors.ui.text_dim }),
-    layout.hstack({
-      layout.vstack({
-        layout.text(string.format("Mitochondria   x%d", s.mito), { color = colors.ui.text }),
-        layout.text("power plants -- make the ATP that runs everything", { color = colors.ui.text_faint }),
-      }, { gap = 2 }),
-      action_button_node({
-        label = "build",
-        sublabel = format.number(mito_cost) .. " atp",
-        enabled = s.energy >= mito_cost,
-        w = BTN_W,
-        h = BTN_H,
-        id = "build_mito",
-        on_click = function() buy_mito(s) end,
-      }),
-    }, { gap = theme.spacing.sm }),
+    buy_row({
+      title = string.format("Mitochondria   x%d", s.mito),
+      descriptor = "power plants that make ATP",
+      cost = mito_cost,
+      label = "build",
+      enabled = s.energy >= mito_cost,
+      id = "build_mito",
+      on_click = function() buy_mito(s) end,
+    }),
   }
 
   -- STAGES: one row per UNLOCKED stage (the others are teased in the footer).
@@ -726,10 +938,24 @@ local function build_panel(s)
     -- Undiscovered stages stay hidden here, teased only by the self-revealing footer.
   end
 
+  -- VITALS: the Pillar-5 gauge strip, read from the same snapshot the view draws against
+  -- (so the panel numbers and the cell's flow can never disagree). Boxed and lifted to the
+  -- TOP of the panel (just below the header) so the read-only health reads as its own
+  -- container instead of interleaving with the build levers. The vstack node is stashed on
+  -- the module so complexcell.draw can stamp the bordered box behind its resolved rect.
+  local vitals_stack = layout.vstack(vitals_group(build_snapshot(s)), { gap = theme.spacing.xs })
+  complexcell._vitals_node = vitals_stack
+
+  -- Group order: header, VITALS (boxed), then the build levers (power, stabilization,
+  -- stages), then the footer. Every group stacks its rows on the same xs intra-group gap,
+  -- and the groups stack on the sm gap below -- one consistent rhythm. The tighter group
+  -- gap also claws back the height that lets the worst-case full pipeline fit the window.
   local groups = {
     layout.vstack(header, { gap = theme.spacing.xs }),
+    vitals_stack,
     layout.vstack(power_group, { gap = theme.spacing.xs }),
-    layout.vstack(stage_children, { gap = theme.spacing.sm }),
+    layout.vstack(stabilization_group(s), { gap = theme.spacing.xs }),
+    layout.vstack(stage_children, { gap = theme.spacing.xs }),
   }
 
   -- FOOTER: the self-revealing next beat, or the FORK line once it's reached. At
@@ -752,7 +978,7 @@ local function build_panel(s)
       elseif reveal == "named" then
         footer_text = string.format("next: %s — almost ready", nxt.label)
       elseif reveal == "silhouette" then
-        footer_text = "next: something is forming…"
+        footer_text = "something is forming…"
       else
         footer_text = "next: …"
       end
@@ -762,7 +988,7 @@ local function build_panel(s)
   end
   table.insert(groups, layout.text(footer_text, { color = colors.ui.text_muted }))
 
-  return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
+  return layout.vstack(groups, { padding = PAD, gap = theme.spacing.sm })
 end
 
 -- Centered footer help line, a direct text overlay (not part of the panel tree). Bare
@@ -771,21 +997,9 @@ end
 local function draw_help(width)
   text(
     rect(0, love.graphics.getHeight() - 44, width, 16),
-    "click the cell to inject energy   ·   [r] fresh cell",
+    "click the glowing mitochondrion to inject energy   ·   [r] fresh cell",
     { color = colors.with_alpha(colors.ui.text_faint, 0.7), align = "center" }
   )
-end
-
-local function draw_toast(width)
-  if toast_timer <= 0 or not toast_text then
-    return
-  end
-  local alpha = math.min(toast_timer, 1)
-  text(rect(0, 40, width, 22), toast_text, {
-    font = "hud_lg",
-    color = colors.with_alpha(colors.ui.accent, alpha),
-    align = "center",
-  })
 end
 
 -- The LYSIS game-over overlay: a dimming sheet + cause line over the frozen interior,
@@ -838,7 +1052,7 @@ function complexcell.draw()
   -- overlay + toast play over the frozen interior until update() reloads a fresh cell.
   if collapsing then
     draw_collapse(width)
-    draw_toast(width)
+    toast.draw(width)
     return
   end
 
@@ -884,12 +1098,29 @@ function complexcell.draw()
   layout.resolve(tree, rect(panel_x, PANEL_Y, PANEL_W, PANEL_H))
   complexcell._panel_h = tree.resolved_rect.h
   primitives.container(rect(panel_x, PANEL_Y, PANEL_W, complexcell._panel_h), "content")
+  -- Box the read-only VITALS: layout nodes carry no background, so stamp a bordered 'row'
+  -- container behind the stashed vitals vstack's resolved rect (expanded by VITALS_BOX_PAD
+  -- so the border breathes around the gauges) BEFORE the renderer draws the gauge text over
+  -- it. build_panel stashes the node every frame, so the rect is current.
+  local vitals_node = complexcell._vitals_node
+  if vitals_node and vitals_node.resolved_rect then
+    local vr = vitals_node.resolved_rect
+    primitives.container(
+      rect(
+        vr.x - VITALS_BOX_PAD,
+        vr.y - VITALS_BOX_PAD,
+        vr.w + VITALS_BOX_PAD * 2,
+        vr.h + VITALS_BOX_PAD * 2
+      ),
+      "row"
+    )
+  end
   complexcell._click_map = renderer.draw(tree, nil)
   local mx, my = love.mouse.getPosition()
   interaction.commit_frame(mx, my, love.mouse.isDown(1))
 
   draw_help(width)
-  draw_toast(width)
+  toast.draw(width)
   draw_intro() -- the teal seam sheet lifts over everything as phase 2 opens
 end
 
@@ -941,13 +1172,21 @@ function complexcell.mousepressed(x, y, button_index)
   if collapsing then
     return
   end
-  -- A widget hit fires its on_click closure; a click that misses the panel falls
-  -- through to the cytoplasm and feeds a manual ATP burst (the kickstart tap).
+  -- A widget hit fires its on_click closure; a click that misses the panel can feed a manual
+  -- ATP burst -- but ONLY if it lands on the glowing (primed) mitochondrion. The view stamps
+  -- that power plant's screen position each draw; a miss does nothing, so the player hunts the
+  -- lit plant (a fresh one lights when the cooldown resets).
   local cb = complexcell._click_map and renderer.hit_test(complexcell._click_map, x, y)
   if cb then
     cb()
   elseif not is_in_panel(x, y) then
-    tap_atp(complexcell.state.sim, x, y)
+    local tx, ty, tr = view.tap_target(view_state)
+    if tx then
+      local dx, dy = x - tx, y - ty
+      if dx * dx + dy * dy <= tr * tr then
+        tap_atp(complexcell.state.sim, x, y)
+      end
+    end
   end
 end
 

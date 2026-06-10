@@ -39,9 +39,7 @@ local function clamp01(v)
   return v
 end
 
-function fx.new()
-  return { effects = {} }
-end
+function fx.new() return { effects = {} } end
 
 -- Append an effect entity to a controller; returns it so callers can keep a
 -- handle or chain. This is THE way to spawn an effect: build with a factory,

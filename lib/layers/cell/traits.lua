@@ -194,9 +194,7 @@ function traits.list()
   return out
 end
 
-function traits.def(id)
-  return BY_ID[id]
-end
+function traits.def(id) return BY_ID[id] end
 
 -- A trait row is available once it has no lock, or once its gating unlock has
 -- fired. Locked rows show as "reach colony N" in the panel.
@@ -209,13 +207,9 @@ function traits.is_available(state, id)
 end
 
 -- Milestone unlock defs, in reach order; treat as read-only.
-function traits.unlocks()
-  return UNLOCKS
-end
+function traits.unlocks() return UNLOCKS end
 
-function traits.is_unlocked(state, id)
-  return state.unlocked[id] == true
-end
+function traits.is_unlocked(state, id) return state.unlocked[id] == true end
 
 -- Mark a milestone fired. Returns the def if this flips it on for the first
 -- time (so the caller can toast + react), nil if already unlocked or unknown.
@@ -250,7 +244,7 @@ end
 -- Below its `pop` the panel shows a dim "colony N" teaser instead of a buy button;
 -- at/above it the player may spend the biomass cost to evolve it. This replaces
 -- the old auto-fire: reaching `pop` only OFFERS the purchase, never grants it.
-function traits.is_revealed(state, id, pop)
+function traits.is_revealed(_state, id, pop)
   local def = UNLOCK_BY_ID[id]
   if not def then
     return false
@@ -271,9 +265,7 @@ function traits.income_mult(state)
 end
 
 -- The set the world reads to decide what contents to spawn (prey, predators).
-function traits.unlocked_set(state)
-  return state.unlocked
-end
+function traits.unlocked_set(state) return state.unlocked end
 
 -- Plain-data snapshot for saving (no metatable; mirrors economy.serialize).
 function traits.serialize(state)

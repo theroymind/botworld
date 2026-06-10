@@ -26,19 +26,13 @@ local function clamp01(value)
 end
 
 -- Biomass units/sec produced at this dial, before genome multipliers.
-function metabolism.gain(dial)
-  return BASE * (1 + GROWTH_K * clamp01(dial))
-end
+function metabolism.gain(dial) return BASE * (1 + GROWTH_K * clamp01(dial)) end
 
 -- Biomass units/sec burned at this dial, before genome multipliers.
-function metabolism.loss(dial)
-  return BASE * LOSS_K * clamp01(dial) ^ LOSS_EXP
-end
+function metabolism.loss(dial) return BASE * LOSS_K * clamp01(dial) ^ LOSS_EXP end
 
 -- Net biomass units/sec at this dial; the live readout the player optimises.
-function metabolism.net(dial)
-  return metabolism.gain(dial) - metabolism.loss(dial)
-end
+function metabolism.net(dial) return metabolism.gain(dial) - metabolism.loss(dial) end
 
 -- Closed-form argmax of net(dial): d/d(dial)[gain - loss] = 0 gives
 -- GROWTH_K = LOSS_K * LOSS_EXP * dial^(LOSS_EXP-1). Exposed for the readout's

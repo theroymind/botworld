@@ -84,10 +84,12 @@ function button.draw(r, label, config)
   end
 
   local fh = fonts.get(font):getHeight()
+  -- A label is never allowed to overflow its button; ellipsize to the rect width.
   text(rect(r.x, r.y + (r.h - fh) / 2, r.w, fh), label, {
     font = font,
     align = "center",
     color = effective_text_color or colors.ui.white,
+    truncate = true,
   })
 end
 

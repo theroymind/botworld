@@ -31,7 +31,7 @@ function grid.node(children, config)
     h = function(available_w)
       local cols = fixed_cols or grid.columns(available_w, slot_size, gap)
       local rows = math.max(1, math.ceil(#children / cols))
-      return rows * (slot_size + gap)
+      return rows * (slot_size + gap) - gap
     end,
     slot_size = slot_size,
     gap = gap,

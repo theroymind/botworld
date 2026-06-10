@@ -31,7 +31,20 @@ function text_input.draw(r, buffer, opts)
   local font = fonts.get(font_name)
   local fh = font:getHeight()
   local text_y = r.y + (r.h - fh) / 2
-  local text_x = r.x + pad
+
+  -- Horizontal scroll keeps the cursor inside the visible span: once the text up to
+  -- the cursor outgrows the inner width, shift the whole line left so the cursor sits
+  -- at the right edge instead of drawing past the container.
+  local visible_w = r.w - pad * 2
+  local cursor_w = font:getWidth(value:sub(1, cursor_pos))
+  local scroll_x = math.max(0, cursor_w - visible_w)
+  local text_x = r.x + pad - scroll_x
+
+  -- Scissor to the input rect so overflowing text is clipped instead of spilling out.
+  -- Save and restore the surrounding scissor (same isolation discipline as canvases);
+  -- intersect so we compose with any clip already active.
+  local prev_x, prev_y, prev_w, prev_h = love.graphics.getScissor()
+  love.graphics.intersectScissor(r.x, r.y, math.max(0, r.w), math.max(0, r.h))
 
   if value == "" and placeholder and placeholder ~= "" then
     text(rect(text_x, text_y, r.w - pad * 2, fh), placeholder, {
@@ -54,11 +67,13 @@ function text_input.draw(r, buffer, opts)
 
   local cursor_visible = math.floor(love.timer.getTime() * CURSOR_BLINK_RATE) % 2 == 0
   if cursor_visible or buffer:has_selection() then
-    local cursor_x = text_x + font:getWidth(value:sub(1, cursor_pos))
+    local cursor_x = text_x + cursor_w
     love.graphics.setColor(text_color)
     love.graphics.setLineWidth(1)
     love.graphics.line(cursor_x, text_y, cursor_x, text_y + fh)
   end
+
+  love.graphics.setScissor(prev_x, prev_y, prev_w, prev_h)
 end
 
 return setmetatable(text_input, {

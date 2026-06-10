@@ -16,6 +16,7 @@ return {
   tab_bar = require("lib.engine.ui.layout.tab-bar-node"),
   icon = require("lib.engine.ui.layout.icon-node"),
   count_badge = require("lib.engine.ui.layout.count-badge-node"),
+  align = require("lib.engine.ui.layout.align"),
   resolve = require("lib.engine.ui.layout.resolve"),
   resolve_centered = require("lib.engine.ui.layout.resolve-centered"),
 }

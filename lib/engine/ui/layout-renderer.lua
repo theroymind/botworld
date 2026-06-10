@@ -33,6 +33,21 @@ local function collect_draw(tree, ctx, click_map, press_map, right_click_map, ho
     return
   end
 
+  -- clip = true hard-contains the node and its whole subtree to its screen rect.
+  -- intersectScissor composes with any clip already active; the previous scissor is
+  -- saved and restored (same isolation discipline as the canvas rule) so a clipped
+  -- panel never leaks scissor state into siblings.
+  local prev_scissor_x, prev_scissor_y, prev_scissor_w, prev_scissor_h
+  if tree.clip then
+    prev_scissor_x, prev_scissor_y, prev_scissor_w, prev_scissor_h = love.graphics.getScissor()
+    love.graphics.intersectScissor(
+      screen_rect.x,
+      screen_rect.y,
+      math.max(0, screen_rect.w),
+      math.max(0, screen_rect.h)
+    )
+  end
+
   if tree.bg then
     container(screen_rect, tree.bg)
   end
@@ -63,6 +78,10 @@ local function collect_draw(tree, ctx, click_map, press_map, right_click_map, ho
         collect_draw(child, ctx, click_map, press_map, right_click_map, hover_map)
       end
     end
+  end
+
+  if tree.clip then
+    love.graphics.setScissor(prev_scissor_x, prev_scissor_y, prev_scissor_w, prev_scissor_h)
   end
 end
 

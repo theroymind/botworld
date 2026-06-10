@@ -48,17 +48,11 @@ for _, def in ipairs(DEFS) do
 end
 
 -- The ordered organelle defs; treat as read-only.
-function organelles.defs()
-  return DEFS
-end
+function organelles.defs() return DEFS end
 
-function organelles.def(id)
-  return BY_ID[id]
-end
+function organelles.def(id) return BY_ID[id] end
 
-function organelles.has(set, id)
-  return set ~= nil and set[id] == true
-end
+function organelles.has(set, id) return set ~= nil and set[id] == true end
 
 -- The next organelle the colony is eligible to keep, or nil. Eligible means:
 -- predation is unlocked (prey -- the only source -- exist at all), the lifetime

@@ -62,9 +62,7 @@ function solar.load()
   camera.y = height / 2
 end
 
-function solar.tick(tick_dt)
-  solar.state.counter = solar.state.counter + tick_dt
-end
+function solar.tick(tick_dt) solar.state.counter = solar.state.counter + tick_dt end
 
 function solar.update(dt)
   local started = love.timer.getTime()

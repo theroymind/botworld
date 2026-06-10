@@ -40,8 +40,9 @@
 --     beans with cristae, cytoskeleton filaments. Each is a recipe of splines + simple
 --     polygons tinted from color tokens, scaled by its stage level. [CPU primitives.]
 --   * ENDPOINTS = zone positions -- one per UNLOCKED stage at its STABLE anatomical
---     position, then FIXED mitochondria emitter points. Uploaded as the swarm's
---     `endpoints` uniform each frame. Vesicles haul along the SEGMENTS between them.
+--     position, then one mitochondria emitter per DRAWN bean (co-located with the
+--     bodies, so vesicles land ON the power plants). Uploaded as the swarm's `endpoints`
+--     uniform each frame. Vesicles haul along the SEGMENTS between them.
 --   * LIVE COUNT -- starts as a HANDFUL and grows with leveling: a base of ~8 plus a
 --     `throughput` term (leveling a stage adds vesicles immediately) plus a smaller
 --     `built` bulk term, log-scaled and hard-capped. ("Growth is detail.")
@@ -83,32 +84,76 @@ local MEMBRANE_WOBBLE = 0.018 -- rim wobble as a fraction of the cell radius
 local MEMBRANE_WOBBLE_FREQ = 0.6 -- wobble cycles/sec (gentle)
 local RIM_WIDTH = 3 -- membrane rim line width in screen px
 
--- Mitochondria emitters: extra FIXED endpoints (power plants), a logarithmic SAMPLE
--- of `mito` (capped). They append after the stage endpoints so the swarm hauls some
--- cargo to/from them too -- power feeding the line. Positions are DETERMINISTIC (a
--- fixed angle table), so a more-powered cell lights up MORE of the SAME beans rather
--- than reshuffling them.
-local MITO_BASE = 1
-local MITO_SCALE = 2.2
-local MAX_MITO_EMITTERS = 6 -- hard cap on mito endpoints (keeps the uniform array sane)
-local MITO_RING_FRAC = 0.5 -- mitochondria sit on this inner-mid annulus fraction
+-- Mitochondria emitters: extra endpoints (power plants) the swarm hauls ATP to/from --
+-- power feeding the line. They sit at the EXACT positions the beans are DRAWN at (one
+-- emitter per drawn body, via mito_body_pose -- see build_routes), so the vesicles
+-- converge ON the visible mitochondria instead of on a separate fixed angle-ring that
+-- drifted off the beans once the reticulum fused. The drawn body count is itself bounded
+-- (<= MITO_BODY_MAX), so the emitter block stays well under the swarm's MAX_ENDPOINTS --
+-- no extra cap needed. They append after the stage endpoints.
+local MITO_RING_FRAC = 0.62 -- mitochondria sit on this inner-mid annulus (was 0.50, which cut
+-- through the ER ribbons); pushed out to its OWN clear band between the nucleus-hugging ER
+-- (<=~0.44) and the rim organelles (Golgi/transport/membrane at frac >= 0.70)
 
--- Live vesicle count: START as a handful and GROW with leveling (the phase-1 "fills as
--- you grow" feel). Base is a tiny opening crowd; growth is driven by `throughput` (so
--- leveling a stage adds vesicles IMMEDIATELY) plus a smaller `built` bulk term. Both
--- log-scaled, summed, hard-capped well below the GPU ceiling. NEVER the literal value.
---   count = COUNT_BASE + K_FLOW*log(1+throughput) + K_BULK*log(1+built)
--- Tuning intent (with throughput ~ 5..600 and built ~ 0..50000 across the phase):
---   early  (T~5,    built~0)    ->  4 + 15*ln(6)  + 0             -> ~31  (sparse handful)
---   early  (T~5,    built~240)  ->  4 + 15*ln(6)  + 8*ln(241)     -> ~75  (light traffic)
---   mid    (T~80,   built~3000) ->  4 + 15*ln(81) + 8*ln(3001)    -> ~134 (filling in)
---   late   (T~600,  built~50000)->  4 + 15*ln(601)+ 8*ln(50001)   -> ~185 (busy, capped)
--- WHY these values: previous K_FLOW=230 / K_BULK=140 produced 420 vesicles at T=5
--- (before any building), which was far too dense for early play. Dropping K_FLOW to 15
--- and K_BULK to 8 keeps the "growth is detail" arc while opening sparse (docs §5).
-local COUNT_BASE = 4 -- the opening handful (was 8; cut to keep early game sparse)
+-- MITOCHONDRIA RENDER (Pillar 4): the DRAWN picture is decoupled from the swarm-endpoint
+-- cap above so it keeps moving with state.mito into the hundreds. Real mitochondria are a
+-- dynamic FUSED RETICULUM, not a fixed handful of beans -- so low counts read as discrete
+-- beans at the fixed MITO_ANGLES (today's look), and as the count climbs those beans FUSE:
+-- the bodies elongate, tubules bridge adjacent ring anchors into a branched network, and
+-- the cristae densify. None of this touches the economy (power = POWER_PER_MITO*mito is
+-- unchanged); it is purely how the same number is shown.
+--
+-- FUSION is driven by a 0..1 `reticulum` factor: a log sample of mito mapped across
+-- [MITO_FUSE_START, MITO_FUSE_FULL] power-plant counts. Below START the cell is all
+-- discrete beans; at FULL the ring is a fully-bridged network. Log-scaled so the network
+-- keeps visibly thickening from a few dozen into the hundreds without ever exploding the
+-- per-frame primitive count (the body/tubule/cristae counts are all bounded samples).
+local MITO_FUSE_START = 8 -- below this many plants: discrete beans only (the opening look)
+local MITO_FUSE_FULL = 220 -- at/above this: a fully-bridged reticulum (real cells hold hundreds)
+local MITO_BODY_MIN = 6 -- discrete-bean phase draws this many bodies (the MITO_ANGLES anchors)
+local MITO_BODY_MAX = 14 -- a dense reticulum draws up to this many merged bodies around the ring
+local MITO_CRISTAE_MIN = 2 -- cristae arcs per body at the sparse end
+local MITO_CRISTAE_MAX = 6 -- cristae arcs per body in a dense, fused body (denser folding)
+local MITO_ELONGATE = 1.9 -- a fully-fused body stretches to this multiple of the discrete bean length
+local MITO_TUBULE_WIDTH = 0.018 -- connecting-tubule line width as a fraction of cell radius
+-- Past the discrete-bean phase (count > the fixed MITO_ANGLES anchors) the bodies are placed
+-- EVENLY around the ring from this base angle, so a fused reticulum never piles two bodies on
+-- one spot. The old scheme mixed the fixed anchors (m<=6) with an even fill (m>6) computed off
+-- a different formula, so the two collided and beans visibly stacked; even placement for the
+-- whole fused ring fixes that. Discrete low counts still use the hand-placed MITO_ANGLES.
+local MITO_RING_PHASE = math.rad(-90) -- first evenly-placed body sits at the top, then clockwise
+-- Bean geometry. A mitochondrion is drawn as a fat rounded CAPSULE (stadium: two semicircular
+-- end caps joined by straight sides), NOT a thin pinched ellipse -- the old shape tapered to
+-- sharp lens tips and read as an "eye", not a bean. A fatter half-width + true rounded caps give
+-- the plump bean silhouette. The capsule is convex, so it still fills as a single polygon.
+local MITO_BEAN_LEN = 0.12 -- base bean half-length as a fraction of cell radius (the discrete bean)
+local MITO_BEAN_W = 0.072 -- base bean half-width; fatter than the old 0.055 so beans read round, not pointed
+local MITO_FUSE_NARROW = 0.15 -- a fully-fused body narrows by this fraction (the tubular reticulum look)
+local MITO_CAP_SEGS = 10 -- samples per rounded end cap (smooth bean tips)
+local MITO_CRISTAE_SPAN = 0.62 -- cristae spread along the long axis as a fraction of bean_len
+local MITO_CRISTAE_REACH = 0.55 -- crista half-length across the short axis as a fraction of bean_w
+
+-- Live vesicle count: START as a handful and GROW with the cell (the phase-1 "fills as
+-- you grow" feel). Base is a tiny opening crowd; growth is driven by `throughput`
+-- (leveling a stage adds vesicles IMMEDIATELY, log-scaled) plus a `built` bulk term that
+-- is SQRT-scaled. The old bulk term was log(1+built), which FLATTENED late: the whole
+-- interior topped out near ~185 vesicles against a 4000 budget, so it "barely densified"
+-- across the run. sqrt(built) keeps climbing the long game instead, so the cytoplasm
+-- visibly fills as built grows. Summed, hard-capped well below the GPU ceiling. NEVER the
+-- literal value.
+--   count = COUNT_BASE + K_FLOW*log(1+throughput) + K_BULK*sqrt(built)
+-- Tuning intent (throughput ~ 5..300 and built ~ 0..180000 [the FORK] across the phase):
+--   open   (T~5,    built~0)     ->  4 + 15*ln(6)   + 8*sqrt(0)      -> ~31   (sparse handful)
+--   early  (T~30,   built~5000)  ->  4 + 15*ln(31)  + 8*sqrt(5000)   -> ~621  (filling in)
+--   mid    (T~120,  built~50000) ->  4 + 15*ln(121) + 8*sqrt(50000)  -> ~1865 (busy)
+--   late   (T~300,  built~180000)->  4 + 15*ln(301) + 8*sqrt(180000) -> ~3484 (dense, nears the cap)
+-- WHY sqrt: log(1+built) added only ~8*ln(50001) ~= 86 vesicles by built 50k and then went
+-- flat; sqrt(built) keeps the "growth is detail" climb alive into the late game while still
+-- opening sparse (the bulk term is 0 at built 0). COUNT_BASE / K_FLOW / K_BULK are eyeball-
+-- tuned first guesses -- pin them in-game; the count stays well under MAX_LIVE_VESICLES.
+local COUNT_BASE = 4 -- the opening handful (keeps early game sparse)
 local K_FLOW = 15 -- multiplies log(1 + throughput): leveling adds vesicles at once
-local K_BULK = 8 -- multiplies log(1 + built): the slow long-game bulk fill
+local K_BULK = 8 -- multiplies sqrt(built): the long-game bulk fill that keeps climbing (was log)
 local MAX_LIVE_VESICLES = 4000 -- the view's hard cap (low-thousands -- stays readable)
 
 -- EFFICIENCY -> global liveliness (the dominant driver). eff in [0,1] lerps the swarm
@@ -138,21 +183,68 @@ local FUEL_TINT = 0.18
 local CYTOPLASM_ALPHA = 0.5
 local NUCLEUS_R_FRAC = 0.30 -- nucleus radius as a fraction of cell radius
 
--- TAP-READY RING: the "feed me" affordance framing the centre hub, shown only when the
--- manual ATP tap is off cooldown (snapshot.tap_ready). The phase-2 analogue of phase-1's
--- clickable nutrient BLOOM (cell/view.lua draw_bloom) -- the SAME secondary_bright feed
--- token and the same gentle sinusoidal pulse -- so "the cell is ready for a feed tap"
--- reads in one visual language across phases. Values mirror the phase-1 bloom (6% breathe,
--- ~1s period, 1.7x soft glow, 2px rim) so the two affordances feel like one mechanic.
--- Drawn at FULL brightness (NOT dimmed/tinted by brownout): the tap matters MOST when the
--- cell is power-starved, so the cue must stay legible exactly when the interior is dimmest.
-local TAP_RING_R_FRAC = 0.34 -- base ring radius as a fraction of cell radius (just outside the nucleus rim)
-local TAP_RING_PULSE_AMP = 0.06 -- +/- size pulse (the phase-1 bloom's 6% breathe)
-local TAP_RING_PULSE_FREQ = 6 -- pulse angular frequency in rad/s (~1s period, as phase 1)
-local TAP_RING_GLOW_SCALE = 1.7 -- soft outer glow radius vs. the rim (as the phase-1 bloom glow)
-local TAP_RING_GLOW_ALPHA = 0.10 -- the wispy outer glow alpha
-local TAP_RING_RIM_ALPHA = 0.85 -- the bright "tap me" rim alpha
-local TAP_RING_WIDTH = 2 -- rim line width in screen px (constant, like the bloom rim)
+-- MANUAL-TAP CUE (the "feed me" affordance). When the kickstart ATP tap is off cooldown
+-- (snapshot.tap_ready) ONE randomly-chosen mitochondrion is "primed": a soft green halo ring
+-- pulses around it. The affordance lives on a POWER PLANT, not the nucleus -- tapping to inject
+-- ATP is thematically the mitochondria's job -- and it hops to a fresh bean each ready-window.
+-- The orchestrator picks the bean via a stable 0..1 seed (snapshot.tap_seed) held until the tap
+-- is spent, so the cue sits on ONE plant rather than flickering. Drawn at FULL brightness (NOT
+-- brownout-dimmed) so it stays legible exactly when the cell is starved and the tap matters
+-- most. It reuses the green secondary_bright FEED token (the phase-1 bloom language), now
+-- localized onto the chosen organelle.
+local MITO_TAP_HALO_SCALE = 1.35 -- halo radius as a multiple of the primed bean's long axis
+local MITO_TAP_PULSE_AMP = 0.18 -- +/- size breathe on the halo (clear but unhurried)
+local MITO_TAP_PULSE_FREQ = 3.2 -- halo pulse angular frequency in rad/s (~2s period)
+local MITO_TAP_ALPHA = 0.5 -- base halo alpha: it IS the call-to-action, so present, not a whisper
+local MITO_TAP_WIDTH = 1.5 -- halo outline width in px
+local MITO_TAP_HIT_SCALE = 1.7 -- click hit radius as a multiple of the bean's long axis (forgiving target)
+
+-- ROUGH ER band: the ribbons nest OUTWARD from the nucleus rim across this fraction range.
+-- They must stay INSIDE the mito ring (MITO_RING_FRAC = 0.62) so the ER reads as hugging the
+-- nucleus rather than sprawling into the power band. Previously the ribbons stepped at frac
+-- (0.30 + 0.05*b), so a max-level 5-ribbon ER reached frac 0.55 and collided with the mito
+-- ring. Now the innermost ribbon sits just past the nucleus rim (0.30) and the step is small
+-- enough that even 5 ribbons top out at ER_RIBBON_INNER + 4*ER_RIBBON_STEP ~= 0.45 -- a clean
+-- gap below the mito ring. The decluttering comment's promised "ER hugs the nucleus, 0.32..0.44"
+-- now actually holds in the geometry.
+local ER_RIBBON_INNER = 0.33 -- innermost ribbon radius as a fraction of cell radius (just past the nucleus rim)
+local ER_RIBBON_STEP = 0.03 -- per-ribbon outward step; 5 ribbons span 0.33..0.45, clear of the mito ring
+
+-- GOLGI cisternae stack: a short nest of cupped, plump CRESCENT SACS (the reference Golgi look)
+-- with round vesicles budding off the trans face. The earlier pass tapered the plate width hard
+-- (0.13 -> 0.07) and stacked the arcs, so the tips converged into a CONE/shuttlecock rather than
+-- a stack of parallel sacs. The fix: (a) a GENTLE taper so the sacs stay near-parallel and read
+-- as nested curved tubes, (b) a PLUMP body stroke with rounded end caps so each cisterna reads
+-- as a solid flattened sac (not a thin open arc) under a brighter rim, and (c) round budding
+-- vesicles in the same warm tone. All sizes are fractions of the cell radius (px for stroke
+-- widths / cap radii), so the stack scales with the window.
+local GOLGI_GAP = 0.04 -- spacing between stacked sacs (room for the plumper body stroke)
+local GOLGI_CIS_WIDTH = 0.12 -- half-width of the WIDEST (cis, innermost) sac
+local GOLGI_TRANS_WIDTH = 0.09 -- half-width of the SHORTEST (trans, outer) sac; GENTLE taper (no cone)
+local GOLGI_BOW = 0.05 -- how far each sac bows outward at its midpoint (the gentle crescent curve)
+local GOLGI_BODY_WIDTH = 5 -- plump body stroke width in px: reads as a flattened SAC, not a thin line
+local GOLGI_EDGE_WIDTH = 1.5 -- brighter top edge stroke width in px (the highlight rim)
+local GOLGI_BODY_ALPHA = 0.5 -- body stroke alpha (the soft warm membrane)
+local GOLGI_EDGE_ALPHA = 0.85 -- edge stroke alpha (the crisp rim that gives the stack definition)
+local GOLGI_EDGE_BRIGHT = 1.25 -- edge brightness multiplier on the tertiary token (a lighter warm highlight)
+local GOLGI_BUD_OFFSET = 0.025 -- how far past the trans face the budding vesicles sit (fraction of r)
+local GOLGI_BUD_R = 2 -- budding Golgi-vesicle radius in px (round sacs pinching off the trans face)
+
+-- CYTOSKELETON (the TRANSPORT stage): the cell's microtubule scaffold, drawn as an evenly
+-- spaced radial ASTER -- faint filament tracks fanning OUTWARD from a hub beside the nucleus to
+-- the cell periphery, the rails the vesicle swarm rides. Replaces the old per-leg parallel
+-- bundles that bunched into an overlapping mess near the centre with no legible shape. Even
+-- angular spacing means the spokes never overlap; a slight tangential curl keeps it organic
+-- (a soft pinwheel, not a hard star). COUNT scales with the transport level (a more-developed
+-- cytoskeleton = a denser scaffold). All radii are fractions of the cell radius.
+local CYTO_SPOKES_BASE = 7 -- radial filaments at a freshly-unlocked transport stage
+local CYTO_SPOKES_SCALE = 2.4 -- log growth of the spoke count with the transport level
+local CYTO_SPOKES_MAX = 16 -- cap (a dense but still legible aster)
+local CYTO_INNER_FRAC = 0.33 -- spokes start just outside the nucleus rim (never cross the nucleus)
+local CYTO_OUTER_FRAC = 0.86 -- ...and reach toward the rim, just inside the rim organelles
+local CYTO_CURL = 0.05 -- tangential bow at the midpoint: a soft pinwheel curl, fraction of r
+local CYTO_ALPHA = 0.18 -- faint background scaffolding that never competes with the swarm/organelles
+local CYTO_PHASE = math.rad(-90) -- first spoke points up; the rest fan evenly clockwise
 
 -- The fixed pipeline order (matches the sim's stage ids). The view lays endpoints
 -- out in THIS order, and uses the index to judge up/downstream of the bottleneck for
@@ -177,25 +269,32 @@ end
 -- offset from the cell centre. These are fixed constants: leveling NEVER moves them.
 -- The scheme distributes zones AROUND the whole cell so organelles don't cluster:
 -- the nucleus-hugging structures (ribosomes, ER) sit upper-left; the Golgi steps
--- below-left; transport and membrane sweep to the right side of the cell, giving
+-- below-centre; transport and membrane sweep to the right side of the cell, giving
 -- each zone clear breathing room. Pipeline order is preserved in the angular sweep
 -- (ribosomes -> nucleus -> er -> golgi -> transport -> membrane sweeps clockwise
 -- through the cell's interior, ending at the upper-right rim).
 --
 --   nucleus    -> centre (the hub)                            frac 0.00
---   ribosomes  -> hugging the nucleus, upper-left            frac 0.30, ~135 deg
---   er         -> band hugging the nucleus, left-lower       frac 0.42, ~215 deg
---   golgi      -> offset well out from the ER, below-centre  frac 0.62, ~275 deg
---   transport  -> toward the rim, lower-right                frac 0.76, ~330 deg
---   membrane   -> the rim, upper-right                       frac 0.88, ~55  deg
+--   ribosomes  -> on the nucleus surface, upper-left          frac 0.30, ~135 deg
+--   er         -> band hugging the nucleus, left-lower        frac 0.40, ~215 deg
+--   golgi      -> a clear mid band out past the mito ring     frac 0.70, ~275 deg
+--   transport  -> toward the rim, lower-right                 frac 0.80, ~330 deg
+--   membrane   -> the rim, upper-right                        frac 0.90, ~55  deg
 --
--- WHY these fracs/angles: previous layout crammed ribosomes(150°)/er(195°)/golgi(235°)
--- into a ~85° arc on the left while transport(320°) and membrane(10°) sat nearby,
--- causing visible overlap. The new layout spreads the pipeline from 135° to 55°
--- (going clockwise, ~280° of arc), with each zone at least 55° from its neighbours
--- and with progressively larger frac values so the pipeline visually "travels outward"
--- from the centre to the rim. The nucleus radius (NUCLEUS_R_FRAC=0.30) is unchanged;
--- ribosomes sit just at its surface (frac 0.30) so they read as attached.
+-- WHY these fracs/angles (the overlap-decluttering pass): the prior layout left three
+-- bands COLLIDING regardless of angle -- the tap ring (frac 0.34) sat on top of the
+-- ribosomes (0.30) and the inner ER ribbons; the FULL-circle mito ring (frac 0.50)
+-- cut straight through the ER ribbons (which sprawled out to frac ~0.55) and crowded
+-- the Golgi (0.62). The fix opens clean concentric BANDS, inner-to-outer:
+--   nucleus disk (<=0.30) | tap ring (~0.32) + ER ribbons hugging it (0.32..0.44) |
+--   mito ring (0.62) | Golgi/transport/membrane (0.70..0.90 at spread angles).
+-- The ER ribbons are pulled IN to hug the nucleus tightly (see draw_er's tighter
+-- radii) instead of sprawling into the mito band; the mito ring is pushed OUT to its
+-- own empty annulus (MITO_RING_FRAC below); and the rim organelles step out to 0.70+.
+-- The pipeline still sweeps clockwise 135 -> 215 -> 275 -> 330 -> 55 with each zone
+-- >= 55 deg from its neighbours, and the fracs grow monotonically so the pipeline
+-- still reads as "travelling outward" from hub to rim. NUCLEUS_R_FRAC (0.30) is
+-- unchanged; ribosomes sit at its surface (frac 0.30) so they read as attached.
 --
 -- Angles are in RADIANS (screen space: +x right, +y down, so positive angle sweeps
 -- clockwise on screen). Stored per-id so build_routes can place only UNLOCKED stages.
@@ -203,10 +302,10 @@ end
 local ZONE = {
   nucleus = { frac = 0.00, angle = 0.0 },
   ribosomes = { frac = 0.30, angle = math.rad(135) },
-  er = { frac = 0.42, angle = math.rad(215) },
-  golgi = { frac = 0.62, angle = math.rad(275) },
-  transport = { frac = 0.76, angle = math.rad(330) },
-  membrane = { frac = 0.88, angle = math.rad(55) },
+  er = { frac = 0.40, angle = math.rad(215) },
+  golgi = { frac = 0.70, angle = math.rad(275) },
+  transport = { frac = 0.80, angle = math.rad(330) },
+  membrane = { frac = 0.90, angle = math.rad(55) },
 }
 
 -- Resolve a zone's STABLE screen position. Pure: (cx, cy, r) + the fixed polar offset.
@@ -333,6 +432,10 @@ function view.new()
     endpoints_x = {},
     endpoints_y = {},
     segments = {},
+    -- The primed-mitochondrion hit target (screen x,y + radius), stamped each draw so the
+    -- orchestrator can hit-test a click against the glowing power plant. `active` is false
+    -- when no tap is pending. Reused in place so draw allocates nothing per frame.
+    tap_target = { x = 0, y = 0, r = 0, active = false },
   }
 end
 
@@ -360,6 +463,18 @@ end
 -- Spawn a composable effect onto this view's fx controller; returns it. (Kept exactly
 -- as the public interface the orchestrator depends on.)
 function view.spawn(state, effect) return fx.add(state.fx, effect) end
+
+-- The primed-mitochondrion manual-tap hit target: returns screen x, y, radius when a tap is
+-- pending and a power plant is glowing, or nil otherwise. The orchestrator hit-tests a click
+-- against this so ONLY the glowing mitochondrion injects ATP. Stamped during draw; the one
+-- frame of lag is harmless since the bean position is static between frames.
+function view.tap_target(state)
+  local t = state.tap_target
+  if t and t.active then
+    return t.x, t.y, t.r
+  end
+  return nil
+end
 
 -- ============================================================================
 -- Draw helpers (love.* lives ONLY below this line, inside draw-time code).
@@ -456,26 +571,6 @@ local function draw_nucleus(state, cx, cy, r, level)
   end
 end
 
--- The TAP-READY ring: a soft pulsing feed ring framing the centre hub, drawn only when
--- the manual ATP tap is off cooldown (snapshot.tap_ready). The phase-2 analogue of phase
--- 1's clickable nutrient bloom -- it appears when a tap is available and vanishes once
--- spent (the tap rolls a fresh cooldown), exactly the bloom's "click me, then gone" beat.
--- Drawn as a UI affordance in plain screen color (NOT set_interior_color), so brownout's
--- interior dim/tint never fades the cue when the player most needs to feed the cell.
-local function draw_tap_ring(state, cx, cy, r)
-  local col = colors.secondary_bright
-  local pulse = 1 + TAP_RING_PULSE_AMP * math.sin(state.time * TAP_RING_PULSE_FREQ)
-  local ring_r = r * TAP_RING_R_FRAC * pulse
-  -- Soft outer glow (the wispy breathe), then the bright "tap me" rim at a constant px width.
-  love.graphics.setColor(col[1], col[2], col[3], TAP_RING_GLOW_ALPHA)
-  love.graphics.circle("fill", cx, cy, ring_r * TAP_RING_GLOW_SCALE)
-  love.graphics.setLineWidth(TAP_RING_WIDTH)
-  love.graphics.setColor(col[1], col[2], col[3], TAP_RING_RIM_ALPHA)
-  love.graphics.circle("line", cx, cy, ring_r)
-  love.graphics.setLineWidth(1)
-  love.graphics.setColor(1, 1, 1, 1)
-end
-
 -- Draw a Catmull-Rom-ish smooth ribbon through a short list of control points using
 -- love's built-in spline. `pts` is a flat {x,y,...} list; we feed it as a quadratic
 -- bezier-style evenly. Cheap: love.math.newBezierCurve renders the smooth poly for us.
@@ -493,195 +588,315 @@ local function draw_spline(pts, samples)
   love.graphics.line(poly)
 end
 
--- Rough ER: concentric spline ribbons wrapping the nucleus on the ER's side, studded
--- with small ribosome dots. Ribbon COUNT/length scales with the ER level; dot DENSITY
--- scales with the ribosomes level. Drawn around the ER zone position, arcing so the
--- ribbons hug the nucleus.
+-- Rough ER: smooth concentric membrane arcs hugging the nucleus on the ER's side, studded
+-- with ribosome dots. Arc COUNT/sweep scales with the ER level; dot DENSITY with the
+-- ribosomes level. Reworked from wavy, rippled bezier ribbons (which undulated out of phase
+-- and crossed each other into a tangle) into clean, evenly-nested CONSTANT-RADIUS arcs, so the
+-- ER reads as tidy stacked sheets wrapping the nucleus instead of a knot of overlapping curls.
 local function draw_er(state, cx, cy, r, er_level, ribo_level)
-  local ribbons = 1 + sample_count(er_level, 0, 1.6, 4) -- 1..5 ribbons
-  -- The ER hugs the nucleus on its side; centre the ribbons on the ER zone direction.
+  local ribbons = 1 + sample_count(er_level, 0, 1.6, 4) -- 1..5 arcs
+  -- The ER hugs the nucleus on its side; centre the arcs on the ER zone direction.
   local z = ZONE.er
   local base_a = z.angle
-  -- Arc sweep grows a touch with level so a deep ER wraps further around the nucleus.
+  -- Sweep grows a touch with level so a deeper ER wraps further around the nucleus.
   local sweep = math.rad(70 + 18 * math.min(er_level, 6))
-  love.graphics.setLineWidth(2)
+  local arc_steps = 24 -- samples per arc: enough that the constant-radius curve reads smooth
+  love.graphics.setLineWidth(1.5)
   for b = 1, ribbons do
-    -- Each ribbon sits at a slightly larger radius from the nucleus, nested outward.
-    local rib_r = r * (0.30 + 0.05 * b)
+    -- Each arc is a clean constant-radius band, nested outward across the ER band; the small
+    -- step keeps even a max-level ER clear of the mito ring. NO ripple -> the arcs never cross.
+    local rib_r = r * (ER_RIBBON_INNER + ER_RIBBON_STEP * (b - 1))
     local pts = {}
-    local steps = 5 -- control points for the bezier
-    for s = 0, steps do
-      local frac = s / steps
-      local a = base_a - sweep * 0.5 + sweep * frac
-      -- a gentle radial ripple so the ribbon undulates like a membrane
-      local ripple = math.sin(frac * math.pi * 2 + b) * r * 0.012
-      local rr = rib_r + ripple
-      pts[#pts + 1] = cx + math.cos(a) * rr
-      pts[#pts + 1] = cy + math.sin(a) * rr
+    for s = 0, arc_steps do
+      local a = base_a - sweep * 0.5 + sweep * (s / arc_steps)
+      pts[#pts + 1] = cx + math.cos(a) * rib_r
+      pts[#pts + 1] = cy + math.sin(a) * rib_r
     end
-    set_interior_color(state, colors.primary_dark, 0.55)
-    draw_spline(pts, 4)
+    set_interior_color(state, colors.primary_dark, 0.5)
+    love.graphics.line(pts)
 
-    -- Ribosome dots studding this ribbon; density scales with the ribosomes level.
+    -- Ribosome dots studding this arc; density scales with the ribosomes level.
     local dots = sample_count(ribo_level, 2, 3.5, 14)
     for d = 1, dots do
-      local frac = (d - 0.5) / dots
-      local a = base_a - sweep * 0.5 + sweep * frac
-      local rr = rib_r + math.sin(frac * math.pi * 2 + b) * r * 0.012
-      local px = cx + math.cos(a) * rr
-      local py = cy + math.sin(a) * rr
+      local a = base_a - sweep * 0.5 + sweep * ((d - 0.5) / dots)
+      local px = cx + math.cos(a) * rib_r
+      local py = cy + math.sin(a) * rib_r
       set_interior_color(state, colors.primary, 0.7)
-      love.graphics.circle("fill", px, py, 1.3)
+      love.graphics.circle("fill", px, py, 1.2)
     end
   end
   love.graphics.setLineWidth(1)
 end
 
--- Golgi: a stack of nested curved arcs (cisternae) flattening outward at the Golgi
--- zone, with a few budding vesicle dots at the outer (trans) face. Stack HEIGHT scales
--- with the Golgi level.
+-- Golgi: a short cupped stack of plump CRESCENT SACS at the Golgi zone, widest at the cis
+-- (inner) face and only gently tapering to the trans (outer) face, with round vesicles budding
+-- off the trans face. Stack HEIGHT scales with the Golgi level. Each sac is a bowed body stroke
+-- with rounded end caps (so it reads as a solid flattened tube, not an open arc) under a thinner
+-- brighter rim. The gentle taper keeps the sacs near-parallel -- a nested stack, never a cone.
 local function draw_golgi(state, cx, cy, r, golgi_level)
   local gx, gy = zone_pos("golgi", cx, cy, r)
   local stack = 2 + sample_count(golgi_level, 0, 1.3, 4) -- 2..6 cisternae
-  -- Orient the stack so the arcs face outward from the cell centre (the trans face
-  -- points to the rim). The "outward" direction is from centre to the Golgi zone.
+  -- Orient the stack so the sacs face outward from the cell centre (the trans face points to
+  -- the rim). The "outward" direction is from the cell centre to the Golgi zone.
   local out_a = ZONE.golgi.angle
-  local nx, ny = math.cos(out_a), math.sin(out_a) -- outward normal
-  local tx, ty = -ny, nx -- tangent (the arc spans this axis)
-  local arc_w = r * 0.12 -- half-width of a cisterna arc
-  local gap = r * 0.022 -- spacing between stacked cisternae
-  love.graphics.setLineWidth(2)
+  local nx, ny = math.cos(out_a), math.sin(out_a) -- outward normal (cis -> trans)
+  local tx, ty = -ny, nx -- tangent (the sac spans this axis)
+  local bow = r * GOLGI_BOW
+  local gap = r * GOLGI_GAP
+  local cap_r = GOLGI_BODY_WIDTH * 0.5 -- end-cap circle radius rounds the sac's butt ends
   for c = 1, stack do
-    -- Each cisterna is a shallow arc: 3 control points bowing outward, stacked along
-    -- the outward normal. Inner cisternae are wider, outer ones flatten (a Golgi look).
+    -- Sac c, indexed cis (c=1, innermost/widest) -> trans (c=stack, outermost). Width tapers
+    -- only GENTLY across the stack so the sacs stay near-parallel (a nested cup, not a cone).
+    local taper = (stack > 1) and ((c - 1) / (stack - 1)) or 0
+    local width = r * lerp(GOLGI_CIS_WIDTH, GOLGI_TRANS_WIDTH, taper)
     local push = (c - 1) * gap
-    local width = arc_w * (1.0 - 0.08 * (c - 1))
-    local bow = r * 0.03 * (1.0 - 0.12 * (c - 1))
     local ox = gx + nx * push
     local oy = gy + ny * push
-    local pts = {
-      ox - tx * width,
-      oy - ty * width,
-      ox + nx * bow,
-      oy + ny * bow, -- mid point bows outward
-      ox + tx * width,
-      oy + ty * width,
-    }
-    set_interior_color(state, colors.tertiary, 0.6)
-    draw_spline(pts, 4)
+    -- Shallow crescent: 3 control points, the midpoint bowed outward along the normal.
+    local lx, ly = ox - tx * width, oy - ty * width -- left tip
+    local rx, ry = ox + tx * width, oy + ty * width -- right tip
+    local pts = { lx, ly, ox + nx * bow, oy + ny * bow, rx, ry }
+    -- Body under-stroke + rounded caps: a soft warm membrane giving the sac real thickness.
+    set_interior_color(state, colors.tertiary, GOLGI_BODY_ALPHA)
+    love.graphics.setLineWidth(GOLGI_BODY_WIDTH)
+    draw_spline(pts, 6)
+    love.graphics.circle("fill", lx, ly, cap_r)
+    love.graphics.circle("fill", rx, ry, cap_r)
+    -- Edge top-stroke: a thinner, brighter rim that crisps the sac against its neighbours.
+    set_interior_color_x(state, colors.tertiary, GOLGI_EDGE_ALPHA, GOLGI_EDGE_BRIGHT)
+    love.graphics.setLineWidth(GOLGI_EDGE_WIDTH)
+    draw_spline(pts, 6)
   end
-  -- Budding vesicle dots at the outer face.
+  -- Budding Golgi vesicles: round warm sacs pinching off the trans (outer) face, scattered
+  -- along the tangent across the trans-face width. Warm-tinted (same family as the cisternae)
+  -- so they read as Golgi-derived. Count scales with the Golgi level.
   local buds = sample_count(golgi_level, 1, 1.2, 5)
-  local face_x = gx + nx * (stack * gap + r * 0.02)
-  local face_y = gy + ny * (stack * gap + r * 0.02)
+  local trans_w = r * GOLGI_TRANS_WIDTH
+  local face_x = gx + nx * ((stack - 1) * gap + bow + r * GOLGI_BUD_OFFSET)
+  local face_y = gy + ny * ((stack - 1) * gap + bow + r * GOLGI_BUD_OFFSET)
   for d = 1, buds do
-    local jx = (hash01(d * 3.1) - 0.5) * arc_w
-    local px = face_x + tx * jx + nx * hash01(d * 5.7) * r * 0.02
-    local py = face_y + ty * jx + ny * hash01(d * 5.7) * r * 0.02
-    set_interior_color(state, colors.secondary_bright, 0.7)
-    love.graphics.circle("fill", px, py, 1.4)
+    local jx = (hash01(d * 3.1) - 0.5) * 2 * trans_w
+    local px = face_x + tx * jx + nx * hash01(d * 5.7) * r * GOLGI_BUD_OFFSET
+    local py = face_y + ty * jx + ny * hash01(d * 5.7) * r * GOLGI_BUD_OFFSET
+    set_interior_color_x(state, colors.tertiary, 0.85, GOLGI_EDGE_BRIGHT)
+    love.graphics.circle("fill", px, py, GOLGI_BUD_R)
   end
   love.graphics.setLineWidth(1)
 end
 
--- Mitochondria: STATIONARY bean shapes (a squashed capsule) with 2-4 internal cristae
--- arcs, at FIXED inner-mid positions. Count = log sample of `mito`. A more-powered
--- cell shows a brighter inner glow; under brownout they gutter FIRST (the caller passes
--- a `power_bright` already lowered by the brownout state). Drawn from arcs + polygon.
-local function draw_mitochondria(state, cx, cy, r, mito, power_bright)
-  local n = sample_count(mito, MITO_BASE, MITO_SCALE, MAX_MITO_EMITTERS)
+-- The 0..1 RETICULUM fusion factor for a given mitochondria count (pure -- no love.*).
+-- A log sample of `mito` mapped across [MITO_FUSE_START, MITO_FUSE_FULL] plant counts:
+-- 0 below START (the discrete-bean opening look), ramping to 1 at/above FULL (a fully
+-- bridged fused network). Log-scaled so the network keeps thickening from a few dozen
+-- plants into the hundreds. This is what makes the picture keep MOVING with state.mito
+-- past the old 6-bean clamp -- shape only, the economy never reads it.
+local function mito_reticulum_factor(mito)
+  mito = mito or 0
+  if mito <= MITO_FUSE_START then
+    return 0
+  end
+  local lo = math.log(1 + MITO_FUSE_START)
+  local hi = math.log(1 + MITO_FUSE_FULL)
+  local v = (math.log(1 + mito) - lo) / (hi - lo)
+  return clamp01(v)
+end
+
+-- How many merged mitochondrial BODIES to draw around the ring for a count + fusion
+-- factor: from MITO_BODY_MIN at the discrete end to MITO_BODY_MAX in a dense reticulum
+-- (pure). Bounded so the per-frame primitive cost never grows with the raw count -- a
+-- 500-plant cell draws the same body budget as a 220-plant one, just at full fusion.
+local function mito_body_count(reticulum)
+  return MITO_BODY_MIN + math.floor((MITO_BODY_MAX - MITO_BODY_MIN) * reticulum + 0.5)
+end
+
+-- The ring position + base orientation of body index `m` of `count` (pure). At the discrete
+-- end (count fits the fixed MITO_ANGLES anchors) bodies sit on those hand-placed angles, which
+-- tuck into the gaps between the organelle zones. Once the count climbs past that (the fused
+-- reticulum) ALL bodies are placed EVENLY around the ring from MITO_RING_PHASE, so no two ever
+-- land on the same spot -- the old scheme mixed the fixed anchors (m<=6) with a different
+-- even-fill formula (m>6) and the two overlapped, stacking beans on top of each other.
+-- Orientation is a deterministic per-index jitter off the tangent (no reshuffle within a count).
+local function mito_body_pose(m, count, cx, cy, r)
   local ring_r = r * MITO_RING_FRAC
-  local bean_len = r * 0.13
-  local bean_w = r * 0.055
-  for m = 1, n do
-    local a = MITO_ANGLES[m] or (m / n * 2 * math.pi)
-    local mx = cx + math.cos(a) * ring_r
-    local my = cy + math.sin(a) * ring_r
-    -- Each bean has a fixed orientation derived from its index (deterministic).
-    local rot = a + math.pi * 0.5 + (hash01(m * 9.1) - 0.5) * 0.6
-    local cr, sr = math.cos(rot), math.sin(rot)
-    -- Build the bean outline as a capsule: sample an ellipse, pinched slightly in the
-    -- middle so it reads as a bean rather than a plain oval.
-    local pts = {}
-    local segs = 18
-    for i = 0, segs - 1 do
-      local th = (i / segs) * 2 * math.pi
-      local ex = math.cos(th) * bean_len
-      local ey = math.sin(th) * bean_w * (1 - 0.25 * math.cos(th * 2)) -- pinch
-      pts[#pts + 1] = mx + ex * cr - ey * sr
-      pts[#pts + 1] = my + ex * sr + ey * cr
-    end
-    -- Outer membrane fill + rim.
-    set_interior_color(state, colors.tertiary, 0.5)
-    love.graphics.polygon("fill", pts)
-    love.graphics.setLineWidth(1.5)
-    set_interior_color_x(state, colors.secondary, 0.7, power_bright)
-    love.graphics.polygon("line", pts)
-    love.graphics.setLineWidth(1)
-    -- Inner glow: a brighter inner ellipse keyed to power (dims first on brownout).
-    set_interior_color_x(state, colors.secondary_bright, 0.35, power_bright)
-    local gpts = {}
-    for i = 0, segs - 1 do
-      local th = (i / segs) * 2 * math.pi
-      local ex = math.cos(th) * bean_len * 0.6
-      local ey = math.sin(th) * bean_w * 0.5
-      gpts[#gpts + 1] = mx + ex * cr - ey * sr
-      gpts[#gpts + 1] = my + ex * sr + ey * cr
-    end
-    love.graphics.polygon("fill", gpts)
-    -- Cristae: 2-4 internal arcs across the short axis.
-    local cristae = 2 + (m % 3)
-    love.graphics.setLineWidth(1)
-    set_interior_color_x(state, colors.secondary_bright, 0.6, power_bright)
-    for k = 1, cristae do
-      local along = (k / (cristae + 1) - 0.5) * 2 * bean_len * 0.8
-      local x0 = mx + (cr * along) - (sr * bean_w * 0.7)
-      local y0 = my + (sr * along) + (cr * bean_w * 0.7)
-      local x1 = mx + (cr * along) + (sr * bean_w * 0.7)
-      local y1 = my + (sr * along) - (cr * bean_w * 0.7)
-      love.graphics.line(x0, y0, x1, y1)
-    end
+  local a
+  if count <= #MITO_ANGLES then
+    a = MITO_ANGLES[m]
+  else
+    a = MITO_RING_PHASE + (m - 1) * (2 * math.pi / count)
+  end
+  local mx = cx + math.cos(a) * ring_r
+  local my = cy + math.sin(a) * ring_r
+  local rot = a + math.pi * 0.5 + (hash01(m * 9.1) - 0.5) * 0.6
+  return mx, my, rot, a
+end
+
+-- Draw ONE mitochondrial body: a fat rounded CAPSULE bean -- two semicircular end caps joined
+-- by straight sides (rounded ends, never the sharp lens tips of a plain ellipse) -- with a
+-- power-keyed inner glow and `cristae` internal fold lines. At reticulum 0 this is a plump
+-- discrete bean; as fusion rises the body stretches (MITO_ELONGATE) and narrows into a tubular
+-- segment of the network and the cristae densify. The capsule is convex, so it fills as one
+-- polygon. love.* draw-time only.
+local function draw_mito_body(state, mx, my, rot, bean_len, bean_w, cristae, power_bright)
+  local cr, sr = math.cos(rot), math.sin(rot)
+  -- `straight` is the half-length of the parallel section; the two caps are semicircles of
+  -- radius bean_w centred at +/- straight, so total half-length stays bean_len.
+  local straight = bean_len - bean_w
+  if straight < 0 then
+    straight = 0
+  end
+  local pts = {}
+  -- Right cap: sweep the semicircle from the bottom round to the top.
+  for i = 0, MITO_CAP_SEGS do
+    local th = -math.pi * 0.5 + (i / MITO_CAP_SEGS) * math.pi
+    local ex = straight + math.cos(th) * bean_w
+    local ey = math.sin(th) * bean_w
+    pts[#pts + 1] = mx + ex * cr - ey * sr
+    pts[#pts + 1] = my + ex * sr + ey * cr
+  end
+  -- Left cap: sweep the semicircle from the top round to the bottom (closing the capsule).
+  for i = 0, MITO_CAP_SEGS do
+    local th = math.pi * 0.5 + (i / MITO_CAP_SEGS) * math.pi
+    local ex = -straight + math.cos(th) * bean_w
+    local ey = math.sin(th) * bean_w
+    pts[#pts + 1] = mx + ex * cr - ey * sr
+    pts[#pts + 1] = my + ex * sr + ey * cr
+  end
+  -- Outer membrane fill + rim.
+  set_interior_color(state, colors.tertiary, 0.5)
+  love.graphics.polygon("fill", pts)
+  love.graphics.setLineWidth(1.5)
+  set_interior_color_x(state, colors.secondary, 0.7, power_bright)
+  love.graphics.polygon("line", pts)
+  love.graphics.setLineWidth(1)
+  -- Inner glow: a brighter inner ellipse keyed to power (dims first on brownout).
+  set_interior_color_x(state, colors.secondary_bright, 0.35, power_bright)
+  local gpts = {}
+  local glow_segs = 20
+  for i = 0, glow_segs - 1 do
+    local th = (i / glow_segs) * 2 * math.pi
+    local ex = math.cos(th) * bean_len * 0.55
+    local ey = math.sin(th) * bean_w * 0.6
+    gpts[#gpts + 1] = mx + ex * cr - ey * sr
+    gpts[#gpts + 1] = my + ex * sr + ey * cr
+  end
+  love.graphics.polygon("fill", gpts)
+  -- Cristae: internal fold lines across the short axis (denser as the body fuses), kept inside
+  -- the fattened bean by MITO_CRISTAE_SPAN/REACH.
+  love.graphics.setLineWidth(1)
+  set_interior_color_x(state, colors.secondary_bright, 0.6, power_bright)
+  for k = 1, cristae do
+    local along = (k / (cristae + 1) - 0.5) * 2 * bean_len * MITO_CRISTAE_SPAN
+    local reach = bean_w * MITO_CRISTAE_REACH
+    local x0 = mx + (cr * along) - (sr * reach)
+    local y0 = my + (sr * along) + (cr * reach)
+    local x1 = mx + (cr * along) + (sr * reach)
+    local y1 = my + (sr * along) - (cr * reach)
+    love.graphics.line(x0, y0, x1, y1)
   end
 end
 
--- Cytoskeleton (transport): straight tinted filament line segments radiating between
--- the unlocked zone positions. COUNT scales with the transport level -- these read as
--- the roads the swarm rides. Cheap: a handful of lines between consecutive zones.
-local function draw_cytoskeleton(state, cx, cy, r, stages, transport_level)
+-- Mitochondria: at LOW counts, discrete STATIONARY beans at the fixed MITO_ANGLES (the
+-- opening look); as the count climbs they FUSE into a branched RETICULUM -- bodies
+-- elongate, tubules bridge adjacent ring anchors, and cristae densify -- so the picture
+-- keeps moving with state.mito into the hundreds instead of clamping at 6 (Pillar 4).
+-- A more-powered cell shows a brighter inner glow; under brownout they gutter FIRST (the
+-- caller passes a `power_bright` already lowered by the brownout state). Render-only: the
+-- economy (power = POWER_PER_MITO*mito) is untouched -- this only changes how it's shown.
+local function draw_mitochondria(state, cx, cy, r, mito, power_bright, primed)
+  local reticulum = mito_reticulum_factor(mito)
+  local count = mito_body_count(reticulum)
+  -- A fused body elongates (MITO_ELONGATE) and narrows (MITO_FUSE_NARROW) so the network reads
+  -- as tubular rather than a ring of fat blobs; at the discrete end it's a plump bean capsule.
+  local bean_len = r * MITO_BEAN_LEN * (1 + (MITO_ELONGATE - 1) * reticulum)
+  local bean_w = r * MITO_BEAN_W * (1 - MITO_FUSE_NARROW * reticulum)
+
+  -- TUBULES: as fusion rises, draw connecting tubes between adjacent bodies so the ring
+  -- reads as one branched network, not separate beans. Faded in by the fusion factor (none
+  -- at the discrete end), and only between bodies close enough on the ring to merge.
+  if reticulum > 0 and count >= 2 then
+    love.graphics.setLineWidth(math.max(1, r * MITO_TUBULE_WIDTH * reticulum))
+    set_interior_color_x(state, colors.secondary, 0.30 * reticulum, power_bright)
+    local link_max = (r * MITO_RING_FRAC) * (2 * math.pi / count) * 1.6 -- nearest-neighbour gap + slack
+    for m = 1, count do
+      local ax, ay = mito_body_pose(m, count, cx, cy, r)
+      local nxt = (m % count) + 1
+      local bx, by = mito_body_pose(nxt, count, cx, cy, r)
+      local dx, dy = bx - ax, by - ay
+      if math.sqrt(dx * dx + dy * dy) <= link_max then
+        love.graphics.line(ax, ay, bx, by)
+      end
+    end
+    love.graphics.setLineWidth(1)
+  end
+
+  -- BODIES: each drawn at its stable pose. Cristae densify with fusion (MITO_CRISTAE_MIN
+  -- ..MAX), plus a small per-body variance so the network doesn't read mechanically.
+  for m = 1, count do
+    local mx, my, rot = mito_body_pose(m, count, cx, cy, r)
+    local cristae = MITO_CRISTAE_MIN
+      + math.floor((MITO_CRISTAE_MAX - MITO_CRISTAE_MIN) * reticulum + 0.5)
+      + (m % 2)
+    draw_mito_body(state, mx, my, rot, bean_len, bean_w, cristae, power_bright)
+  end
+
+  -- MANUAL-TAP CUE: a soft pulsing green halo around the primed power plant (the orchestrator
+  -- picked it via tap_seed; see draw_organelles). Full brightness, NOT brownout-dimmed -- the
+  -- feed cue must read when the cell is starved. `primed` is a 1-based body index, or nil when
+  -- no tap is pending. The halo breathes in size + alpha so the chosen mitochondrion pulses.
+  -- We also stamp the bean's screen position + a forgiving hit radius into state.tap_target so
+  -- the orchestrator can route a click ONLY to this glowing plant (a one-frame lag is harmless).
+  state.tap_target.active = false
+  if primed and primed >= 1 and primed <= count then
+    local mx, my = mito_body_pose(primed, count, cx, cy, r)
+    local pulse = 0.5 + 0.5 * math.sin(state.time * MITO_TAP_PULSE_FREQ) -- 0..1
+    local halo_r = bean_len * (MITO_TAP_HALO_SCALE + MITO_TAP_PULSE_AMP * pulse)
+    local col = colors.secondary_bright
+    love.graphics.setLineWidth(MITO_TAP_WIDTH)
+    love.graphics.setColor(col[1], col[2], col[3], MITO_TAP_ALPHA * (0.55 + 0.45 * pulse))
+    love.graphics.circle("line", mx, my, halo_r)
+    love.graphics.setLineWidth(1)
+    love.graphics.setColor(1, 1, 1, 1)
+    state.tap_target.x = mx
+    state.tap_target.y = my
+    state.tap_target.r = bean_len * MITO_TAP_HIT_SCALE
+    state.tap_target.active = true
+  end
+end
+
+-- Cytoskeleton (the TRANSPORT stage): the cell's microtubule scaffold -- an evenly-spaced
+-- radial ASTER of faint filament tracks fanning OUTWARD from a hub beside the nucleus toward
+-- the cell periphery, the rails the vesicle swarm rides. COUNT scales with the transport level.
+-- Reworked from the old per-leg parallel BUNDLES, which bunched into an overlapping tangle near
+-- the centre with no legible construction; even angular spacing means spokes never overlap, and
+-- a slight tangential curl keeps the aster organic (a soft pinwheel, not a hard star).
+-- The radial aster is anchored at the cell centre and is independent of which zones are
+-- unlocked (the old per-leg version walked the pipeline rows; this one doesn't need them).
+local function draw_cytoskeleton(state, cx, cy, r, transport_level)
   if transport_level <= 0 then
     return
   end
-  -- Gather unlocked zone positions in pipeline order.
-  local zx, zy = {}, {}
-  local zn = 0
-  for order = 1, #STAGE_ORDER do
-    local id = STAGE_ORDER[order]
-    local row = find_stage(stages, id)
-    if row and row.unlocked then
-      zn = zn + 1
-      zx[zn], zy[zn] = zone_pos(id, cx, cy, r)
-    end
-  end
-  if zn < 2 then
-    return
-  end
-  -- Filament bundles per leg scale with the transport level; each filament is a faint
-  -- line offset perpendicular to the leg (a bundle reads as a microtubule track).
-  local per_leg = 1 + sample_count(transport_level, 0, 1.4, 4) -- 1..5 filaments
+  local spokes = sample_count(transport_level, CYTO_SPOKES_BASE, CYTO_SPOKES_SCALE, CYTO_SPOKES_MAX)
+  local inner = r * CYTO_INNER_FRAC
+  local outer = r * CYTO_OUTER_FRAC
+  local mid_r = (inner + outer) * 0.5
+  local curl = r * CYTO_CURL -- tangential bow at the spoke midpoint (the soft pinwheel)
   love.graphics.setLineWidth(1)
-  for k = 1, zn - 1 do
-    local ax, ay = zx[k], zy[k]
-    local bx, by = zx[k + 1], zy[k + 1]
-    local dx, dy = bx - ax, by - ay
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len > 1 then
-      local px, py = -dy / len, dx / len -- perpendicular unit
-      for f = 1, per_leg do
-        local off = (f - (per_leg + 1) * 0.5) * (r * 0.012)
-        set_interior_color(state, colors.border_inner_highlight, 0.28)
-        love.graphics.line(ax + px * off, ay + py * off, bx + px * off, by + py * off)
-      end
-    end
+  for k = 1, spokes do
+    local a = CYTO_PHASE + (k - 1) * (2 * math.pi / spokes)
+    local ca, sa = math.cos(a), math.sin(a)
+    local tx, ty = -sa, ca -- tangent (curl direction)
+    -- Inner -> curled midpoint -> outer, fed to the spline as bezier control points so the
+    -- filament bows gently toward the midpoint rather than running dead straight.
+    local pts = {
+      cx + ca * inner,
+      cy + sa * inner,
+      cx + ca * mid_r + tx * curl,
+      cy + sa * mid_r + ty * curl,
+      cx + ca * outer,
+      cy + sa * outer,
+    }
+    set_interior_color(state, colors.border_inner_highlight, CYTO_ALPHA)
+    draw_spline(pts, 6)
   end
   love.graphics.setLineWidth(1)
 end
@@ -694,7 +909,7 @@ local function draw_organelles(state, snapshot, cx, cy, r, power_bright)
 
   local transport = find_stage(stages, "transport")
   if transport and transport.unlocked then
-    draw_cytoskeleton(state, cx, cy, r, stages, transport.level or 0)
+    draw_cytoskeleton(state, cx, cy, r, transport.level or 0)
   end
 
   local er = find_stage(stages, "er")
@@ -708,8 +923,19 @@ local function draw_organelles(state, snapshot, cx, cy, r, power_bright)
     draw_golgi(state, cx, cy, r, golgi.level or 0)
   end
 
-  -- Mitochondria always drawn if there is any power machinery (mito >= 1).
-  draw_mitochondria(state, cx, cy, r, snapshot.mito or 0, power_bright)
+  -- Mitochondria always drawn if there is any power machinery (mito >= 1). When a manual tap
+  -- is pending (snapshot.tap_ready) one bean is PRIMED with a pulsing "feed me" halo; the
+  -- orchestrator's stable tap_seed (0..1) picks WHICH, mapped to a body index here against the
+  -- same count the draw uses, so the cue always lands on a real bean.
+  local primed
+  if snapshot.tap_ready then
+    local count = mito_body_count(mito_reticulum_factor(snapshot.mito or 0))
+    primed = 1 + math.floor(clamp01(snapshot.tap_seed or 0) * count)
+    if primed > count then
+      primed = count
+    end
+  end
+  draw_mitochondria(state, cx, cy, r, snapshot.mito or 0, power_bright, primed)
   -- No bottleneck spotlight: the player reads the choke from the swarm's own flow
   -- (congestion clumps, the bottleneck lane constricts, downstream lanes thin out),
   -- never from a halo pointing at "feed this one".
@@ -754,14 +980,15 @@ local function build_routes(state, snapshot, cx, cy, r)
     end
   end
 
-  -- Mitochondria emitters at FIXED inner-mid positions (a log sample of `mito`).
-  local mito_n = sample_count(snapshot.mito, MITO_BASE, MITO_SCALE, MAX_MITO_EMITTERS)
-  local mito_ring = r * MITO_RING_FRAC
-  for m = 1, mito_n do
+  -- Mitochondria emitters at the SAME positions the beans are DRAWN at: one emitter per
+  -- drawn body, mirroring draw_mitochondria's count (mito_body_count(reticulum)) and pose
+  -- (mito_body_pose). This lands the vesicles ON the visible power plants instead of on a
+  -- separate angle-ring that drifted off the beans once the reticulum fused. The body
+  -- count is bounded (<= MITO_BODY_MAX), so the endpoint block stays under MAX_ENDPOINTS.
+  local mito_bodies = mito_body_count(mito_reticulum_factor(snapshot.mito or 0))
+  for m = 1, mito_bodies do
     ep_count = ep_count + 1
-    local a = MITO_ANGLES[m] or (m / mito_n * 2 * math.pi)
-    xs[ep_count] = cx + math.cos(a) * mito_ring
-    ys[ep_count] = cy + math.sin(a) * mito_ring
+    xs[ep_count], ys[ep_count] = mito_body_pose(m, mito_bodies, cx, cy, r)
     ordered[ep_count] = nil
   end
 
@@ -799,7 +1026,7 @@ end
 -- Render the cell interior to the screen from a read-only snapshot (the orchestrator
 -- builds it fresh each frame; see the EXACT shape in this module's header). Draws
 -- nothing of the panel/HUD. Graphics state is reset at the end. Order:
---   membrane (CPU) -> nucleus (CPU) -> organelles (CPU) -> GPU swarm -> tap ring -> fx.
+--   membrane (CPU) -> nucleus (CPU) -> organelles (CPU, incl. the mito tap cue) -> GPU swarm -> fx.
 function view.draw(state, snapshot)
   snapshot = snapshot or {}
   local win_w, win_h = love.graphics.getDimensions()
@@ -851,7 +1078,7 @@ function view.draw(state, snapshot)
   if built < 0 then
     built = 0
   end
-  local count = COUNT_BASE + K_FLOW * math.log(1 + throughput) + K_BULK * math.log(1 + built)
+  local count = COUNT_BASE + K_FLOW * math.log(1 + throughput) + K_BULK * math.sqrt(built)
   if count > MAX_LIVE_VESICLES then
     count = MAX_LIVE_VESICLES
   end
@@ -890,13 +1117,8 @@ function view.draw(state, snapshot)
     cargo_palette = CARGO_PALETTE, -- typed-cargo colours (Agent C honors / defaults)
   })
 
-  -- 5) TAP-READY ring: the centre "feed me" affordance, over the swarm (so it reads as a
-  -- clear cue, not buried in the cloud) but under the fx, so a tap's own pulse lands on top.
-  if snapshot.tap_ready then
-    draw_tap_ring(state, cx, cy, r)
-  end
-
-  -- 6) World-space fx ride above the interior.
+  -- 5) World-space fx ride above the interior. (The manual-tap "feed me" cue is no longer a
+  -- centre ring -- it's a pulsing halo on a primed mitochondrion, drawn in the organelle pass.)
   fx.draw_world(state.fx)
 
   love.graphics.pop()

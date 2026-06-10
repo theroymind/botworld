@@ -10,6 +10,12 @@ Phase 1 (the cell colony) is built and tuned. **Phase 2 is the next layer to bui
 doc is its design target — it is not yet implemented.** Everything past phase 2 is
 deliberately left open (see `GAME_PLAN.md`).
 
+> **Balance/biology revision in review — see `docs/PHASE_2_BALANCE.md`.** A first
+> playable draft surfaced that mitochondria are pure upside and the balance readout
+> is cosmetic. That proposal makes balance a two-sided pendulum (idle over-power
+> leaks ROS), adds a stabilization counter-lever and player-facing gauges, and gives
+> stages distinct rates (a real recipe ratio). Read it alongside this brief.
+
 ## The fantasy
 
 You grew a colony in phase 1. At the endosymbiosis victory you **zoom INTO a single cell**
@@ -129,8 +135,13 @@ Readouts & warnings, in plain terms:
 
 - `throughput` → **"line speed"** (the line's max rate); `output` → **"making … /s"** (what
   it's actually producing now). `ATP` is labelled **"ATP energy."**
-- **BROWNOUT** → "not enough power, production slowed." **Oxidative stress** → "the cell is
-  dying! restore power." **Lysis** → "THE CELL BURST" / "too long without power."
+- **BROWNOUT** → "not enough power, production slowed." The **dying** warning and the **lysis**
+  toast *state the problem only, never the fix* (the player reads the vitals and picks the
+  lever): they name which side of the balance drove it — **"LOW POWER — the cell is dying"**
+  vs **"POWER OVERLOAD — the cell is dying"**, and on death "The cell burst — low power" vs
+  "… power overload." (Oxidative stress is two-sided now — a deficit *or* idle over-power —
+  so the old deficit-only "restore power" copy was dropped.) The vitals gauges are
+  de-jargoned to match: **cell stress · power balance · oxygen use · efficiency.**
 - The self-reveal teaser drops raw `built` targets for plain "something is forming…" →
   "almost ready" → "ready to build!"; the finale reads **"PATH CHOICE — become a plant or an
   animal."** The fork cards trade "sessile/motility" for "root down and grow" / "always on

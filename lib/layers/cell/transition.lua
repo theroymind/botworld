@@ -96,13 +96,9 @@ end
 
 -- A fresh, INERT timeline. begin() arms it; until then active() is false and the
 -- orchestrator runs the layer normally.
-function transition.new()
-  return { active = false }
-end
+function transition.new() return { active = false } end
 
-function transition.active(t)
-  return t.active == true
-end
+function transition.active(t) return t.active == true end
 
 -- Arm the cinematic on the cell at (opts.x, opts.y). opts also carries the three
 -- side-effect callbacks (on_focus(x,y,zoom), on_shake(mag,life,seed), on_reset())
@@ -403,7 +399,7 @@ function transition.draw(t, sx, sy)
   if not t.active then
     return
   end
-  local w, h = love.graphics.getDimensions()
+  local _w, h = love.graphics.getDimensions()
   -- Anchor the text near the cell but clamp it on-screen so it never sails off.
   local ay = math.max(h * 0.24, math.min(sy, h * 0.8))
 

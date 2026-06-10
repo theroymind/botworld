@@ -76,9 +76,7 @@ end
 
 -- Slow-start multiplier on the division cost: ~(1 + EARLY_SLOW) at the founder
 -- (n=1), decaying exponentially toward 1 as the colony grows.
-local function early_scale(n)
-  return 1 + EARLY_SLOW * math.exp(-(n - 1) / EARLY_TAU)
-end
+local function early_scale(n) return 1 + EARLY_SLOW * math.exp(-(n - 1) / EARLY_TAU) end
 
 -- Energy the next division (reaching cell index n) costs: a jittered base band
 -- scaled by the slow-start factor, then by the digestion div_mult (< 1 once the
@@ -111,9 +109,7 @@ end
 
 -- The per-cell energy cost of the colony's NEXT division. Exposed for the panel's
 -- "energy toward the next division" bar. div_mult is the digestion discount.
-function sim.div_cost(population, div_mult)
-  return spacing(population or 1, div_mult)
-end
+function sim.div_cost(population, div_mult) return spacing(population or 1, div_mult) end
 
 -- Net energy/sec at a colony size, from the folded intake. Foraging saturates at
 -- forage_cap cells (a finite food supply); upkeep scales with every cell. Below
@@ -280,9 +276,7 @@ end
 
 -- One sim tick (runs even while backgrounded). intake is the folded table the
 -- orchestrator assembles from metabolism + traits + organelles.
-function sim.tick(state, dt, intake)
-  sim.step(state, dt, intake)
-end
+function sim.tick(state, dt, intake) sim.step(state, dt, intake) end
 
 -- A nutrient-bloom feed credits the energy reserve -- one of the real live deltas
 -- over the cosmetic world sim. Negatives clamp to zero. Returns the amount added.
@@ -340,9 +334,7 @@ function sim.offline(state, seconds, intake)
   end
 end
 
-function sim.can_spend(state, cost)
-  return state.biomass >= cost
-end
+function sim.can_spend(state, cost) return state.biomass >= cost end
 
 -- Deduct an upgrade cost from the banked biomass. Returns success.
 function sim.spend(state, cost)
@@ -402,9 +394,7 @@ end
 -- The division-cost band across the colony: floor is the asymptotic base minimum
 -- (DIV_BASE); ceiling is the founder's slow-started maximum. With the defaults,
 -- (8, 112). Exposed for tests.
-function sim.div_bounds()
-  return DIV_BASE, (DIV_BASE + DIV_RANGE) * early_scale(1)
-end
+function sim.div_bounds() return DIV_BASE, (DIV_BASE + DIV_RANGE) * early_scale(1) end
 
 -- Plain-data snapshot. Persists the banked currency, the reserve, the colony
 -- size, the lifetime division count, and the acquired organelles.

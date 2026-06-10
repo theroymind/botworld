@@ -39,6 +39,7 @@ local colors = ui.colors
 local theme = ui.theme
 local interaction = ui.interaction
 local tween = ui.tween
+local toast = ui.toast
 local rect = ui.primitives.rect
 local text = ui.primitives.text
 local button = ui.primitives.button
@@ -54,7 +55,6 @@ local OFFLINE_CAP = 8 * 3600 -- credit at most 8h of time away
 -- false to restore the real idle behaviour: resume the saved colony and credit
 -- up to OFFLINE_CAP of away-time growth.
 local DEV_FRESH_START = true
-local TOAST_SECONDS = 4
 
 -- Economy intake tuning (folded into sim's intake table). The colony forages
 -- ambient motes per cell, but the food supply SATURATES past FORAGE_CAP cells --
@@ -194,8 +194,6 @@ cell.state = nil
 local world_state
 local view_state
 local save_accum = 0
-local toast_text
-local toast_timer = 0
 -- The end-of-phase-1 transition cinematic (armed by the endosymbiosis proc).
 -- While active the orchestrator FREEZES the live sim and hands the frame to it.
 local transition_state = transition.new()
@@ -217,9 +215,7 @@ local COLLAPSE_ANIM = 2.6 -- length of the game-over beat before the fresh reloa
 -- growing share of the food as the lineage ages, climbing toward COMP_FRAC_MAX with
 -- time scale COMP_TAU, then saturating (it never re-caps the millions climb). Pure;
 -- keyed on the lineage clock so offline replays the same ramp position.
-local function comp_frac(age)
-  return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU))
-end
+local function comp_frac(age) return COMP_FRAC_MAX * (1 - math.exp(-(age or 0) / COMP_TAU)) end
 
 -- The ramping PREDATION pressure (mirrors sim_lab.pred_pressure): the per-second
 -- cull fraction climbs LINEARLY with elapsed lineage time (a rising clock is what
@@ -360,11 +356,6 @@ local function in_panel(x, y)
     and y < PANEL_Y + cell._panel_h
 end
 
-local function set_toast(message)
-  toast_text = message
-  toast_timer = TOAST_SECONDS
-end
-
 local function persist()
   save.write(SAVE_NAME, {
     traits = traits.serialize(cell.state.traits),
@@ -409,7 +400,7 @@ local function buy_unlock(id)
   end
   local fired = traits.unlock(cell.state.traits, id)
   if fired then
-    set_toast(string.format("Evolved %s — %s", fired.label, fired.tell))
+    toast.show(string.format("Evolved %s — %s", fired.label, fired.tell))
     view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 }))
     persist()
   end
@@ -420,16 +411,14 @@ end
 -- ends purely because the population reached 0, the natural end of the die-off. As
 -- long as a single cell survives, feeding or leveling cleanup can still turn it
 -- around. Returns true the moment the colony is wiped out.
-local function is_extinct()
-  return cell.state.sim.population <= 0
-end
+local function is_extinct() return cell.state.sim.population <= 0 end
 
 -- Begin the game-over beat: freeze the sim, shake + flash red, toast the cause.
 -- The overlay runs for COLLAPSE_ANIM, then cell.update reloads a fresh lineage.
 local function begin_collapse()
   collapsing = true
   collapse_anim = COLLAPSE_ANIM
-  set_toast("The colony choked on its own waste — a new lineage begins")
+  toast.show("The colony choked on its own waste — a new lineage begins")
   sound.play("pop", { volume = 1.0, pitch_spread = 0.2 })
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = cell.state.sim.population }))
@@ -521,7 +510,7 @@ local function roll_endosymbiosis(engulfs, engulf_points, predation)
     local def = organelles.next_eligible(s.organelles, s.total_divisions, predation)
     if def and love.math.random() < chance then
       organelles.acquire(s.organelles, def.id)
-      set_toast(string.format("Endosymbiosis! %s kept — %s", def.label, def.boon))
+      toast.show(string.format("Endosymbiosis! %s kept — %s", def.label, def.boon))
       local p = engulf_points and engulf_points[i]
       local cx, cy = world.swarm_center(world_state)
       if p then
@@ -605,9 +594,7 @@ function cell.update(dt)
   if transition.active(transition_state) and not transition_state.reset_done then
     transition.update(transition_state, dt)
     view.update(view_state, dt)
-    if toast_timer > 0 then
-      toast_timer = toast_timer - dt
-    end
+    toast.update(dt)
     return
   end
   if transition.active(transition_state) then
@@ -619,9 +606,7 @@ function cell.update(dt)
   -- elapses -- wipe the save and seed a fresh lineage (the same reset as [r]).
   if collapsing then
     view.update(view_state, dt)
-    if toast_timer > 0 then
-      toast_timer = toast_timer - dt
-    end
+    toast.update(dt)
     collapse_anim = collapse_anim - dt
     if collapse_anim <= 0 then
       save.remove(SAVE_NAME)
@@ -741,9 +726,7 @@ function cell.update(dt)
   sim.take_divisions(cell.state.sim) -- drain; the swarm reconciles off population
   view.update(view_state, dt)
 
-  if toast_timer > 0 then
-    toast_timer = toast_timer - dt
-  end
+  toast.update(dt)
 
   save_accum = save_accum + dt
   if save_accum >= SAVE_INTERVAL then
@@ -804,9 +787,7 @@ local function toggle_button_node()
         id = "panel_toggle",
       })
     end,
-    on_click = function()
-      panel_collapsed = not panel_collapsed
-    end,
+    on_click = function() panel_collapsed = not panel_collapsed end,
     resolved_rect = nil,
   }
 end
@@ -1091,18 +1072,6 @@ local function draw_help(width)
   )
 end
 
-local function draw_toast(width)
-  if toast_timer <= 0 or not toast_text then
-    return
-  end
-  local alpha = math.min(toast_timer, 1)
-  text(rect(0, 40, width, 22), toast_text, {
-    font = "hud_lg",
-    color = colors.with_alpha(colors.ui.accent, alpha),
-    align = "center",
-  })
-end
-
 -- The game-over overlay: a darkening red wash with the cause of death, drawn over
 -- the frozen dish for COLLAPSE_ANIM before the fresh lineage reloads.
 local function draw_collapse(width)
@@ -1163,7 +1132,7 @@ function cell.draw()
   -- drawn over the frozen dish until the fresh lineage reloads.
   if collapsing then
     draw_collapse(width)
-    draw_toast(width)
+    toast.draw(width)
     return
   end
 
@@ -1185,7 +1154,7 @@ function cell.draw()
   interaction.commit_frame(mx, my, love.mouse.isDown(1))
 
   draw_help(width)
-  draw_toast(width)
+  toast.draw(width)
 end
 
 function cell.keypressed(key)

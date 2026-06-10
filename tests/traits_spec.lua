@@ -14,9 +14,7 @@ local function check(condition, label)
   end
 end
 
-local function approx(a, b)
-  return math.abs(a - b) < 1e-9
-end
+local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
 -- Fresh state: every trait at level 0, nothing unlocked.
 local t = traits.new()
@@ -44,7 +42,10 @@ t = traits.new()
 traits.level(t, "motility")
 local base_speed = traits.stats(traits.new()).speed
 check(approx(traits.stats(t).speed, base_speed * 1.25), "one motility level -> +25% speed")
-check(approx(traits.stats(t).forage_mult, 1.08), "one motility level -> +8% forage (now a real economic lever)")
+check(
+  approx(traits.stats(t).forage_mult, 1.08),
+  "one motility level -> +8% forage (now a real economic lever)"
+)
 
 t = traits.new()
 traits.level(t, "sensing")
@@ -134,8 +135,10 @@ check(traits.unlock_cost("photosynthesis") == first.cost, "unlock_cost returns t
 check(traits.unlock_cost("nonsuch") == math.huge, "unlock_cost of an unknown id is huge")
 check(not traits.is_revealed(t, "photosynthesis", first.pop - 1), "hidden below the reveal pop")
 check(traits.is_revealed(t, "photosynthesis", first.pop), "revealed at/above the reveal pop")
-check(traits.unlock_cost("predation") > traits.unlock_cost("photosynthesis"),
-  "the later milestone costs more")
+check(
+  traits.unlock_cost("predation") > traits.unlock_cost("photosynthesis"),
+  "the later milestone costs more"
+)
 
 local fired = traits.unlock(t, "photosynthesis")
 check(fired and fired.id == "photosynthesis", "unlock returns the def on first fire")

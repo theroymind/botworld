@@ -14,6 +14,10 @@ local function text_node(str, config)
   local font_name = theme.font[cfg.size or "sm"]
   local is_dynamic = type(str) == "function"
   local wrap = cfg.wrap ~= false -- wrap to the resolved width unless explicitly disabled
+  -- A non-wrapping line ellipsizes at its resolved width by default -- a single-line
+  -- label that can't break must not overflow its column either. Pass `truncate = false`
+  -- to opt back into free overflow.
+  local should_truncate = not wrap and cfg.truncate ~= false
 
   -- Dynamic strings are re-read each frame; resolve and draw both pull the current value.
   local function current_label() return is_dynamic and str() or str end
@@ -21,7 +25,14 @@ local function text_node(str, config)
   -- Natural single-line width: drives auto-width measurement in hstacks. A node placed
   -- at its natural width resolves to one line (getWrap finds no break), so auto layouts
   -- are unaffected; wrapping only engages when a column constrains the node narrower.
-  local measure_w = is_dynamic and 0 or fonts.get(font_name):getWidth(str)
+  -- Dynamic strings can't be measured up front, so measure_w is a function the solver
+  -- calls at measure time with the then-current value.
+  local measure_w
+  if is_dynamic then
+    measure_w = function() return fonts.get(font_name):getWidth(current_label()) end
+  else
+    measure_w = fonts.get(font_name):getWidth(str)
+  end
 
   -- Wrapped height for a resolved width `w`. printf advances one fonts.line_height per
   -- extra line (the font carries that leading via setLineHeight), so n lines occupy
@@ -57,6 +68,7 @@ local function text_node(str, config)
         color = cfg.color,
         align = cfg.align,
         wrap = wrap and r.w or nil,
+        truncate = should_truncate,
       })
     end,
     on_click = cfg.on_click,

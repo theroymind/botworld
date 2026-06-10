@@ -233,7 +233,8 @@ function interior_swarm.load()
   if loaded then
     return
   end
-  local vertex_shader = string.format(VERTEX_SHADER_TEMPLATE, MAX_ENDPOINTS, MAX_SEGMENTS, MAX_SEGMENTS)
+  local vertex_shader =
+    string.format(VERTEX_SHADER_TEMPLATE, MAX_ENDPOINTS, MAX_SEGMENTS, MAX_SEGMENTS)
   shader = love.graphics.newShader(FRAGMENT_SHADER, vertex_shader)
   for i = 1, MAX_ENDPOINTS do
     endpoint_uniform[i] = { 0, 0 }

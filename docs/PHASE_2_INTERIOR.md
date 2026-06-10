@@ -9,6 +9,12 @@ factory role — see the glossary in `docs/PHASE_2.md` → "Player-facing langua
 
 ## Status & scope
 
+> **Render note — see `docs/PHASE_2_BALANCE.md` Pillar 4.** That proposal flags the
+> mitochondria render below: drawn count is capped at 6 beans, so buying past ~10
+> mitochondria stops changing the picture. The proposed fix keeps the economy as-is
+> but fuses beans into a reticulum as the count climbs, so the visual tracks the
+> number. The bean-with-cristae north star here still stands at low counts.
+
 The phase-2 economy is built and sound: `sim.lua` + `catalog.lua` are a closed-form,
 fully-tested model (the lab pins FORK at ~10 min). **This doc does not touch that.** The
 problem is the **presentation layer** — `view.lua`, `interior_swarm.lua`, and the panel.

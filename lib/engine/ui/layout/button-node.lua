@@ -22,6 +22,10 @@ local function button_node(label, config)
         opacity = cfg.opacity,
         text_color = cfg.text_color,
         radius = cfg.radius,
+        -- Forwarding the interaction id gives layout-tree buttons the same
+        -- hover/press lighten as immediate-mode ones; the layer drives the
+        -- interaction frame (begin_frame/commit_frame) around its draw.
+        id = cfg.id,
       })
     end,
     focusable = cfg.focusable ~= false,

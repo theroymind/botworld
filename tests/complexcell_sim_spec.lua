@@ -46,6 +46,18 @@ local function rates(o)
     brownout_reserve = o.brownout_reserve or 0,
     stress_rise = o.stress_rise or 0,
     stress_fall = o.stress_fall or 0,
+    -- ROS pendulum + balance-cut inputs (Pillars 2 & 3). Defaults keep the LEGACY
+    -- closed-form behaviour intact: min_eff = 1 means efficiency_factor = 1 (no built
+    -- cut), so the existing built == O*dt checks hold; ros_* fields default off.
+    balance_lo = o.balance_lo or 1,
+    balance_hi_eff = o.balance_hi_eff or 1.6,
+    ros_ratio_cap = o.ros_ratio_cap or 3,
+    ros_rise = o.ros_rise or 0,
+    ros_fall = o.ros_fall or 0,
+    stab_clear = o.stab_clear or 1,
+    ros_lethal = o.ros_lethal or 1,
+    ros_lethal_rise = o.ros_lethal_rise or 0,
+    min_eff = o.min_eff or 1,
   }
 end
 
@@ -61,6 +73,8 @@ check(type(s.discovered) == "table" and next(s.discovered) == nil, "fresh discov
 check(s.output == 0, "fresh output 0")
 check(s.brownout == false, "fresh state is not browning out")
 check(s.stress == 0, "fresh state has no oxidative stress")
+check(s.ros == 0, "fresh state has no ROS")
+check(s.stab == 0, "fresh state has no stabilization")
 
 -- sim.surplus: the bankable surplus at a folded rates, avail - e*T. With the tidy
 -- defaults: avail = 20 - 2 - 0.3*0 = 18; e*T = 1*5 = 5; surplus = 13.
@@ -161,8 +175,7 @@ do
   -- A PARTIAL deficit accrues stress SLOWER than a full one (severity < 1). avail 6,
   -- cost_full 10 -> severity = (10-6)/10 = 0.4; rise per sec = stress_rise*0.4.
   local rise = 0.04
-  local partial =
-    rates({ power = 8, upkeep = 2, throughput = 10, excess = 0, stress_rise = rise })
+  local partial = rates({ power = 8, upkeep = 2, throughput = 10, excess = 0, stress_rise = rise })
   local p = sim.new()
   sim.step(p, 1, partial)
   check(approx(p.stress, rise * 0.4), "partial deficit stress scales with severity (0.4 here)")
@@ -240,13 +253,20 @@ do
   check(d1.built > 0, "the determinism check is non-trivial (the cell built something)")
 end
 
--- tick is step: one tick advances exactly like one step of the same dt/rates.
+-- tick is step EXCEPT for the live-only lethal-ROS flag: with a benign rates (ros stays
+-- 0, no lethal trigger) one tick advances exactly like one step. tick also SETS
+-- rates.lethal_ros so the live path can lyse from a sustained surplus -- the forgiveness
+-- guard (offline never sets it) is asserted in the divergence block below.
 do
   local a, b = sim.new(), sim.new()
   local R = rates()
   sim.tick(a, 0.5, R)
-  sim.step(b, 0.5, R)
-  check(approx(a.energy, b.energy) and approx(a.built, b.built), "tick is an alias for step")
+  sim.step(b, 0.5, rates())
+  check(
+    approx(a.energy, b.energy) and approx(a.built, b.built),
+    "tick matches step on a benign line"
+  )
+  check(R.lethal_ros == true, "tick sets the live-only lethal_ros flag on its rates")
 end
 
 -- offline replays the shared step in capped sub-steps, so a long absence converges
@@ -271,6 +291,241 @@ do
   check(z.built == 0 and z.energy == 0, "offline(0) is a no-op")
 end
 
+-- ===========================================================================
+-- THE ROS PENDULUM (Pillar 2) -- symmetric stress: idle OVER-power leaks ROS up; inside
+-- the band it decays. ROS drags built (the soft cut) and, sustained past ROS_LETHAL,
+-- feeds the lethal stress (LIVE ONLY -- the forgiveness guard).
+-- ===========================================================================
+
+-- A fully-powered, far-OVER-band line (ratio = power/demand >> ros_ratio_cap) so the leak
+-- severity pins at 1: power 100, throughput 5, upkeep 2 -> demand 7, ratio ~14.3.
+local function overpowered(o)
+  o = o or {}
+  return rates({
+    power = 100,
+    throughput = 5,
+    upkeep = 2,
+    excess = 0,
+    waste_coef = 0,
+    balance_hi_eff = o.balance_hi_eff or 1.6,
+    ros_ratio_cap = 3,
+    ros_rise = o.ros_rise or 0.1,
+    ros_fall = o.ros_fall or 0.25,
+    stab_clear = o.stab_clear or 1,
+    ros_lethal = o.ros_lethal or 0.8,
+    ros_lethal_rise = o.ros_lethal_rise or 0.1,
+    stress_rise = o.stress_rise or 0.04,
+    stress_fall = o.stress_fall or 0.2,
+    min_eff = o.min_eff or 0.4,
+  })
+end
+
+do
+  -- RISE: a sustained MAX surplus integrates ros up at ros_rise/sec (severity 1).
+  local rise = 0.1
+  local hot = overpowered({ ros_rise = rise })
+  local h = sim.new()
+  local last = h.ros
+  for _ = 1, 4 do
+    sim.step(h, 1, hot)
+    check(h.ros > last, "idle over-power leaks ros up step-over-step")
+    last = h.ros
+  end
+  check(approx(h.ros, rise * 4), "full-surplus (severity 1) ros = ros_rise * seconds")
+end
+
+do
+  -- DECAY: back inside the band (a balanced line, no surplus), ros decays at
+  -- ros_fall * stab_clear/sec and floors at 0. Use a tidy in-band line: power 8,
+  -- throughput 5, upkeep 2 -> demand 7, ratio ~1.14 (in [1.0, 1.6]) -> no leak.
+  local fall = 0.25
+  local calm = rates({
+    power = 8,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 1.6,
+    ros_fall = fall,
+    stab_clear = 1,
+  })
+  local c = sim.new()
+  c.ros = 0.9
+  sim.step(c, 1, calm)
+  check(approx(c.ros, 0.9 - fall), "an in-band line decays ros at ros_fall/sec")
+  for _ = 1, 10 do
+    sim.step(c, 1, calm)
+  end
+  check(c.ros == 0, "ros decays to 0 and clamps (never negative)")
+end
+
+do
+  -- STABILIZATION speeds clearance: the same decay with stab_clear = 1 + STAB_CLEAR*stab
+  -- clears ros FASTER. Two calm lines differing only in stab_clear: the higher one ends
+  -- lower after the same step.
+  local base = rates({
+    power = 8,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 1.6,
+    ros_fall = 0.2,
+    stab_clear = 1,
+  })
+  local defended = rates({
+    power = 8,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 1.6,
+    ros_fall = 0.2,
+    stab_clear = 2,
+  })
+  local a, b = sim.new(), sim.new()
+  a.ros, b.ros = 0.9, 0.9
+  sim.step(a, 1, base)
+  sim.step(b, 1, defended)
+  check(b.ros < a.ros, "stabilization (stab_clear>1) clears ros faster")
+  check(approx(0.9 - a.ros, 0.2) and approx(0.9 - b.ros, 0.4), "clearance scales by stab_clear")
+end
+
+do
+  -- STAB raises the tolerance ceiling: a ratio that leaks ROS at the bare ceiling stops
+  -- leaking once balance_hi_eff is lifted above it. Build a moderate surplus line: power
+  -- 18, throughput 5, upkeep 2 -> demand 7, ratio ~2.57. With balance_hi_eff 1.6 (< 2.57)
+  -- it leaks; with balance_hi_eff 3.0 (> 2.57) it does not.
+  local hot = rates({
+    power = 18,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 1.6,
+    ros_ratio_cap = 3,
+    ros_rise = 0.1,
+  })
+  local cool = rates({
+    power = 18,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 3.0,
+    ros_ratio_cap = 5,
+    ros_rise = 0.1,
+  })
+  local h, c = sim.new(), sim.new()
+  sim.step(h, 1, hot)
+  sim.step(c, 1, cool)
+  check(h.ros > 0, "without enough tolerance, a surplus leaks ros")
+  check(c.ros == 0, "raising balance_hi_eff (stabilization) lets the same surplus run clean")
+end
+
+-- ===========================================================================
+-- PILLAR 3 -- balance cuts real output. built is minted at O * value_mult *
+-- efficiency_factor, where efficiency_factor = MIN_EFF + (1-MIN_EFF)*balance_scalar.
+-- ===========================================================================
+do
+  -- A perfectly IN-BAND line mints FULL value (efficiency_factor ~1); an OVER-powered one
+  -- (same output O) mints LESS, bottoming near MIN_EFF*O once ros has also climbed. The
+  -- ATP cost is identical (e*O); only built bends.
+  local min_eff = 0.4
+  local in_band = rates({
+    power = 8,
+    throughput = 5,
+    upkeep = 2,
+    balance_hi_eff = 1.6,
+    min_eff = min_eff,
+  })
+  local over = overpowered({ min_eff = min_eff })
+  local a, b = sim.new(), sim.new()
+  sim.step(a, 1, in_band) -- ratio ~1.14, in band, ros 0 -> scalar 1 -> factor 1
+  sim.step(b, 1, over) -- ratio huge -> power side 0 -> scalar 0 -> factor MIN_EFF
+  check(approx(a.output, b.output), "both lines run the SAME output O (cost side unchanged)")
+  check(approx(a.built, a.output * 1), "an in-band line mints full value (efficiency_factor 1)")
+  check(
+    approx(b.built, b.output * min_eff),
+    "an over-powered line mints only MIN_EFF of its output (the load-bearing cut)"
+  )
+  check(b.built < a.built, "imbalance costs real built")
+end
+
+do
+  -- The SOFT built cut is IDENTICAL online vs offline (only the LETHAL tail diverges).
+  -- Run a hot line both ways for the same time; built must match bit-for-bit.
+  local hot = overpowered()
+  local live, off = sim.new(), sim.new()
+  for _ = 1, 60 do
+    sim.tick(live, 1, overpowered()) -- fresh rates each tick (tick mutates lethal_ros)
+  end
+  sim.offline(off, 60, hot)
+  check(approx(live.built, off.built), "the soft ROS built cut is identical online vs offline")
+  check(approx(live.ros, off.ros), "ros integrates identically online vs offline")
+end
+
+-- ===========================================================================
+-- THE FORGIVENESS GUARD -- the surplus-ROS LETHAL coupling accrues LIVE ONLY. A hot cell
+-- left running (tick) can drive stress up; the SAME hot cell caught up offline never
+-- does (its stress only ever decays, since there is no deficit). Documented divergence.
+-- ===========================================================================
+do
+  -- Drive ros to ~1 first (shared), then keep running hot. LIVE (tick, lethal_ros set):
+  -- stress climbs. OFFLINE (no flag): stress stays at 0 (no deficit, no lethal term).
+  local live, off = sim.new(), sim.new()
+  live.ros, off.ros = 1.0, 1.0 -- both already saturated with ROS
+  for _ = 1, 100 do
+    sim.tick(live, 1, overpowered()) -- fresh rates each tick
+  end
+  sim.offline(off, 100, overpowered())
+  check(live.stress > 0, "LIVE: a sustained ROS surplus past ROS_LETHAL feeds lethal stress")
+  check(off.stress == 0, "OFFLINE: the lethal-ROS coupling NEVER fires (forgiveness guard)")
+  check(off.ros == 1, "OFFLINE: ros still saturates (only the LETHAL tail is guarded)")
+  -- And the offline built still accrued the soft cut (it dimmed, did not die).
+  check(off.built > 0, "OFFLINE: the hot cell keeps building (dimmed, not dead)")
+end
+
+do
+  -- Below ROS_LETHAL, even LIVE there is no lethal contribution (the generous warning
+  -- window): a hot line with ros held under the threshold accrues no stress.
+  local r = overpowered({ ros_rise = 0 }) -- pin ros where we set it (no rise)
+  local s2 = sim.new()
+  s2.ros = 0.7 -- below ROS_LETHAL (0.8)
+  for _ = 1, 50 do
+    sim.tick(s2, 1, overpowered({ ros_rise = 0 }))
+  end
+  check(s2.stress == 0, "below ROS_LETHAL the lethal coupling stays quiet (warning window)")
+  check(r ~= nil, "guard against an unused-local lint trip")
+end
+
+-- ===========================================================================
+-- sim.balance_scalar -- the PEAK-IN-BAND scalar shared with catalog.efficiency. Peaks at
+-- 1 inside the band, falls off BOTH sides, dragged by ros. Deterministic, pure.
+-- ===========================================================================
+do
+  -- In band (ratio ~1.14), no excess, ros 0 -> scalar 1.
+  local band = rates({ power = 8, throughput = 5, upkeep = 2, balance_hi_eff = 1.6 })
+  check(approx(sim.balance_scalar(band, 0), 1), "balance_scalar peaks at 1 inside the band")
+
+  -- Deficit (ratio < BALANCE_LO): power 3.5, demand 7 -> ratio 0.5 -> deficit slope 0.5.
+  local deficit =
+    rates({ power = 3.5, throughput = 5, upkeep = 2, balance_lo = 1, balance_hi_eff = 1.6 })
+  check(approx(sim.balance_scalar(deficit, 0), 0.5), "deficit slope = ratio/BALANCE_LO")
+
+  -- Surplus at the midpoint of the surplus span: ratio = (hi_eff + cap)/2 -> severity 0.5
+  -- -> power side 0.5. Pick power so ratio = (1.6+3)/2 = 2.3 with demand 7 -> power 16.1.
+  local surplus =
+    rates({ power = 16.1, throughput = 5, upkeep = 2, balance_hi_eff = 1.6, ros_ratio_cap = 3 })
+  check(
+    approx(sim.balance_scalar(surplus, 0), 0.5),
+    "surplus slope falls toward 0 at ROS_RATIO_CAP"
+  )
+
+  -- Past the cap -> power side 0 -> scalar 0.
+  local past =
+    rates({ power = 100, throughput = 5, upkeep = 2, balance_hi_eff = 1.6, ros_ratio_cap = 3 })
+  check(approx(sim.balance_scalar(past, 0), 0), "past ROS_RATIO_CAP the surplus side hits 0")
+
+  -- ros drags the scalar multiplicatively: in-band with ros 0.25 -> scalar 0.75.
+  check(approx(sim.balance_scalar(band, 0.25), 0.75), "ros drags the scalar by (1 - ros)")
+
+  -- Excess (flow imbalance) cuts it independently: throughput 5, excess 5 -> flow_balance
+  -- 0.5; in band otherwise -> scalar 0.5.
+  local excess = rates({ power = 8, throughput = 5, excess = 5, upkeep = 2, balance_hi_eff = 1.6 })
+  check(approx(sim.balance_scalar(excess, 0), 0.5), "excess (idle machinery) halves flow_balance")
+end
+
 -- SERIALIZE -> LOAD round-trip preserves energy/built/mito/stages/unlocked. Copies
 -- the stage/unlock tables (no shared references), mirroring phase 1's set copy.
 s = sim.new()
@@ -286,6 +541,8 @@ s.discovered.er = true
 s.output = 5
 s.brownout = true
 s.stress = 0.4
+s.ros = 0.6
+s.stab = 3
 local blob = sim.serialize(s)
 check(approx(blob.energy, 42.5), "serialize persists energy")
 check(approx(blob.built, 137.25), "serialize persists built")
@@ -300,9 +557,14 @@ check(
   "serialize persists the discovered set"
 )
 check(approx(blob.stress, 0.4), "serialize persists oxidative stress")
+check(approx(blob.ros, 0.6), "serialize persists ros (the ROS pendulum metric)")
+check(blob.stab == 3, "serialize persists stab (the stabilization counter-lever level)")
 check(blob.stages ~= s.stages, "serialize copies the stages table (no shared reference)")
 check(blob.unlocked ~= s.unlocked, "serialize copies the unlocked table (no shared reference)")
-check(blob.discovered ~= s.discovered, "serialize copies the discovered table (no shared reference)")
+check(
+  blob.discovered ~= s.discovered,
+  "serialize copies the discovered table (no shared reference)"
+)
 local loaded = sim.load(blob)
 check(approx(loaded.energy, 42.5), "round-trip energy")
 check(approx(loaded.built, 137.25), "round-trip built")
@@ -314,6 +576,8 @@ check(
   "round-trip discovered set"
 )
 check(approx(loaded.stress, 0.4), "round-trip oxidative stress")
+check(approx(loaded.ros, 0.6), "round-trip ros")
+check(loaded.stab == 3, "round-trip stab")
 check(loaded.brownout == true, "round-trip brownout flag")
 
 -- load tolerates nil, missing fields, and wrong-typed data, falling back to fresh

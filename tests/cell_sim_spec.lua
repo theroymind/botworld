@@ -20,9 +20,7 @@ local function check(condition, label)
   end
 end
 
-local function approx(a, b)
-  return math.abs(a - b) < 1e-9
-end
+local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
 -- A folded intake table. Defaults give a tidy carrying capacity of
 -- (photo + forage*cap)*mult / upkeep = (0 + 6*6)*1/2 = 18, with each below-cap
@@ -105,7 +103,10 @@ sim.step(s, 0, intake())
 check(s.population > 2, "a large reserve mints several divisions")
 check(s.total_divisions == s.population - 1, "every division past the founder is counted")
 check(approx(s.biomass, s.total_divisions * DIV_YIELD), "minted biomass == divisions * DIV_YIELD")
-check(s.energy >= 0 and s.energy < sim.div_cost(s.population), "leftover reserve is below the next division cost")
+check(
+  s.energy >= 0 and s.energy < sim.div_cost(s.population),
+  "leftover reserve is below the next division cost"
+)
 
 -- div_mult (the digestion discount) cheapens every division: the cost readout
 -- scales by it, the same reserve mints MORE cells, and the rate readout rises.
@@ -183,7 +184,10 @@ do
     sim.step(choked, 0.1, foul)
   end
   check(choked.toxicity > 0, "the choked colony accumulated waste")
-  check(choked.population == 1, "a fouled, uncleared dish collapses the colony to the founder floor")
+  check(
+    choked.population == 1,
+    "a fouled, uncleared dish collapses the colony to the founder floor"
+  )
 end
 -- feed_burst's optional tox_clear scrubs waste (the feeding survival lever).
 do
@@ -220,7 +224,10 @@ for _ = 1, 600 do
 end
 check(s.population < 40, "a deficit shrinks the population")
 check(s.population >= 1, "the population floors at 1")
-check(math.abs(s.population - sim.capacity(cap_intake)) <= 2, "the population settles near carrying capacity")
+check(
+  math.abs(s.population - sim.capacity(cap_intake)) <= 2,
+  "the population settles near carrying capacity"
+)
 check(s.biomass >= 100, "starvation never spends banked biomass")
 
 -- Floor at 1: even a brutal, unsurvivable intake leaves the founder and its bank.
@@ -239,7 +246,10 @@ check(s.energy >= 0, "the reserve never sticks negative at the floor (gentle idl
 check(approx(sim.capacity(intake()), 18), "capacity from the default intake is 18")
 check(sim.capacity(intake({ photo = 12 })) > 18, "light income raises the capacity")
 check(sim.capacity(intake({ mult = 2 })) > 18, "the overall multiplier raises the capacity")
-check(sim.capacity(intake({ upkeep_per_cell = 0 })) > 1000, "zero upkeep clamps high (no division by zero)")
+check(
+  sim.capacity(intake({ upkeep_per_cell = 0 })) > 1000,
+  "zero upkeep clamps high (no division by zero)"
+)
 check(sim.capacity({}) >= 1, "capacity floors at 1 for an empty intake")
 
 -- kill removes cells (a live predator delta): population falls, floored at 1, and
@@ -278,7 +288,10 @@ check(sim.take_divisions(s) == 0, "pending divisions clear after taking")
 local rich = intake({ forage_per_cell = 20 })
 local lean = intake()
 check(sim.division_rate(rich, 1) > sim.division_rate(lean, 1), "richer intake => faster divisions")
-check(sim.division_rate(lean, 5) > sim.division_rate(lean, 1), "divisions accelerate as the colony grows")
+check(
+  sim.division_rate(lean, 5) > sim.division_rate(lean, 1),
+  "divisions accelerate as the colony grows"
+)
 check(sim.division_rate(lean, 100000) == 0, "no divisions at or past carrying capacity")
 
 -- offline replays the shared step in capped sub-steps: it relaxes toward capacity
@@ -286,14 +299,20 @@ check(sim.division_rate(lean, 100000) == 0, "no divisions at or past carrying ca
 s = sim.new()
 sim.offline(s, 3600, intake())
 check(s.population >= 1, "offline never crashes below the founder")
-check(math.abs(s.population - sim.capacity(intake())) <= 3, "offline relaxes toward carrying capacity")
+check(
+  math.abs(s.population - sim.capacity(intake())) <= 3,
+  "offline relaxes toward carrying capacity"
+)
 check(s.biomass > 0, "offline mints biomass via divisions")
 -- An over-cap colony relaxes DOWN offline, keeping its bank.
 s = sim.new()
 s.population = 200
 s.biomass = 500
 sim.offline(s, 3600, intake())
-check(s.population < 200 and s.population >= 1, "offline relaxes an over-cap colony down toward the cap")
+check(
+  s.population < 200 and s.population >= 1,
+  "offline relaxes an over-cap colony down toward the cap"
+)
 check(s.biomass >= 500, "offline keeps the banked biomass")
 -- A very long absence still resolves (the sub-step loop is capped).
 s = sim.new()
