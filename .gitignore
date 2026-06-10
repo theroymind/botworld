@@ -5,3 +5,8 @@ build/
 
 # Scratch dir for raw .wav stems awaiting wav->ogg conversion (see assets/music).
 audio/tmp/
+
+# Logic Pro autosave and transient files inside .logicx packages.
+audio/**/*.logicx/**/Autosave/
+audio/**/*.logicx/**/*.displayData
+audio/**/*.logicx/**/*.songData
