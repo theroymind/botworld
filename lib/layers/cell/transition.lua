@@ -21,8 +21,8 @@
 -- orchestrator binds (on_focus -> view.focus, on_shake -> a view shake, on_reset
 -- -> wipe + reload), so this module knows nothing of the view or the save -- it
 -- only owns the clock and the overlay. Colors come from the global tokens.
-local colors = require("lib.engine.ui.colors")
-local fonts = require("lib.engine.ui.fonts")
+local colors = require("lib.engine.colors")
+local fonts = require("lib.love-ui.fonts")
 
 local transition = {}
 

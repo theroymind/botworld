@@ -32,7 +32,11 @@ Specs are framework-free: each `tests/*_spec.lua` is a plain Lua 5.1 script (no 
   (`love . phase2` jumps to the Nth registered layer for debugging), wires input.
 - `lib/engine/` — scale-agnostic systems: `clock` (fixed timestep), `layers` (registry +
   dispatch), `economy`, `format` (number abbreviation), `fx`, `music`, `sound`, `save`,
-  `touch` (pinch-zoom), plus `net/` and `ui/`.
+  `touch` (pinch-zoom), `colors` (game color facade over the UI kit theme), plus `net/`.
+- `lib/love-ui/` — the UI kit (git submodule, github.com/theroymind/love-ui): fonts, theme
+  tokens + colors, primitives, retained-mode layout tree + renderer. Don't edit it from this
+  repo; it has its own checks. Game code requires colors via `lib.engine.colors` (the facade
+  that applies botworld's token overrides), everything else via `lib.love-ui...`.
 - `lib/layers/` — one folder/module per scale (`cell`, `complexcell`, `solar`). Each layer is
   an ORCHESTRATOR that wires a **pure core** (no `love.*`) into the live, drawable world.
 - `lib/coop/` — co-op messaging. `lib/bodies.lua`, `lib/swarm.lua` — shared sim/render helpers.
