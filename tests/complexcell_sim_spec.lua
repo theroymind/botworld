@@ -54,7 +54,6 @@ local function rates(o)
     ros_ratio_cap = o.ros_ratio_cap or 3,
     ros_rise = o.ros_rise or 0,
     ros_fall = o.ros_fall or 0,
-    stab_clear = o.stab_clear or 1,
     ros_lethal = o.ros_lethal or 1,
     ros_lethal_rise = o.ros_lethal_rise or 0,
     min_eff = o.min_eff or 1,
@@ -74,7 +73,6 @@ check(s.output == 0, "fresh output 0")
 check(s.brownout == false, "fresh state is not browning out")
 check(s.stress == 0, "fresh state has no oxidative stress")
 check(s.ros == 0, "fresh state has no ROS")
-check(s.stab == 0, "fresh state has no stabilization")
 
 -- sim.surplus: the bankable surplus at a folded rates, avail - e*T. With the tidy
 -- defaults: avail = 20 - 2 - 0.3*0 = 18; e*T = 1*5 = 5; surplus = 13.
@@ -311,7 +309,6 @@ local function overpowered(o)
     ros_ratio_cap = 3,
     ros_rise = o.ros_rise or 0.1,
     ros_fall = o.ros_fall or 0.25,
-    stab_clear = o.stab_clear or 1,
     ros_lethal = o.ros_lethal or 0.8,
     ros_lethal_rise = o.ros_lethal_rise or 0.1,
     stress_rise = o.stress_rise or 0.04,
@@ -335,9 +332,9 @@ do
 end
 
 do
-  -- DECAY: back inside the band (a balanced line, no surplus), ros decays at
-  -- ros_fall * stab_clear/sec and floors at 0. Use a tidy in-band line: power 8,
-  -- throughput 5, upkeep 2 -> demand 7, ratio ~1.14 (in [1.0, 1.6]) -> no leak.
+  -- DECAY: back inside the band (a balanced line, no surplus), ros decays at ros_fall/sec
+  -- and floors at 0. Use a tidy in-band line: power 8, throughput 5, upkeep 2 -> demand 7,
+  -- ratio ~1.14 (in [1.0, 1.6]) -> no leak.
   local fall = 0.25
   local calm = rates({
     power = 8,
@@ -345,7 +342,6 @@ do
     upkeep = 2,
     balance_hi_eff = 1.6,
     ros_fall = fall,
-    stab_clear = 1,
   })
   local c = sim.new()
   c.ros = 0.9
@@ -358,38 +354,12 @@ do
 end
 
 do
-  -- STABILIZATION speeds clearance: the same decay with stab_clear = 1 + STAB_CLEAR*stab
-  -- clears ros FASTER. Two calm lines differing only in stab_clear: the higher one ends
-  -- lower after the same step.
-  local base = rates({
-    power = 8,
-    throughput = 5,
-    upkeep = 2,
-    balance_hi_eff = 1.6,
-    ros_fall = 0.2,
-    stab_clear = 1,
-  })
-  local defended = rates({
-    power = 8,
-    throughput = 5,
-    upkeep = 2,
-    balance_hi_eff = 1.6,
-    ros_fall = 0.2,
-    stab_clear = 2,
-  })
-  local a, b = sim.new(), sim.new()
-  a.ros, b.ros = 0.9, 0.9
-  sim.step(a, 1, base)
-  sim.step(b, 1, defended)
-  check(b.ros < a.ros, "stabilization (stab_clear>1) clears ros faster")
-  check(approx(0.9 - a.ros, 0.2) and approx(0.9 - b.ros, 0.4), "clearance scales by stab_clear")
-end
-
-do
-  -- STAB raises the tolerance ceiling: a ratio that leaks ROS at the bare ceiling stops
-  -- leaking once balance_hi_eff is lifted above it. Build a moderate surplus line: power
-  -- 18, throughput 5, upkeep 2 -> demand 7, ratio ~2.57. With balance_hi_eff 1.6 (< 2.57)
-  -- it leaks; with balance_hi_eff 3.0 (> 2.57) it does not.
+  -- The safe ceiling is load-bearing: a ratio that leaks ROS at the bare ceiling stops
+  -- leaking once balance_hi_eff sits above it. (The ceiling is a fixed constant in the live
+  -- economy now -- no antioxidant lever lifts it -- but the sim still honours it as a folded
+  -- parameter, which is what this exercises.) Moderate surplus line: power 18, throughput 5,
+  -- upkeep 2 -> demand 7, ratio ~2.57. With balance_hi_eff 1.6 (< 2.57) it leaks; with
+  -- balance_hi_eff 3.0 (> 2.57) it does not.
   local hot = rates({
     power = 18,
     throughput = 5,
@@ -409,8 +379,8 @@ do
   local h, c = sim.new(), sim.new()
   sim.step(h, 1, hot)
   sim.step(c, 1, cool)
-  check(h.ros > 0, "without enough tolerance, a surplus leaks ros")
-  check(c.ros == 0, "raising balance_hi_eff (stabilization) lets the same surplus run clean")
+  check(h.ros > 0, "below the ceiling tolerance, a surplus leaks ros")
+  check(c.ros == 0, "a ceiling above the ratio lets the same surplus run clean")
 end
 
 -- ===========================================================================
@@ -542,7 +512,6 @@ s.output = 5
 s.brownout = true
 s.stress = 0.4
 s.ros = 0.6
-s.stab = 3
 local blob = sim.serialize(s)
 check(approx(blob.energy, 42.5), "serialize persists energy")
 check(approx(blob.built, 137.25), "serialize persists built")
@@ -558,7 +527,6 @@ check(
 )
 check(approx(blob.stress, 0.4), "serialize persists oxidative stress")
 check(approx(blob.ros, 0.6), "serialize persists ros (the ROS pendulum metric)")
-check(blob.stab == 3, "serialize persists stab (the stabilization counter-lever level)")
 check(blob.stages ~= s.stages, "serialize copies the stages table (no shared reference)")
 check(blob.unlocked ~= s.unlocked, "serialize copies the unlocked table (no shared reference)")
 check(
@@ -577,7 +545,6 @@ check(
 )
 check(approx(loaded.stress, 0.4), "round-trip oxidative stress")
 check(approx(loaded.ros, 0.6), "round-trip ros")
-check(loaded.stab == 3, "round-trip stab")
 check(loaded.brownout == true, "round-trip brownout flag")
 
 -- load tolerates nil, missing fields, and wrong-typed data, falling back to fresh

@@ -15,8 +15,12 @@ the lab (`tools/phase2_lab.lua`) is where they get pinned.
 >    point: `catalog.stage_rate(id)`.
 > 2. **The ROS pendulum (Pillar 2).** Oxidative stress is now two-sided: idle
 >    over-power leaks reactive oxygen species (`ros` ∈ [0,1]) — a real ceiling, not
->    just the deficit floor. A buyable **stabilization** track (`state.stab`) is the
->    counter-lever (raise the safe ceiling + speed ROS clearance).
+>    just the deficit floor. The safe-power ceiling (`BALANCE_HI`) is a **fixed
+>    constant**: the only fix for running hot is to ease off power. (An earlier
+>    buyable **stabilization**/antioxidant track that *lifted* the ceiling was
+>    removed — see the "stabilization removed" note below — because lifting the
+>    ceiling made over-power never bite, so both the lever and the penalty read as
+>    pointless. The oxygen/respiration gauge was dropped at the same time.)
 > 3. **Balance cuts real output (Pillar 3).** The efficiency scalar is no longer
 >    cosmetic: it peaks inside a band, falls off BOTH sides, and multiplies minted
 >    `built` (down to `MIN_EFF`). The ATP cost `e*O` is unchanged, so the
@@ -107,14 +111,14 @@ state.energy = clamp(state.energy + N*dt, 0, buffer_max(built))   -- cap scales 
 -- THE ROS PENDULUM (Pillar 2) -- integrated FIRST so the built cut below sees it.
 demand    = e*T + upkeep
 ratio     = power / demand                                   -- the balance ratio
-leak      = clamp((ratio - BALANCE_HI_eff)/(ROS_RATIO_CAP - BALANCE_HI_eff), 0, 1)
-ros      += (leak>0 ?  ROS_RISE*leak  :  -ROS_FALL*stab_clear) * dt   -- clamp [0,1]
+leak      = clamp((ratio - BALANCE_HI)/(ROS_RATIO_CAP - BALANCE_HI), 0, 1)
+ros      += (leak>0 ?  ROS_RISE*leak  :  -ROS_FALL) * dt     -- clamp [0,1]
 
 -- THE BALANCE SCALAR (shared by sim + catalog.efficiency, byte-for-byte):
 flow_balance  = T>0 ? T/(T+excess) : 0
-power_balance = 1                              if BALANCE_LO <= ratio <= BALANCE_HI_eff
+power_balance = 1                              if BALANCE_LO <= ratio <= BALANCE_HI
               = ratio / BALANCE_LO             if ratio < BALANCE_LO     (deficit slope)
-              = 1 - leak                       if ratio > BALANCE_HI_eff (surplus slope)
+              = 1 - leak                       if ratio > BALANCE_HI     (surplus slope)
 balance       = flow_balance * power_balance * (1 - ros)     -- clamp [0,1]
 
 -- PILLAR 3: balance cuts real output. The ATP cost (e*O) above is UNCHANGED.
@@ -128,15 +132,24 @@ if lethal_ros and ros > ROS_LETHAL:  stress += ROS_LETHAL_RISE * (ros-ROS_LETHAL
 -- plus the existing deficit half (stress_rise*severity); decays at stress_fall when calm.
 ```
 
-`BALANCE_HI_eff = BALANCE_HI + STAB_TOLERANCE * stab` and
-`stab_clear = 1 + STAB_CLEAR * stab` — the **stabilization** counter-lever. `stab`
-also counts as a machine in `upkeep` (it has a running cost).
+The safe-power ceiling `BALANCE_HI` is a **fixed constant** — nothing the player buys
+lifts it. (The fold still threads it to the sim as the field `balance_hi_eff` for the
+mirror contract; it just no longer varies with state. ROS clears at the bare `ROS_FALL`.)
 
-**The ROS pendulum is the missing ceiling.** Idle over-power (ratio past
-`BALANCE_HI_eff`) leaks `ros`, which (a) drags `built` via the balance scalar — the
-**soft cut**, felt as falling output before anything dies — and (b) only when
-*sustained* past `ROS_LETHAL` feeds the existing lethal `stress`. **Soft first, lethal
-only on extreme, sustained imbalance.**
+> **Stabilization (antioxidants) removed.** An earlier counter-lever
+> (`BALANCE_HI_eff = BALANCE_HI + STAB_TOLERANCE*stab`, `stab_clear = 1 + STAB_CLEAR*stab`,
+> a buyable `state.stab` paying upkeep) let the player *lift* the ceiling and speed ROS
+> clearance. In play this backfired: lifting the ceiling meant over-power almost never
+> bit, so the antioxidants *and* the over-power penalty both read as pointless. Removing
+> the lever pins the ceiling, so running hot is finally a real, felt cost — the honest fix
+> being to stop over-building power. `state.stab`, `STAB_*`, `stab_clear`, and
+> `catalog.oxygen` are gone; the vitals strip dropped the redundant "oxygen use" row.
+
+**The ROS pendulum is the missing ceiling.** Idle over-power (ratio past `BALANCE_HI`)
+leaks `ros`, which (a) drags `built` via the balance scalar — the **soft cut**, felt as
+falling output before anything dies — and (b) only when *sustained* past `ROS_LETHAL`
+feeds the existing lethal `stress`. **Soft first, lethal only on extreme, sustained
+imbalance.**
 
 **Forgiveness guard (online/offline divergence — intentional).** The surplus-ROS
 lethal term accrues **live only**: `sim.tick` sets `rates.lethal_ros`; `sim.offline`
@@ -178,7 +191,6 @@ deficit (now meaningful — see the `throughput!` trap below).
 Geometric, like phase 1 (`COST_GROWTH`):
 - stage level: `STAGE_BASE * STAGE_GROWTH ^ level`
 - mitochondrion: `MITO_BASE * MITO_GROWTH ^ (mito-1)`
-- stabilization: `STAB_BASE * STAB_GROWTH ^ stab` (steeper — it is potent)
 - stage *integration* (one-time, to bring a discovered stage online):
   `STAGE_UNLOCK_COST[id]` — `nucleus 150 · er 300 · golgi 300 · transport 800 ·
   membrane 2000`.
@@ -199,15 +211,13 @@ BUFFER_BUILT_REF  = 20000     (cap = BUFFER_BASE*(1+built/REF); ~10x by the FORK
 fuel_factor       = 1.0 (neutral)
 mito start        = 1         MITO_BASE  = 25  MITO_GROWTH  = 1.12
                               STAGE_BASE = 20  STAGE_GROWTH = 1.12
-                              STAB_BASE  = 60  STAB_GROWTH  = 1.18
 
 PER-STAGE rates (Pillar 1; the "golden ratio"):
   ribosomes 12 · nucleus 6 · er 4 · golgi 6 · transport 8 · membrane 4
 
-ROS pendulum (Pillar 2):
+ROS pendulum (Pillar 2 — fixed ceiling, no counter-lever):
   BALANCE_LO = 1.0   BALANCE_HI = 1.6   ROS_RATIO_CAP = 3.0
   ROS_RISE = 1/40    ROS_FALL = 1/8     ROS_LETHAL = 0.8   ROS_LETHAL_RISE = 1/30
-  STAB_TOLERANCE = 0.15   STAB_CLEAR = 0.5
 
 Imbalance cuts built (Pillar 3):  MIN_EFF = 0.4
 
@@ -222,7 +232,7 @@ geometric wall after a handful of buys.
 
 ## What the lab found (goals → results, 2026-06-09)
 
-Five policies vs. the real economy (`lua tools/phase2_lab.lua`). The lab drives the
+Four policies vs. the real economy (`lua tools/phase2_lab.lua`). The lab drives the
 **soft** path (`sim.step`, no lethal-ROS) so it measures pacing + the soft ceilings;
 the live-only lethal coupling is verified in the specs.
 
@@ -231,9 +241,7 @@ the live-only lethal coupling is verified in the specs.
 | **Length** ~10–13 min competent | `balanced` reaches FORK in **11.8 min**, peak ROS **0.42** (warning zone, never lethal) ✅ |
 | **Forgiving / no brick** | `maxall` floor still clears (**20.3 min**); no policy bricks ✅ |
 | **The deficit verb matters** | `throughput!` (chase output, ignore power) sinks to **100% brownout**, never FORKs — the deficit floor is load-bearing ✅ |
-| **The new CEILING matters** | `overpower!` (chase power, ignore demand) **stays alive but STALLS** at **20.1 min** — peak ROS **1.0**, build-efficiency floored at **0.0**: idle over-power is no longer free ✅ |
-| **Stabilization is a real lever** | `stabilized` (defend a surplus with the counter-lever) FORKs in **11.2 min** with **9** stab levels, holding peak ROS to **0.06** — a legitimate alternative strategy, not a tax ✅ |
-| **Legible knobs** | `POWER 9→13` ⇒ FORK 12.4→13.5 min with the ROS ceiling biting at the high end (the band is visible in pacing) ✅ |
+| **The fixed CEILING matters** | `overpower!` (chase power, ignore demand) **stays alive but STALLS** at **17.9 min** — peak ROS **1.0**, build-efficiency floored at **0.0**: with no antioxidant lever to lift the ceiling, idle over-power is no longer free, and the only fix is to ease off power ✅ |
 
 ## Closed: the uniform-stage tuning task (resolved by Pillar 1)
 
@@ -247,13 +255,11 @@ decision, and `er`/`membrane` are the biological rate-limiters that bite.
 
 ## Known open tuning tasks (post-redesign)
 
-- **Oxygen as a managed input (deferred).** The oxygen/respiration gauge ships as a
-  *displayed* metric only (proposal §7). Turning it into a real managed input is a
-  natural extension that maps onto the plant/animal fork (`fuel_factor`) — noted, not
-  scheduled.
 - **Per-stage run-cost (`e_per_output[id]`) (deferred).** A slow stage could also be
   power-hungry, layering a power-stoichiometry on the throughput one (proposal §3
   optional depth). Ship rate-differentiation first and measure before adding.
-- **Stabilization vs. matching power — long-run A/B.** Both `balanced` (~11.8 min) and
-  `stabilized` (~11.2 min) clear cleanly today; watch playtest for whether the
-  defended-surplus path wants a cost nudge so neither strictly dominates.
+- **The over-power ceiling — watch the bite.** With the antioxidant counter-lever gone
+  the ceiling is fixed at `BALANCE_HI`, so over-power now bites in normal play (the
+  point of the removal). Playtest whether `BALANCE_HI`/`ROS_RATIO_CAP` want a nudge so a
+  modest, deliberate reserve still feels safe while a lazy "buy power forever" rush
+  clearly stalls.

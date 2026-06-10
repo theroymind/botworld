@@ -14,16 +14,17 @@
 --   The verb under test is BALANCING power against throughput AND keeping that balance
 --   inside the safe band (the ROS pendulum, Pillar 2). The `balanced` buyer (buy the
 --   cheaper of a mitochondrion vs. the bottleneck, but never overbuild power past the
---   band) clears in ~10-13 min. There are now TWO traps, one on each side of the band:
+--   FIXED band ceiling) clears in ~10-13 min. There are TWO traps, one on each side of the
+--   band:
 --     * `throughput!` -- chase output, never build power: sinks into deep BROWNOUT (the
 --       deficit floor) and crawls.
 --     * `overpower!` -- chase power, ignore demand: sails PAST the band, leaks ROS, and
 --       the build-efficiency cut (Pillar 3) bleeds output -- it STAYS ALIVE but STALLS
---       (the new ceiling). The lab drives the SOFT path (sim.step, no lethal-ROS), so no
+--       (the ceiling). The lab drives the SOFT path (sim.step, no lethal-ROS), so no
 --       policy lyses here; the live-only lethal coupling is verified in the specs.
 --   `maxall` is the floor that proves no path bricks. Per-stage rates (Pillar 1) make
---   reading the bottleneck a real decision; stabilization is a buyable counter-lever
---   (raise the ceiling + speed ROS clearance) -- a second valid strategy.
+--   reading the bottleneck a real decision. The safe ceiling is FIXED (no antioxidant
+--   counter-lever) -- the honest fix for running hot is to ease off power, not buy a defense.
 --
 --   This file MIRRORS catalog.lua byte-for-byte (constants + fold + the shared
 --   sim.balance_scalar math), so the lab's tuned numbers are the live economy's numbers.
@@ -46,7 +47,7 @@ local sim = require("lib.layers.complexcell.sim")
 -- ===========================================================================
 local DEFAULTS = {
   POWER_PER_MITO = 10, -- gross ATP/sec per mitochondrion
-  UPKEEP_PER_MACHINE = 0.25, -- per-gene idle cost (mito + every stage level + stab)
+  UPKEEP_PER_MACHINE = 0.25, -- per-gene idle cost (mito + every stage level)
   WASTE_COEF = 0.0, -- overbuild penalty carried by idle-machine upkeep (no extra waste term)
   E_PER_OUTPUT = 1.0, -- ATP cost per unit of assembly-line output
   -- ATP savings ceiling, SCALED with `built` (see buffer_max below): the cap breathes up
@@ -60,11 +61,11 @@ local DEFAULTS = {
   STAGE_GROWTH = 1.12, -- gentle growth: stack MANY levels (deep catalog, numbers climb)
   MITO_BASE = 25, -- geometric mitochondrion cost base
   MITO_GROWTH = 1.12, -- gentle growth: power keeps pace so throughput can reach the hundreds+
-  STAB_BASE = 60, -- geometric stabilization cost base (a real, affordable counter-lever)
-  STAB_GROWTH = 1.18, -- steeper than stages: stabilization is potent
 
   -- Pillar 2: the ROS pendulum (symmetric stress). Idle OVER-power leaks ROS up; inside
-  -- the band it decays. Sustained past ROS_LETHAL it feeds the existing lethal stress.
+  -- the band it decays. Sustained past ROS_LETHAL it feeds the existing lethal stress. The
+  -- safe ceiling (BALANCE_HI) is FIXED -- the old antioxidant lever that lifted it was
+  -- removed, so over-power always bites and the only fix is to stop over-building power.
   BALANCE_LO = 1.0, -- power/demand below this -> brownout (the deficit half, unchanged)
   BALANCE_HI = 1.6, -- top of the safe headroom band (a loose nod to phi as ideal reserve)
   ROS_RATIO_CAP = 3.0, -- power/demand at which the ROS leak maxes (3x needed power = full leak)
@@ -72,8 +73,6 @@ local DEFAULTS = {
   ROS_FALL = 1 / 8, -- ~8s to clear ros once back inside the band (forgiving recovery)
   ROS_LETHAL = 0.8, -- ros sustained above this starts feeding the lethal stress tail
   ROS_LETHAL_RISE = 1 / 30, -- past ROS_LETHAL, how fast surplus-ros drives stress->fail
-  STAB_TOLERANCE = 0.15, -- each stabilization level lifts BALANCE_HI (run hotter safely)
-  STAB_CLEAR = 0.5, -- each level multiplies ros clearance speed (1 + STAB_CLEAR*stab)
 
   -- Pillar 3: imbalance cuts built output.
   MIN_EFF = 0.4, -- worst-case built multiplier from being off-balance
@@ -106,10 +105,10 @@ local STAGES = { "ribosomes", "nucleus", "er", "golgi", "transport", "membrane" 
 -- down the pipeline to space the reveals across the ~10-min climb.
 local GATES = {
   { id = "nucleus", at = 50, requires = nil, label = "Nucleus" },
-  { id = "er", at = 5000, requires = "nucleus", label = "Endomembrane(ER)" },
-  { id = "golgi", at = 30000, requires = "er", label = "Golgi" },
-  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton(transport)" },
-  { id = "membrane", at = 105000, requires = "transport", label = "Membrane" },
+  { id = "er", at = 5000, requires = "nucleus", label = "Endoplasmic Reticulum" },
+  { id = "golgi", at = 30000, requires = "er", label = "Golgi Body" },
+  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton" },
+  { id = "membrane", at = 105000, requires = "transport", label = "Cell Membrane" },
 }
 local FORK_AT = 180000 -- end-of-phase gate (~10-min smart target; mirrors catalog.FORK_AT)
 local VALUE_PER_STAGE = 0.40 -- +40% built per throughput per integrated stage past the first
@@ -131,11 +130,9 @@ end
 
 -- Geometric costs (orchestrator/catalog, not the sim). Buying the NEXT level of a
 -- stage costs STAGE_BASE * STAGE_GROWTH ^ current_level; the NEXT mitochondrion
--- costs MITO_BASE * MITO_GROWTH ^ (mito-1); the NEXT stabilization costs
--- STAB_BASE * STAB_GROWTH ^ current_stab.
+-- costs MITO_BASE * MITO_GROWTH ^ (mito-1).
 local function stage_cost(C, level) return C.STAGE_BASE * C.STAGE_GROWTH ^ level end
 local function mito_cost(C, mito) return C.MITO_BASE * C.MITO_GROWTH ^ (mito - 1) end
-local function stab_cost(C, stab) return C.STAB_BASE * C.STAB_GROWTH ^ stab end
 
 -- The ATP cap at this state's `built`: a gentle linear-in-built climb off BUFFER_BASE so
 -- the savings ceiling breathes up as the cell grows (mirrors catalog.buffer_max). Pure +
@@ -191,14 +188,8 @@ local function fold(C, state)
   -- matches the live economy (built, not power, so brownout/stress are unaffected).
   local value_mult = 1 + VALUE_PER_STAGE * math.max(unlocked_count - 1, 0)
 
-  -- stab joins mito + stage levels in the upkeep machine count (Pillar 2's counter-lever
-  -- has a running cost). Mirrors catalog.fold.
-  local stab = state.stab or 0
-  local upkeep = C.UPKEEP_PER_MACHINE * (state.mito + levelsum + stab)
-
-  -- Stabilization-raised safe ceiling + ROS clearance multiplier (mirrors catalog.fold).
-  local balance_hi_eff = C.BALANCE_HI + C.STAB_TOLERANCE * stab
-  local stab_clear = 1 + C.STAB_CLEAR * stab
+  -- Idle upkeep over every machine (mito + stage levels). Mirrors catalog.fold.
+  local upkeep = C.UPKEEP_PER_MACHINE * (state.mito + levelsum)
 
   return {
     power = power,
@@ -214,13 +205,13 @@ local function fold(C, state)
     -- Lethal stress (deficit + live-only surplus-ROS) is the orchestrator's kill trigger
     -- and is verified in the specs; modeling it here would conflate "stalled" with "died".
     value_mult = value_mult,
-    -- ROS pendulum + balance-scalar inputs (Pillars 2 & 3); mirror catalog.fold.
+    -- ROS pendulum + balance-scalar inputs (Pillars 2 & 3); mirror catalog.fold. The safe
+    -- ceiling is the fixed BALANCE_HI (threaded as balance_hi_eff for the sim contract).
     balance_lo = C.BALANCE_LO,
-    balance_hi_eff = balance_hi_eff,
+    balance_hi_eff = C.BALANCE_HI,
     ros_ratio_cap = C.ROS_RATIO_CAP,
     ros_rise = C.ROS_RISE,
     ros_fall = C.ROS_FALL,
-    stab_clear = stab_clear,
     ros_lethal = C.ROS_LETHAL,
     ros_lethal_rise = C.ROS_LETHAL_RISE,
     min_eff = C.MIN_EFF,
@@ -286,7 +277,7 @@ local function try_integrate(C, state)
 end
 
 -- balance_ratio = power / demand at the current fold -- the ROS pendulum's read. Used by
--- the policies that defend a surplus (buy stabilization when running hot).
+-- the balanced policy to refuse more power once the line is already over the band.
 local function balance_ratio(C, state)
   local r = fold(C, state)
   local demand = r.e_per_output * r.throughput + r.upkeep
@@ -309,8 +300,6 @@ local function action_cost(C, state, act)
   end
   if act.kind == "mito" then
     return mito_cost(C, state.mito)
-  elseif act.kind == "stab" then
-    return stab_cost(C, state.stab or 0)
   else
     return stage_cost(C, state.stages[act.id] or 0)
   end
@@ -382,14 +371,14 @@ local function policy_maxall(C, state, _surplus)
   return act
 end
 
--- overpower! -- the NEW Pillar-2 TRAP: chase POWER, ignore demand. Buy a mitochondrion
+-- overpower! -- the Pillar-2 TRAP: chase POWER, ignore demand. Buy a mitochondrion
 -- whenever you can afford one (and feed the bottleneck only when a stage happens to be
--- cheaper), never minding the safe band. The balance_ratio sails past BALANCE_HI, ROS
--- climbs, and the build-efficiency cut bleeds output -- the cell STAYS ALIVE (the lab's
+-- cheaper), never minding the safe band. The balance_ratio sails past the FIXED BALANCE_HI,
+-- ROS climbs, and the build-efficiency cut bleeds output -- the cell STAYS ALIVE (the lab's
 -- soft path never lyses; lethal-ROS is a live-only coupling) but STALLS. The sibling of
--- throughput!: it proves the new ceiling is load-bearing, not just the floor. A player
--- could rescue it with stabilization -- this policy deliberately does not, to expose the
--- raw penalty.
+-- throughput!: it proves the ceiling is load-bearing, not just the floor. With the
+-- antioxidant lever gone the only escape is to stop buying power -- which this policy
+-- deliberately never does, to expose the raw penalty.
 local function policy_overpower(C, state, _surplus)
   local mc = mito_cost(C, state.mito)
   local id = bottleneck_stage(C, state)
@@ -402,35 +391,10 @@ local function policy_overpower(C, state, _surplus)
   return { kind = "stage", id = id }
 end
 
--- stabilized -- the SECOND valid strategy (Pillar 2's counter-lever as a play): chase
--- power like overpower!, but DEFEND the surplus with stabilization. When the line is over
--- the band, buy a stabilization level (raising the safe ceiling + ROS clearance) instead
--- of compounding the leak; otherwise build power/throughput balanced. It should run hotter
--- than balanced yet hold ROS far below the raw overpower! trap -- proving stabilization is
--- a real lever, not a tax. Reaches FORK (not the fastest, but a legitimate alternative).
-local function policy_stabilized(C, state, _surplus)
-  local r = fold(C, state)
-  local over_band = balance_ratio(C, state) > r.balance_hi_eff
-  if over_band then
-    return { kind = "stab" } -- defend the surplus rather than leak harder
-  end
-  -- In band: a power-leaning balanced build that stabilization protects. Lean toward
-  -- power (cheaper-of, with a mild power tilt) but keep feeding the bottleneck so demand
-  -- rises with power and the band-holding stays affordable.
-  local mc = mito_cost(C, state.mito)
-  local id = bottleneck_stage(C, state)
-  local sc = id and stage_cost(C, state.stages[id] or 0) or math.huge
-  if mc <= sc then
-    return { kind = "mito" }
-  end
-  return { kind = "stage", id = id }
-end
-
 local POLICIES = {
   { name = "balanced", fn = policy_balanced },
   { name = "throughput!", fn = policy_throughput },
   { name = "overpower!", fn = policy_overpower },
-  { name = "stabilized", fn = policy_stabilized },
   { name = "maxall(floor)", fn = policy_maxall },
 }
 
@@ -520,8 +484,6 @@ local function run_policy(C, policy_fn, opts)
         state.energy = state.energy - cost
         if act.kind == "mito" then
           state.mito = state.mito + 1
-        elseif act.kind == "stab" then
-          state.stab = (state.stab or 0) + 1
         else
           state.stages[act.id] = (state.stages[act.id] or 0) + 1
         end
@@ -565,7 +527,6 @@ local function run_policy(C, policy_fn, opts)
     curve = curve,
     peak_ros = peak_ros,
     min_eff = min_eff_seen,
-    final_stab = state.stab or 0,
   }
 end
 
@@ -604,14 +565,13 @@ local function comparison_table()
   print(string.rep("-", 120))
   print(
     string.format(
-      "%-12s %8s %8s %7s %7s %7s %5s %6s %8s %7s %6s",
+      "%-12s %8s %8s %7s %7s %7s %6s %8s %7s %6s",
       "policy",
       "t->Nuc",
       "t->FORK",
       "T@fork",
       "mito@fk",
       "lvl@fk",
-      "stab",
       "buys",
       "brownout%",
       "peakROS",
@@ -624,14 +584,13 @@ local function comparison_table()
     local fs = r.fork_snapshot or { mito = 0, levels = 0, T = 0 }
     print(
       string.format(
-        "%-12s %8s %8s %7.0f %7d %7d %5d %6d %7.1f%% %7.2f %6.2f",
+        "%-12s %8s %8s %7.0f %7d %7d %6d %7.1f%% %7.2f %6.2f",
         p.name,
         fmt_time(r.gate_times.nucleus),
         fmt_time(r.fork_time),
         fs.T,
         fs.mito,
         fs.levels,
-        r.final_stab,
         r.buys_total,
         r.brownout_frac * 100,
         r.peak_ros,

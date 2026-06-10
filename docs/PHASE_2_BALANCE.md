@@ -9,6 +9,16 @@ constants below are first guesses to be pinned in `tools/phase2_lab.lua`.
 When accepted, this **supersedes** the uniform-stage-rate model and the
 cosmetic-only efficiency readout in `docs/PHASE_2_ECONOMY.md`.
 
+> **Update — two pieces were later REMOVED after playtest.** Pillars 1 and 3 (per-stage
+> rates; balance cuts real output) and the ROS pendulum's *penalty* all shipped and
+> stayed. But the **stabilization / antioxidant counter-lever** (§4) and the **oxygen /
+> respiration gauge** (§7) were cut: because stabilization *lifted* the safe ceiling, the
+> more you bought the less over-power ever bit, so both the lever and the penalty read as
+> pointless; and the oxygen gauge was demand/power, a restatement of the balance ratio that
+> barely moved. The safe ceiling `BALANCE_HI` is now a **fixed constant** — the only fix for
+> running hot is to ease off power. Read §4/§7 below as historical design; the shipped state
+> is in `docs/PHASE_2_ECONOMY.md`.
+
 ---
 
 ## 1. The critique (what's wrong today)

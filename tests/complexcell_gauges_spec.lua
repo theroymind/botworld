@@ -3,11 +3,11 @@
 -- framework. Run from the repo root:
 --   lua tests/complexcell_gauges_spec.lua
 --
--- These pin the PURE derived math behind the gauges -- demand, balance_ratio, the
--- stabilization-raised safe ceiling, and the oxygen/respiration load -- so the renderer
--- stays logic-free and the numbers can't drift from the economy. Every expected value is
--- DERIVED from the catalog's source constants (no magic numbers), and the gauges are
--- asserted to AGREE with the fold/balance-scalar the sim itself runs on.
+-- These pin the PURE derived math behind the gauges -- demand, balance_ratio, the fixed
+-- safe-band ceiling, and the under/ideal/over band classification -- so the renderer stays
+-- logic-free and the numbers can't drift from the economy. Every expected value is DERIVED
+-- from the catalog's source constants (no magic numbers), and the gauges are asserted to
+-- AGREE with the fold/balance-scalar the sim itself runs on.
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. package.path
 
@@ -34,7 +34,6 @@ local function state(o)
   s.built = o.built or 0
   s.unlocked = o.unlocked or { ribosomes = true }
   s.stages = o.stages or { ribosomes = 1 }
-  s.stab = o.stab or 0
   s.ros = o.ros or 0
   return s
 end
@@ -49,7 +48,7 @@ do
   local want = rates.e_per_output * rates.throughput + rates.upkeep
   check(approx(catalog.demand(s), want), "demand = e*throughput + upkeep (folded once)")
   -- It is strictly positive even on a minimal line (upkeep counts mito >= 1), so the
-  -- ratio/oxygen divides below can never blow up.
+  -- ratio divides below can never blow up.
   check(catalog.demand(s) > 0, "demand is strictly positive (upkeep floor)")
 end
 
@@ -71,54 +70,26 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- balance_hi_eff: the safe-band ceiling, lifted by stabilization. The view classes
--- the ratio under/ideal/over against [BALANCE_LO, balance_hi_eff].
+-- balance_hi_eff: the safe-band ceiling, now the FIXED BALANCE_HI (no antioxidant lever
+-- lifts it). The view classes the ratio under/ideal/over against [BALANCE_LO, BALANCE_HI].
 -- ---------------------------------------------------------------------------
 do
   check(
-    approx(catalog.balance_hi_eff(state({ stab = 0 })), catalog.BALANCE_HI),
-    "balance_hi_eff = BALANCE_HI at stab 0"
+    approx(catalog.balance_hi_eff(state()), catalog.BALANCE_HI),
+    "balance_hi_eff is the fixed BALANCE_HI"
   )
+  -- It is constant across states (it no longer varies with anything the player buys), and it
+  -- mirrors the fold the sim consumes -- so the gauge band can never drift from the economy's
+  -- actual ROS threshold.
   check(
-    approx(
-      catalog.balance_hi_eff(state({ stab = 4 })),
-      catalog.BALANCE_HI + 4 * catalog.STAB_TOLERANCE
-    ),
-    "stabilization lifts the safe ceiling by STAB_TOLERANCE per level"
+    approx(catalog.balance_hi_eff(state({ mito = 8 })), catalog.BALANCE_HI),
+    "balance_hi_eff does not vary with the cell's build"
   )
-  -- It mirrors the fold (the same number the sim consumes), so the gauge band can never
-  -- drift from the economy's actual ROS threshold.
-  local s = state({ stab = 3 })
+  local s = state()
   check(
     approx(catalog.balance_hi_eff(s), catalog.fold(s).balance_hi_eff),
     "balance_hi_eff mirrors fold().balance_hi_eff"
   )
-end
-
--- ---------------------------------------------------------------------------
--- oxygen: respiration LOAD = demand/power clamped to [0,1]. Low load = idle
--- respiratory capacity (state-4, the ROS-leak danger); ~1 = matched (state-3).
--- ---------------------------------------------------------------------------
-do
-  -- It is exactly the reciprocal of the balance ratio while that ratio is >= 1 (so the
-  -- clamp doesn't bite): demand/power == 1 / (power/demand).
-  local s = state({ mito = 4 }) -- power 40, small demand -> ratio > 1 -> load < 1, unclamped
-  local ratio = catalog.balance_ratio(s)
-  check(ratio > 1, "the oxygen test line really is over-powered (ratio > 1)")
-  check(approx(catalog.oxygen(s), 1 / ratio), "oxygen load = demand/power = 1/balance_ratio")
-
-  -- OVER-POWER drives respiration load DOWN (idle capacity -> the leak condition). The
-  -- ROS gauge and the balance ratio confirm the same imbalance from the other side.
-  local matched = catalog.oxygen(state({ mito = 1 }))
-  local flooded = catalog.oxygen(state({ mito = 20 }))
-  check(flooded < matched, "piling on power lowers respiration load (idle O2 capacity)")
-
-  -- CLAMP: a deep power DEFICIT (demand >> power) would push load past 1; it clamps to 1
-  -- (you can't draw more O2 than the mitochondria can ever supply -- a displayed metric).
-  local deficit = state({ mito = 1, unlocked = { ribosomes = true }, stages = { ribosomes = 50 } })
-  check(catalog.balance_ratio(deficit) < 1, "the deficit test line is under-powered (ratio < 1)")
-  check(catalog.oxygen(deficit) == 1, "respiration load clamps to 1 in a power deficit")
-  check(catalog.oxygen(deficit) >= 0 and catalog.oxygen(deficit) <= 1, "oxygen stays in [0,1]")
 end
 
 -- ---------------------------------------------------------------------------
@@ -154,15 +125,13 @@ do
   check(ideal ~= nil, "some mito count lands the minimal line inside the safe band")
   check(catalog.balance_band(ideal) == catalog.BAND_IDEAL, "inside the band classes IDEAL")
 
-  -- Stabilization lifts the ceiling, so a line that read OVER at stab 0 can read IDEAL once
-  -- enough stab is bought -- the counter-lever moving the band, surfaced by the gauge.
-  local hot = state({ mito = 20, stab = 0 })
-  check(catalog.balance_band(hot) == catalog.BAND_OVER, "hot line classes OVER at stab 0")
-  local defended = state({ mito = 20, stab = 40 })
-  check(
-    catalog.balance_band(defended) ~= catalog.BAND_OVER,
-    "enough stabilization lifts the same hot line out of OVER"
-  )
+  -- The ceiling is fixed, so the ONLY way out of OVER is to lower the ratio (ease off power
+  -- or raise demand). A hot line stays OVER until power comes down -- there is no lever that
+  -- moves the band out from under it.
+  local hot = state({ mito = 20 })
+  check(catalog.balance_band(hot) == catalog.BAND_OVER, "an over-powered line classes OVER")
+  local eased = state({ mito = 2 })
+  check(catalog.balance_band(eased) ~= catalog.BAND_OVER, "easing power pulls the line out of OVER")
 end
 
 print("all tests passed (" .. checks .. " checks)")

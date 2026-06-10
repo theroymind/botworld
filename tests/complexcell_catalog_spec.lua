@@ -58,16 +58,13 @@ check(catalog.STAGE_BASE == 20, "STAGE_BASE")
 check(approx(catalog.STAGE_GROWTH, 1.12), "STAGE_GROWTH")
 check(catalog.MITO_BASE == 25, "MITO_BASE")
 check(approx(catalog.MITO_GROWTH, 1.12), "MITO_GROWTH")
-check(catalog.STAB_BASE == 60, "STAB_BASE")
-check(approx(catalog.STAB_GROWTH, 1.18), "STAB_GROWTH")
 check(catalog.FORK_AT == 180000, "FORK_AT")
--- Pillar 2/3: the ROS pendulum + balance-cut constants.
+-- Pillar 2/3: the ROS pendulum + balance-cut constants. The safe ceiling (BALANCE_HI) is a
+-- FIXED constant -- there is no antioxidant lever lifting it, so over-power always bites.
 check(catalog.BALANCE_LO == 1.0, "BALANCE_LO")
 check(catalog.BALANCE_HI == 1.6, "BALANCE_HI")
 check(catalog.ROS_RATIO_CAP == 3.0, "ROS_RATIO_CAP")
 check(catalog.ROS_LETHAL == 0.8, "ROS_LETHAL")
-check(catalog.STAB_TOLERANCE == 0.15, "STAB_TOLERANCE")
-check(catalog.STAB_CLEAR == 0.5, "STAB_CLEAR")
 check(catalog.MIN_EFF == 0.4, "MIN_EFF")
 -- Every STAGES entry has a rate (the single lookup point must never miss).
 for _, id in ipairs(catalog.STAGES) do
@@ -104,34 +101,12 @@ do
   -- The cap is state-derived now: at built 0 the fold threads exactly BUFFER_BASE.
   check(approx(r.buffer_max, catalog.BUFFER_BASE), "fold buffer_max = BUFFER_BASE at built 0")
   check(approx(r.brownout_reserve, catalog.BROWNOUT_RESERVE), "fold passes brownout_reserve")
-  -- Pillar 2/3 fields: with no stab, the safe ceiling is the bare BALANCE_HI and ROS
-  -- clearance is the bare 1x; the ROS constants pass through for the sim.
+  -- Pillar 2/3 fields: the safe ceiling is the FIXED BALANCE_HI (no lever lifts it); the
+  -- ROS constants pass through for the sim.
   check(approx(r.balance_lo, catalog.BALANCE_LO), "fold passes balance_lo")
-  check(approx(r.balance_hi_eff, catalog.BALANCE_HI), "fold balance_hi_eff = BALANCE_HI at stab 0")
-  check(approx(r.stab_clear, 1), "fold stab_clear = 1 at stab 0")
+  check(approx(r.balance_hi_eff, catalog.BALANCE_HI), "fold balance_hi_eff = the fixed BALANCE_HI")
   check(approx(r.ros_ratio_cap, catalog.ROS_RATIO_CAP), "fold passes ros_ratio_cap")
   check(approx(r.min_eff, catalog.MIN_EFF), "fold passes min_eff")
-end
-
-do
-  -- STABILIZATION folds into the safe ceiling, ROS clearance, AND the upkeep machine
-  -- count. stab 3: balance_hi_eff = BALANCE_HI + 3*STAB_TOLERANCE; stab_clear = 1 +
-  -- 3*STAB_CLEAR; upkeep counts mito + levelsum + stab.
-  local s = state()
-  s.stab = 3
-  local r = catalog.fold(s)
-  check(
-    approx(r.balance_hi_eff, catalog.BALANCE_HI + 3 * catalog.STAB_TOLERANCE),
-    "stab lifts balance_hi_eff by STAB_TOLERANCE per level"
-  )
-  check(
-    approx(r.stab_clear, 1 + 3 * catalog.STAB_CLEAR),
-    "stab speeds ros clearance by STAB_CLEAR per level"
-  )
-  check(
-    approx(r.upkeep, catalog.UPKEEP_PER_MACHINE * (1 + 1 + 3)),
-    "stab counts as a machine in upkeep (mito + levelsum + stab)"
-  )
 end
 
 do
@@ -190,14 +165,6 @@ check(approx(catalog.stage_cost(5), 20 * 1.12 ^ 5), "stage_cost(5) = base * grow
 check(approx(catalog.mito_cost(1), 25), "mito_cost(1) = MITO_BASE (growth^0)")
 check(approx(catalog.mito_cost(2), 25 * 1.12), "mito_cost(2) = base * growth^1")
 check(approx(catalog.mito_cost(6), 25 * 1.12 ^ 5), "mito_cost(6) = base * growth^(mito-1)")
--- stabilization_cost: geometric in the stab count already owned (stab 0 -> base).
-check(approx(catalog.stabilization_cost(0), 60), "stabilization_cost(0) = STAB_BASE")
-check(approx(catalog.stabilization_cost(1), 60 * 1.18), "stabilization_cost(1) = base * growth^1")
-check(
-  approx(catalog.stabilization_cost(4), 60 * 1.18 ^ 4),
-  "stabilization_cost(4) = base * growth^4"
-)
-
 -- ---------------------------------------------------------------------------
 -- buffer_max: the ATP cap now SCALES with `built` instead of pinning at a fixed wall.
 -- It floors at BUFFER_BASE (built 0), is non-decreasing in built, stays finite, and
@@ -809,13 +776,12 @@ do
       stages = { ribosomes = 20, nucleus = 1 },
     }),
   }
-  -- A ros-loaded variant of each, and a stabilized variant (stab raises the ceiling).
+  -- A ros-loaded variant of each (oxidative stress drags the scalar via ros_drag).
   for i = 1, #cases do
     cases[#cases + 1] = (function()
       local c = cases[i]
       local d = sim.load(sim.serialize(c))
       d.ros = 0.37
-      d.stab = 2
       return d
     end)()
   end

@@ -47,7 +47,6 @@ function sim.new()
     brownout = false, -- true when output throttled below T by a power deficit
     stress = 0, -- 0..1 oxidative stress: a SUSTAINED power/ROS extreme drives it toward lysis (the failure pressure)
     ros = 0, -- 0..1 reactive-oxygen species (Pillar 2): idle OVER-power leaks it; it cuts built and, sustained past ROS_LETHAL, feeds lethal stress
-    stab = 0, -- stabilization (antioxidant) level: the counter-lever that raises the safe ceiling and speeds ROS clearance
   }
 end
 
@@ -215,7 +214,6 @@ function sim.step(state, dt, rates)
   local stress_fall = rates.stress_fall or 0
   local ros_rise = rates.ros_rise or 0
   local ros_fall = rates.ros_fall or 0
-  local stab_clear = rates.stab_clear or 1
   local ros_lethal = rates.ros_lethal or 1
   local ros_lethal_rise = rates.ros_lethal_rise or 0
   local min_eff = rates.min_eff or 1
@@ -248,13 +246,13 @@ function sim.step(state, dt, rates)
   state.energy = energy
 
   -- THE ROS PENDULUM (Pillar 2) -- integrate FIRST so the efficiency cut below sees this
-  -- step's ros. Idle OVER-power (balance_ratio past BALANCE_HI_eff) leaks ROS up, scaled
-  -- by ros_leak_severity; inside/below the band it DECAYS, sped by stab_clear (the
-  -- stabilization counter-lever). Additive bookkeeping in [0,1], deterministic (no rng),
-  -- IDENTICAL online vs offline -- only the LETHAL coupling below diverges. The soft cut
-  -- (via the balance scalar) is therefore the same whether you were away or watching.
+  -- step's ros. Idle OVER-power (balance_ratio past BALANCE_HI) leaks ROS up, scaled by
+  -- ros_leak_severity; inside/below the band it DECAYS at ros_fall. Additive bookkeeping in
+  -- [0,1], deterministic (no rng), IDENTICAL online vs offline -- only the LETHAL coupling
+  -- below diverges. The soft cut (via the balance scalar) is therefore the same whether you
+  -- were away or watching.
   local leak = ros_leak_severity(rates)
-  local ros_rate = (leak > 0) and (ros_rise * leak) or (-ros_fall * stab_clear)
+  local ros_rate = (leak > 0) and (ros_rise * leak) or -ros_fall
   local ros = (state.ros or 0) + ros_rate * dt
   if ros < 0 then
     ros = 0
@@ -302,8 +300,8 @@ function sim.step(state, dt, rates)
   -- SURPLUS-ROS LETHAL coupling (Pillar 2) -- the SOFT-THEN-LETHAL ceiling. Only when ros
   -- is SUSTAINED past ROS_LETHAL does over-power begin feeding the SAME lethal stress the
   -- deficit half uses; scaled by how far past ROS_LETHAL we are (0 at the threshold, 1 at
-  -- full ros). A generous warning window -- one stabilization or a few power-trims pulls
-  -- you back well before STRESS_FAIL.
+  -- full ros). A generous warning window -- a few power-trims (let demand catch up to power)
+  -- pull you back well before STRESS_FAIL.
   --
   -- FORGIVENESS GUARD: this term accrues LIVE ONLY. sim.tick sets rates.lethal_ros;
   -- sim.offline does NOT, so an idle/backgrounded hot cell can only DIM (the soft built
@@ -393,7 +391,6 @@ function sim.serialize(state)
     brownout = state.brownout,
     stress = state.stress,
     ros = state.ros,
-    stab = state.stab,
     stages = stages,
     unlocked = unlocked,
     discovered = discovered,
@@ -426,9 +423,6 @@ function sim.load(data)
   end
   if type(data.ros) == "number" and data.ros >= 0 then
     state.ros = data.ros > 1 and 1 or data.ros
-  end
-  if type(data.stab) == "number" and data.stab >= 0 then
-    state.stab = math.floor(data.stab)
   end
   if type(data.stages) == "table" then
     for id, level in pairs(data.stages) do

@@ -106,9 +106,9 @@ local PAD = 12 -- panel inner padding (tighter than phase 1 to claw back vertica
 -- so the border breathes around the gauge column rather than crowding the text.
 local VITALS_BOX_PAD = 6
 -- A consistent BUY-ROW rhythm across the whole panel: every purchasable line -- power,
--- stabilization, each unlocked stage's level-up, each discovered stage's integrate --
--- is a fill-width label column beside a right-pinned action pill. BTN_W fits the widest
--- verb ("integrate") over the widest cost ("180K atp") on the pill's two centred lines.
+-- each unlocked stage's level-up, each discovered stage's integrate -- is a fill-width
+-- label column beside a right-pinned action pill. BTN_W fits the widest verb ("integrate")
+-- over the widest cost ("180K atp") on the pill's two centred lines.
 local BTN_W = 92 -- fixed-width action pill, pinned right by the fill label column
 -- COMPACT TWO-LINE PILL: the verb sits over a dim cost line INSIDE the pill (see
 -- action_button_node). Folding the cost into the button -- instead of a third label-column
@@ -121,7 +121,7 @@ local BTN_H = 34
 local PILL_VERB_FRACTION = 0.52
 local BAR_COLOR = colors.secondary -- the ATP buffer bar rides the global nourishment token
 -- A buy row's cost string, rendered as the pill's dim second line. Named so the cost is
--- never inlined ad hoc and reads consistently across power / stabilization / stage rows.
+-- never inlined ad hoc and reads consistently across power / stage rows.
 local COST_SUFFIX = " atp"
 
 -- GAUGES (Pillar 5). The vitals strip reads the catalog's pure derived metrics and
@@ -527,7 +527,6 @@ local function build_snapshot(s, tap_ready)
     -- Pillar-5 gauge readouts (pure derived math from the catalog). The view surfaces
     -- these as biologically-named metrics; none feeds back into the economy.
     ros = s.ros or 0,
-    oxygen = catalog.oxygen(s),
     balance_ratio = catalog.balance_ratio(s),
     balance_band = catalog.balance_band(s),
     -- Whether the manual ATP tap is off cooldown and usable RIGHT NOW: primes a random
@@ -581,13 +580,13 @@ local function action_button_node(opts)
   }
 end
 
--- The shared BUY ROW -- the one builder EVERY purchasable line routes through (power,
--- stabilization, each unlocked stage's level-up, each discovered stage's integrate), so
--- the rows share an identical structure, gap rhythm, and pill (the user flagged the old
--- per-builder rows as inconsistent). A fill-width label column -- a bright title over an
--- OPTIONAL faint descriptor -- beside the two-line cost pill. The descriptor is omitted
--- for stage rows (the stage name already carries its function), keeping those rows a
--- single line so all six fit; power/stabilization keep their one-line descriptor.
+-- The shared BUY ROW -- the one builder EVERY purchasable line routes through (power, each
+-- unlocked stage's level-up, each discovered stage's integrate), so the rows share an
+-- identical structure, gap rhythm, and pill (the user flagged the old per-builder rows as
+-- inconsistent). A fill-width label column -- a bright title over an OPTIONAL faint
+-- descriptor -- beside the two-line cost pill. The descriptor (the organelle's short role
+-- line, or the power plant's one-liner) rides UNDER the pill's height, so a row carrying it
+-- is no taller than one without -- all six stage rows stay the same compact height.
 local function buy_row(opts)
   local col_children = { layout.text(opts.title, { color = colors.ui.text }) }
   if opts.descriptor then
@@ -615,21 +614,6 @@ local function buy_mito(s)
   if s.energy >= cost then
     s.energy = s.energy - cost
     s.mito = s.mito + 1
-    persist()
-  end
-end
-
--- Buy the next stabilization level (the antioxidant counter-lever): deduct its
--- geometric ATP cost from the buffer and bump state.stab. Mirrors buy_mito exactly --
--- the orchestrator owns the spend, the catalog only prices it (stabilization_cost) and
--- the fold reads state.stab. Each level lifts the safe ROS ceiling + speeds ROS
--- clearance (see catalog.STAB_TOLERANCE/STAB_CLEAR). Clamped at affordability.
-local function buy_stabilization(s)
-  local cost = catalog.stabilization_cost(s.stab or 0)
-  if s.energy >= cost then
-    s.energy = s.energy - cost
-    s.stab = (s.stab or 0) + 1
-    view.spawn(view_state, fx.flash({ color = colors.primary, alpha = 0.16, life = 0.35 }))
     persist()
   end
 end
@@ -691,16 +675,17 @@ local function tap_atp(s, x, y)
   sound.play("cytoplasm_active", { volume = 0.8 })
 end
 
--- One DISCOVERED-but-locked stage row: the stage name (its parenthetical already names
--- the function) marked "(locked)" beside an "integrate" pill carrying the steep one-time
--- ATP unlock cost, enabled on the buffer. A single label line -- no flavor -- so six stage
--- rows stay compact; the cost rides inside the pill. These sit in the assembly-line group
--- alongside the unlocked level-up rows; once integrated the stage falls through to the
--- normal stage_row level-up path. Routes through the shared buy_row for a uniform rhythm.
+-- One DISCOVERED-but-locked stage row: the full organelle name marked "(locked)" over its
+-- short role descriptor, beside an "integrate" pill carrying the steep one-time ATP unlock
+-- cost, enabled on the buffer. The descriptor sits in the label column UNDER the pill's
+-- height, so it costs no row height; it tells the player what the new beat will do before
+-- they commit. Once integrated the stage falls through to the normal stage_row level-up
+-- path. Routes through the shared buy_row for a uniform rhythm.
 local function discovered_row(s, row)
   local cost = catalog.stage_unlock_cost(row.id)
   return buy_row({
     title = string.format("%s   (locked)", row.label),
+    descriptor = row.flavor,
     cost = cost,
     label = "integrate",
     enabled = s.energy >= cost,
@@ -709,16 +694,19 @@ local function discovered_row(s, row)
   })
 end
 
--- One pipeline-stage row: the stage name + level beside a right-pinned level-up pill
--- (verb over the next geometric ATP cost), gated on the buffer. A single label line --
--- the stage name carries its own function -- so all six stage rows fit; the cost lives in
--- the pill. Built only for UNLOCKED stages (locked beats are teased by the footer). No
--- bottleneck highlight: every stage row reads the same, so the player reasons the line
--- from the cell's own flow, not from the panel pointing at a stage. Shares buy_row.
+-- One pipeline-stage row: the full organelle name + level over its short role descriptor,
+-- beside a right-pinned level-up pill (verb over the next geometric ATP cost), gated on the
+-- buffer. The descriptor is a SHORT active-verb line naming the step the stage owns ("fold
+-- raw parts into working shape") -- the only guidance the panel gives: it implies which
+-- step speeds up when you level it, leaving the player to map a backed-up line to its
+-- organelle (no bottleneck highlight, no "this increases X" hand-hold). It rides in the
+-- label column under the 34px pill, so all six stage rows stay the same height. Built only
+-- for UNLOCKED stages (locked beats are teased by the footer). Shares buy_row.
 local function stage_row(s, row)
   local cost = catalog.stage_cost(row.level)
   return buy_row({
     title = string.format("%s   Lv %d", row.label, row.level),
+    descriptor = row.flavor,
     cost = cost,
     label = "level up",
     enabled = s.energy >= cost,
@@ -738,17 +726,21 @@ local function gauge_row(name, value, color)
   }, { gap = theme.spacing.sm })
 end
 
--- VITALS (Pillar 5): the biologically-named gauge strip. Surfaces the four read-only
--- metrics the player reasons from -- oxidative stress (ROS), the balance ratio vs. its
--- safe band, oxygen/respiration load, and build efficiency -- with NO hint about which
--- lever fixes them. Every figure is pure catalog math (folded once via the snapshot's
--- gauge fields); the verdict word + color for the balance ratio come from the BAND_*
--- maps. Values are percentages except the balance ratio (a multiplier vs. the band).
+-- VITALS (Pillar 5): the biologically-named gauge strip, trimmed to the three read-only
+-- metrics the player actually reasons from -- the power balance ratio vs. its safe band
+-- (the dial: too little browns out, too much leaks ROS), oxidative stress (ROS, which now
+-- climbs whenever power runs hot), and build efficiency (the consequence) -- with NO hint
+-- about which lever fixes them. (The old "oxygen use" row was demand/power, a restatement
+-- of the balance ratio that barely moved in play, so it was dropped as noise.) Every figure
+-- is pure catalog math (folded once via the snapshot's gauge fields); the verdict word +
+-- color for the balance ratio come from the BAND_* maps. Values are percentages except the
+-- balance ratio (a multiplier vs. the band).
 local function vitals_group(snap)
   local children = { layout.text("vitals", { color = colors.ui.text_dim }) }
 
-  -- Oxidative stress (ROS), 0-100%. Tints toward the threat token once it climbs into
-  -- the warning band, so a leaking cell reads red without any "buy stabilization" text.
+  -- Oxidative stress (ROS), 0-100%. Climbs whenever power runs hot (over the safe band) and
+  -- tints toward the threat token once it crosses the warning fraction, so a leaking cell
+  -- reads red on its own -- the fix (ease off mitochondria) is left for the player to reason.
   local ros = snap.ros or 0
   local ros_color = (ros >= ROS_WARN_FRAC) and colors.quaternary or colors.ui.text_muted
   table.insert(
@@ -770,18 +762,6 @@ local function vitals_group(snap)
     )
   )
 
-  -- Oxygen / respiration load, 0-100%: how much of the mitochondria's O2 capacity the
-  -- line actually draws. Low = idle respiratory capacity (the leak condition the ROS
-  -- gauge confirms). A plain dim readout -- it is informational, not a pass/fail.
-  table.insert(
-    children,
-    gauge_row(
-      "oxygen use",
-      string.format("%d%%", math.floor((snap.oxygen or 0) * 100 + 0.5)),
-      colors.ui.text_muted
-    )
-  )
-
   -- Build efficiency: the Pillar-3 balance scalar as a single percent ("running at N%").
   table.insert(
     children,
@@ -795,32 +775,10 @@ local function vitals_group(snap)
   return children
 end
 
--- STABILIZATION buy row (Pillar 2's counter-lever), mirroring the mitochondria power row
--- through the shared buy_row: the current antioxidant level + a one-line descriptor and a
--- "build" pill carrying the next geometric ATP cost, enabled on the buffer. Buying lifts
--- the safe ROS ceiling + speeds ROS clearance (catalog.STAB_TOLERANCE/STAB_CLEAR), so a
--- player watching the vitals can defend a deliberate surplus instead of trimming power --
--- a second valid strategy. The descriptor is kept to one line so the row stays compact.
-local function stabilization_group(s)
-  local cost = catalog.stabilization_cost(s.stab or 0)
-  return {
-    layout.text("stabilization", { color = colors.ui.text_dim }),
-    buy_row({
-      title = string.format("Antioxidants   x%d", s.stab or 0),
-      descriptor = "clears oxidative stress safely",
-      cost = cost,
-      label = "build",
-      enabled = s.energy >= cost,
-      id = "build_stab",
-      on_click = function() buy_stabilization(s) end,
-    }),
-  }
-end
-
 -- The whole panel as a declarative node tree, rebuilt each frame so dynamic values
 -- and the on_click closures capture the current state. Stacked groups -- header, the
--- boxed read-only vitals, then the build levers (power, stabilization, assembly line),
--- footer -- inside a PAD-padded vstack, on one consistent gap rhythm (xs within a group,
+-- boxed read-only vitals, then the build levers (power, assembly line), footer --
+-- inside a PAD-padded vstack, on one consistent gap rhythm (xs within a group,
 -- sm between groups). Every purchasable line
 -- routes through buy_row (label column + two-line cost pill), so the rows are uniform
 -- and compact: a stage row is a single label line, so all six stages plus the optional
@@ -909,7 +867,7 @@ local function build_panel(s)
   end
 
   -- POWER: the mitochondria count + a build-mitochondrion pill, through the shared buy_row
-  -- so it reads identically to stabilization. The one-line descriptor stays short enough
+  -- so it reads identically to the stage rows. The one-line descriptor stays short enough
   -- not to wrap (keeping the row two lines tall).
   local mito_cost = catalog.mito_cost(s.mito)
   local power_group = {
@@ -946,15 +904,15 @@ local function build_panel(s)
   local vitals_stack = layout.vstack(vitals_group(build_snapshot(s)), { gap = theme.spacing.xs })
   complexcell._vitals_node = vitals_stack
 
-  -- Group order: header, VITALS (boxed), then the build levers (power, stabilization,
-  -- stages), then the footer. Every group stacks its rows on the same xs intra-group gap,
-  -- and the groups stack on the sm gap below -- one consistent rhythm. The tighter group
-  -- gap also claws back the height that lets the worst-case full pipeline fit the window.
+  -- Group order: header, VITALS (boxed), then the build levers (power, then the assembly-
+  -- line stages), then the footer. Every group stacks its rows on the same xs intra-group
+  -- gap, and the groups stack on the sm gap below -- one consistent rhythm. The tighter
+  -- group gap also claws back the height that lets the worst-case full pipeline fit the
+  -- window.
   local groups = {
     layout.vstack(header, { gap = theme.spacing.xs }),
     vitals_stack,
     layout.vstack(power_group, { gap = theme.spacing.xs }),
-    layout.vstack(stabilization_group(s), { gap = theme.spacing.xs }),
     layout.vstack(stage_children, { gap = theme.spacing.xs }),
   }
 
