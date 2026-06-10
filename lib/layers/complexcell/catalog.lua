@@ -69,27 +69,27 @@ catalog.STAGES = { "ribosomes", "nucleus", "er", "golgi", "transport", "membrane
 catalog.STAGE_DEFS = {
   ribosomes = {
     label = "Ribosomes",
-    flavor = "translate the genome -- the line's first machines",
+    flavor = "the line's workers -- build the cell's parts",
   },
   nucleus = {
     label = "Nucleus",
-    flavor = "wall off the genome; transcription gets its own room",
+    flavor = "the blueprint vault that guides every build",
   },
   er = {
-    label = "Endomembrane (ER)",
-    flavor = "fold and thread proteins through the reticulum",
+    label = "ER (Folding)",
+    flavor = "folds and shapes each part into working form",
   },
   golgi = {
-    label = "Golgi",
-    flavor = "sort, tag, and ship the folded cargo",
+    label = "Golgi (Packing)",
+    flavor = "packs, labels, and boxes the finished parts",
   },
   transport = {
-    label = "Cytoskeleton",
-    flavor = "motors haul vesicles down a built road network",
+    label = "Cytoskeleton (Delivery)",
+    flavor = "road network that hauls cargo across the cell",
   },
   membrane = {
-    label = "Membrane",
-    flavor = "seal the frontier; the cell becomes a fortress",
+    label = "Membrane (Wall)",
+    flavor = "ships product out and seals the cell shut",
   },
 }
 
@@ -104,10 +104,10 @@ catalog.STAGE_DEFS = {
 -- Tuned against tools/phase2_lab.lua so the staggered reveals still FORK in ~10-13 min.
 catalog.GATES = {
   { id = "nucleus", at = 50, requires = nil, label = "Nucleus" },
-  { id = "er", at = 5000, requires = "nucleus", label = "Endomembrane (ER)" },
-  { id = "golgi", at = 30000, requires = "er", label = "Golgi" },
-  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton (transport)" },
-  { id = "membrane", at = 105000, requires = "transport", label = "Membrane" },
+  { id = "er", at = 5000, requires = "nucleus", label = "ER (Folding)" },
+  { id = "golgi", at = 30000, requires = "er", label = "Golgi (Packing)" },
+  { id = "transport", at = 50000, requires = "golgi", label = "Cytoskeleton (Delivery)" },
+  { id = "membrane", at = 105000, requires = "transport", label = "Membrane (Wall)" },
 }
 
 catalog.FORK_AT = 180000 -- end-of-phase gate (~10 min building the full pipeline; raised

@@ -64,7 +64,10 @@ ribosomes → nucleus → ER → Golgi → transport → membrane
 
 `ribosomes` is unlocked at start (so output > 0 from t=0). The rest unlock as
 `built` crosses gate thresholds — these are the **science-ordered named beats**
-(Nucleus, Endomembrane = ER+Golgi, Cytoskeleton = transport, Membrane/Genome).
+(Nucleus, Endomembrane = ER+Golgi, Cytoskeleton = transport, Membrane/Genome). The names
+here are the internal stage ids; for the player-facing labels these surface as (ER (Folding),
+Golgi (Packing), Cytoskeleton (Delivery), Membrane (Wall)) see the glossary in
+`docs/PHASE_2.md` → "Player-facing language."
 
 ## The fold → `rates`
 

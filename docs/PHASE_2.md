@@ -109,6 +109,43 @@ Milestone-flavored entries threaded through the catalog, in true evolutionary or
    recipes you can run).
 6. **[end-of-phase fork — below]**
 
+## Player-facing language (the gamer-friendly layer)
+
+The brief above is grounded in real biology on purpose — but a player should never need that
+background to read the cell. **Shipped rule** (in `lib/layers/complexcell/catalog.lua`,
+`lib/layers/complexcell.lua`, `lib/layers/complexcell/fork.lua`): keep the real organelle
+name as the named-beat reveal, but pair it with a **plain factory role**, and always spell out
+a warning's **consequence**. A biology fan recognises "Golgi"; everyone else reads "Packing."
+The whole cell reads as one assembly line — **build → fold → pack → deliver → ship** — so
+"feed the slowest stage" is intuitive without a strategy hint.
+
+Stage glossary (bio term → in-game label → what it does):
+
+| Bio term | In-game label | Plain role |
+|----------|---------------|------------|
+| Ribosomes | Ribosomes | the line's workers — build the cell's parts |
+| Nucleus | Nucleus | the blueprint vault that guides every build |
+| Endoplasmic reticulum | **ER (Folding)** | folds and shapes each part into working form |
+| Golgi apparatus | **Golgi (Packing)** | packs, labels, and boxes the finished parts |
+| Cytoskeleton | **Cytoskeleton (Delivery)** | road network that hauls cargo across the cell |
+| Plasma membrane | **Membrane (Wall)** | ships product out and seals the cell shut |
+| Mitochondria | Mitochondria | power plants — make the ATP that runs everything |
+
+Readouts & warnings, in plain terms:
+
+- `throughput` → **"line speed"** (the line's max rate); `output` → **"making … /s"** (what
+  it's actually producing now). `ATP` is labelled **"ATP energy."**
+- **BROWNOUT** → "not enough power, production slowed." **Oxidative stress** → "the cell is
+  dying! restore power." **Lysis** → "THE CELL BURST" / "too long without power."
+- The self-reveal teaser drops raw `built` targets for plain "something is forming…" →
+  "almost ready" → "ready to build!"; the finale reads **"PATH CHOICE — become a plant or an
+  animal."** The fork cards trade "sessile/motility" for "root down and grow" / "always on
+  the move."
+
+Internal terms (`built`, `throughput`, `excess`, `brownout`, `fold`) stay as-is in code and in
+the economy/interior specs — they're identifiers, not player copy. This section is the source
+of truth for the *display* copy; hold new catalog entries to the same pattern.
+
 ## The plant/animal fork (end-of-phase, ascension-defining)
 
 - Energy generation is **one parameterized system** with a *fuel-source mix*: light
