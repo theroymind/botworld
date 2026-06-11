@@ -1211,4 +1211,135 @@ function cell.mousepressed(x, y, button_index)
   end
 end
 
+-- ============================================================================
+-- DEBUG SEAM (agent connector). The opt-in JSON-over-TCP connector (tools/automation)
+-- drives this layer through here and ONLY here -- it never pokes cell.state directly.
+-- Every mutation is documented/clamped to the field's invariant and then persist()ed,
+-- so the change survives a reload and the backgrounded/offline math sees it. Guarded
+-- against an unloaded layer (state == nil -> false, "layer not loaded"). Pure routing;
+-- no love.* beyond the existing persist() write.
+-- ============================================================================
+
+-- The canonical fixed sim dt (clock.tick_dt) a debug step advances by, so a connector
+-- "step" walks the economy exactly one authoritative tick -- identical to the live
+-- backgrounded path -- rather than an arbitrary made-up dt.
+local DEBUG_FIXED_DT = require("lib.engine.clock").tick_dt
+-- The error string returned by every seam when the layer has not been load()ed yet
+-- (cell.state is nil), so the connector gets one stable, machine-readable reason.
+local DEBUG_NOT_LOADED = "layer not loaded"
+-- Field-name sets the seam recognises, named so the routing branches carry no inline
+-- string literals. NON-NEGATIVE: clamped to >= 0. LEVELABLE traits: integer level >= 0.
+-- UNLOCKABLE ids flip a milestone via debug_unlock (NOT debug_set, which returns
+-- unknown for them). Sim fields with bespoke clamps (population, toxicity) are handled
+-- explicitly below rather than via a set.
+local DEBUG_SIM_NONNEGATIVE = { biomass = true, energy = true, age = true }
+local DEBUG_TRAIT_LEVELS =
+  { photosynthesis = true, motility = true, sensing = true, digestion = true, evasion = true }
+local DEBUG_UNLOCK_IDS = { photosynthesis = true, predation = true }
+
+-- Explicit min/max clamp (no math.clamp in Lua 5.1 / LuaJIT). Pure.
+local function clamp(v, lo, hi)
+  if v < lo then
+    return lo
+  elseif v > hi then
+    return hi
+  end
+  return v
+end
+
+-- The live state table (for reads). nil until load(); the connector guards on it.
+function cell.debug_state() return cell.state end
+
+-- A plain JSON-able snapshot of the whole layer, reusing the existing serialize
+-- functions in scope (traits + sim), for query_state.
+function cell.debug_serialize()
+  if not cell.state then
+    return nil
+  end
+  return {
+    traits = traits.serialize(cell.state.traits),
+    sim = sim.serialize(cell.state.sim),
+  }
+end
+
+-- Read a single field by name. Returns its value, or nil if the layer is unloaded
+-- or the name is unrecognised (the connector reports unknown for nil).
+function cell.debug_get(field)
+  if not cell.state then
+    return nil
+  end
+  local s = cell.state.sim
+  if DEBUG_SIM_NONNEGATIVE[field] or field == "population" or field == "toxicity" then
+    return s[field]
+  end
+  if DEBUG_TRAIT_LEVELS[field] then
+    return cell.state.traits.levels[field]
+  end
+  return nil
+end
+
+-- Set a single numeric/level field, APPLYING the documented clamp, then persist().
+-- Unlock ids are NOT handled here (use debug_unlock); they return unknown. Returns
+-- true on success, or false + a reason on an unloaded layer / unrecognised field.
+function cell.debug_set(field, value)
+  if not cell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  local s = cell.state.sim
+  value = tonumber(value) or 0
+  if DEBUG_SIM_NONNEGATIVE[field] then
+    s[field] = math.max(0, value)
+  elseif field == "population" then
+    -- Population is an integer >= 1 (the founder never fully dies).
+    s.population = math.max(1, math.floor(value))
+  elseif field == "toxicity" then
+    -- Toxicity rides in [0, TOX_MAX] (the sim's safety clamp; mirrored here).
+    s.toxicity = clamp(value, 0, 10000)
+  elseif DEBUG_TRAIT_LEVELS[field] then
+    cell.state.traits.levels[field] = math.max(0, math.floor(value))
+  else
+    return false, "unknown field: " .. tostring(field)
+  end
+  persist()
+  return true
+end
+
+-- Flip a milestone unlock on (photosynthesis / predation), then persist(). Returns
+-- true, or false + a reason on an unloaded layer / unrecognised id.
+function cell.debug_unlock(id)
+  if not cell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  if not DEBUG_UNLOCK_IDS[id] then
+    return false, "unknown unlock: " .. tostring(id)
+  end
+  cell.state.traits.unlocked[id] = true
+  persist()
+  return true
+end
+
+-- Grant an organelle (mitochondrion / chloroplast) by id, then persist(). A nice-to-have
+-- for the connector; the sim tolerates an unknown id (organelles is a free set).
+function cell.debug_acquire_organelle(id)
+  if not cell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  cell.state.sim.organelles[tostring(id)] = true
+  persist()
+  return true
+end
+
+-- Advance the pure sim exactly `steps` authoritative ticks (DEBUG_FIXED_DT each),
+-- the same step the backgrounded clock runs. Returns the number of steps advanced.
+function cell.debug_step(steps)
+  if not cell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  local n = math.max(0, math.floor(tonumber(steps) or 1))
+  for _ = 1, n do
+    cell.tick(DEBUG_FIXED_DT)
+  end
+  return n
+end
+
 return cell

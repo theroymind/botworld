@@ -12,7 +12,8 @@ local GROUP_THRESHOLD = 100000
 
 -- Insert thousand separators into a non-negative integer string ("12345" -> "12,345").
 local function group_thousands(digits)
-  local grouped, count = digits, nil
+  local grouped = digits
+  local count
   repeat
     grouped, count = grouped:gsub("^(%d+)(%d%d%d)", "%1,%2")
   until count == 0

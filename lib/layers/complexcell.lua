@@ -1159,4 +1159,150 @@ function complexcell.mousepressed(x, y, button_index)
   end
 end
 
+-- ============================================================================
+-- DEBUG SEAM (agent connector). The opt-in JSON-over-TCP connector (tools/automation)
+-- drives this layer through here and ONLY here -- it never pokes complexcell.state
+-- directly. Every mutation is documented/clamped to the field's invariant and then
+-- persist()ed, so the change survives a reload and the backgrounded/offline math sees
+-- it. Guarded against an unloaded layer (state == nil -> false, "layer not loaded").
+-- Pure routing; no love.* beyond the existing persist() write. Mirrors cell.lua's seam.
+-- ============================================================================
+
+-- The canonical fixed sim dt (clock.tick_dt) a debug step advances by, so a connector
+-- "step" walks the economy exactly one authoritative tick -- identical to the live
+-- backgrounded path. Same source as cell.lua's seam.
+local DEBUG_FIXED_DT = require("lib.engine.clock").tick_dt
+-- The error string every seam returns when the layer is unloaded (state == nil).
+local DEBUG_NOT_LOADED = "layer not loaded"
+-- Field-name sets the seam recognises, named so the routing carries no inline string
+-- literals. NON-NEGATIVE: clamped to >= 0. UNIT: clamped to [0, 1] (stress, ros).
+-- STAGE ids are integer levels >= 0. `built` is MONOTONIC (only raised) and `mito` is
+-- an integer >= 1; both handled explicitly below. unlock/discover are separate ops.
+local DEBUG_SIM_NONNEGATIVE = { energy = true }
+local DEBUG_SIM_UNIT = { stress = true, ros = true }
+local DEBUG_STAGE_LEVELS = {
+  ribosomes = true,
+  nucleus = true,
+  er = true,
+  golgi = true,
+  transport = true,
+  membrane = true,
+}
+
+-- Explicit min/max clamp (no math.clamp in Lua 5.1 / LuaJIT). Pure.
+local function clamp(v, lo, hi)
+  if v < lo then
+    return lo
+  elseif v > hi then
+    return hi
+  end
+  return v
+end
+
+-- The live state table (for reads). nil until load(); the connector guards on it.
+function complexcell.debug_state() return complexcell.state end
+
+-- A plain JSON-able snapshot of the whole layer, reusing the existing sim.serialize
+-- plus the carried phase-1 stat + fork pick, for query_state.
+function complexcell.debug_serialize()
+  if not complexcell.state then
+    return nil
+  end
+  return {
+    sim = sim.serialize(complexcell.state.sim),
+    carry = complexcell.state.carry,
+    fork_choice = complexcell.state.fork_choice,
+  }
+end
+
+-- Read a single field by name. Returns its value, or nil if the layer is unloaded
+-- or the name is unrecognised (the connector reports unknown for nil).
+function complexcell.debug_get(field)
+  if not complexcell.state then
+    return nil
+  end
+  local s = complexcell.state.sim
+  if
+    DEBUG_SIM_NONNEGATIVE[field]
+    or DEBUG_SIM_UNIT[field]
+    or field == "built"
+    or field == "mito"
+  then
+    return s[field]
+  end
+  if DEBUG_STAGE_LEVELS[field] then
+    return s.stages[field]
+  end
+  return nil
+end
+
+-- Set a single numeric/level field, APPLYING the documented clamp, then persist().
+-- `built` only ever RISES (monotonic). Returns true on success, or false + a reason
+-- on an unloaded layer / unrecognised field.
+function complexcell.debug_set(field, value)
+  if not complexcell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  local s = complexcell.state.sim
+  value = tonumber(value) or 0
+  if DEBUG_SIM_NONNEGATIVE[field] then
+    s[field] = math.max(0, value)
+  elseif DEBUG_SIM_UNIT[field] then
+    s[field] = clamp(value, 0, 1)
+  elseif field == "built" then
+    -- built is monotonic (cumulative structure produced) -- only raise it.
+    s.built = math.max(s.built, value)
+  elseif field == "mito" then
+    -- mitochondria count is an integer >= 1 (the engulfed bacterium is the first).
+    s.mito = math.max(1, math.floor(value))
+  elseif DEBUG_STAGE_LEVELS[field] then
+    s.stages[field] = math.max(0, math.floor(value))
+  else
+    return false, "unknown field: " .. tostring(field)
+  end
+  persist()
+  return true
+end
+
+-- Bring a stage ONLINE (unlocked = integrated) by id, then persist(). Returns true,
+-- or false + a reason on an unloaded layer / unrecognised stage id.
+function complexcell.debug_unlock_stage(id)
+  if not complexcell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  if not DEBUG_STAGE_LEVELS[id] then
+    return false, "unknown stage: " .. tostring(id)
+  end
+  complexcell.state.sim.unlocked[id] = true
+  persist()
+  return true
+end
+
+-- REVEAL a stage (discovered, awaiting integration) by id, then persist(). Returns
+-- true, or false + a reason on an unloaded layer / unrecognised stage id.
+function complexcell.debug_discover_stage(id)
+  if not complexcell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  if not DEBUG_STAGE_LEVELS[id] then
+    return false, "unknown stage: " .. tostring(id)
+  end
+  complexcell.state.sim.discovered[id] = true
+  persist()
+  return true
+end
+
+-- Advance the pure sim exactly `steps` authoritative ticks (DEBUG_FIXED_DT each),
+-- the same step the backgrounded clock runs. Returns the number of steps advanced.
+function complexcell.debug_step(steps)
+  if not complexcell.state then
+    return false, DEBUG_NOT_LOADED
+  end
+  local n = math.max(0, math.floor(tonumber(steps) or 1))
+  for _ = 1, n do
+    complexcell.tick(DEBUG_FIXED_DT)
+  end
+  return n
+end
+
 return complexcell
