@@ -179,7 +179,7 @@ end
 
 -- THE shared economy step, run by BOTH sim.tick and sim.offline so live and
 -- offline stay identical. Folds dt of the folded `rates` into the ATP buffer and
--- the built total. The closed form (see docs/PHASE_2_ECONOMY.md):
+-- the built total. The closed form (see docs/phase2/DESIGN.md):
 --
 --   avail = power - upkeep - waste_coef * excess   -- ATP/sec free to run the line
 --   cost_full = e * T
@@ -307,7 +307,7 @@ function sim.step(state, dt, rates)
   -- sim.offline does NOT, so an idle/backgrounded hot cell can only DIM (the soft built
   -- cut above, which IS shared) and can never LYSE from surplus while you are away. This
   -- is the one INTENTIONAL online/offline divergence in the stress tail -- documented in
-  -- docs/PHASE_2_ECONOMY.md. The deficit half keeps its existing recoverable-by-reserve
+  -- docs/phase2/FAILURE.md. The deficit half keeps its existing recoverable-by-reserve
   -- guarantee in both paths.
   local lethal_ros_input = 0
   if rates.lethal_ros and ros > ros_lethal and ros_lethal < 1 then

@@ -19,7 +19,7 @@ local catalog = {}
 
 -- ===========================================================================
 -- LOCKED constants -- mirror DEFAULTS in tools/phase2_lab.lua EXACTLY (and
--- docs/PHASE_2_ECONOMY.md). These are the values the fold below collapses into the
+-- docs/phase2/DESIGN.md). These are the values the fold below collapses into the
 -- `rates` table the sim consumes; changing them re-tunes the whole phase.
 -- ===========================================================================
 catalog.POWER_PER_MITO = 10 -- gross ATP/sec per mitochondrion
@@ -32,7 +32,7 @@ catalog.E_PER_OUTPUT = 1.0 -- ATP cost per unit of assembly-line output
 -- breathes UP as the cell grows, so meticulous tuning keeps paying off. BUFFER_BASE is
 -- the cap at built 0 (every current unlock still fits inside it); BUFFER_BUILT_REF is the
 -- built that adds one more BUFFER_BASE of headroom -- set so the cap is ~10x by the FORK
--- (180k built). Mirrors tools/phase2_lab.lua + docs/PHASE_2_ECONOMY.md.
+-- (180k built). Mirrors tools/phase2_lab.lua + docs/phase2/DESIGN.md.
 catalog.BUFFER_BASE = 5000 -- ATP cap at built 0 (all current unlocks fit; finite)
 catalog.BUFFER_BUILT_REF = 20000 -- built per extra BUFFER_BASE of cap (~10x ceiling by the 180k FORK)
 

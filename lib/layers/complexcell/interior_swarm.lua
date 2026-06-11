@@ -79,7 +79,8 @@ uniform vec3  tint;          // fuel_factor tint multiplier (neutral white at 1.
 uniform int   segment_count; // live pipeline segments (gaps between endpoints)
 uniform vec2  endpoints[%d]; // organelle cluster positions, screen space
 // Per-segment flow readouts, indexed by the segment a vesicle is routed onto:
-//   .x congestion 0..1 (clump + slow)   .y is_bottleneck 0/1 (constrict)
+//   .x over-build 0..1 (cap above throughput -> fat, clumped, dim "idle surplus")
+//   .y choke 0..1 (how hard the bottleneck pins the line -> pinch + back-up crowd)
 //   .z vacancy 0..1 (downstream of the choke -> push instances off / dim)
 //   .w density 0..1 (how "full" this segment runs; feeds brightness)
 uniform vec4  segments[%d];
@@ -97,8 +98,20 @@ const float WOBBLE_AMPLITUDE = 9.0;  // px of mid-leg jitter
 const float ENDPOINT_PINCH = 0.10;   // residual lane width at the endpoints
 const float ARC_FAN = 0.90;          // share of the lane offset applied as a mid-leg arc
 const float CONGEST_CLUMP = 0.55;    // a jam pulls vesicles toward the leg's middle (bunching)
-const float BOTTLENECK_PINCH = 0.55; // the choke segment tightens its lane
+const float BOTTLENECK_PINCH = 0.70; // the choke segment tightens its lane (deep, so the one lane
+                                     // to feed reads as a tight thread, not a faint pinch)
 const float VACANCY_OFFSCREEN = 0.85;// vacancy this strong parks a vesicle out of view
+// Imbalance legibility: the per-segment over-build readout (flow.x) is small in normal play -- a
+// stage a quarter over the bottleneck arrives as ~0.24 -- so a concave curve lifts modest over-
+// build into a readable range before it drives the fat/clumped/dim "idle surplus" treatment.
+// NOTE: this whole template is run through string.format at load to bake the uniform array
+// sizes, so a literal percent sign here would be read as a directive -- never write the symbol.
+const float OVERBUILD_GAMMA = 0.5;   // sqrt: 0.24 -> ~0.49, 0 stays 0, 1.0 stays 1.0
+const float OVERBUILD_WIDEN = 0.60;  // an over-built lane bows FATTER (over-stuffed look)
+const float OVERBUILD_DIM = 0.35;    // ...and DIMMER (idle surplus, not a hot lane); also has to
+                                     // overcome the extra glow a fat, clumped lane gains under add.
+const float CHOKE_CROWD = 0.50;      // the bottleneck's OWN over-build is 0 (it IS the minimum), so
+                                     // give it a back-up pile-up keyed to choke: cargo jams AT it.
 
 float travel(float leg_t) {
   // Smoothstep with a dwell at each end: vesicles ease out of an endpoint, glide,
@@ -114,10 +127,14 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   // segment connects endpoint[seg] -> endpoint[seg+1] along the pipeline.
   int seg = int(mod(InstanceRoute.x, float(max(segment_count, 1))));
   vec4 flow = segments[seg];
-  float congestion = flow.x;
-  float is_bottleneck = flow.y;
+  float over_build = flow.x;
+  float choke = flow.y;
   float vacancy = flow.z;
   float density = flow.w;
+
+  // OVER-BUILD curved up so modest over-build (a lane only a little above the line's throughput)
+  // still reads. Drives the fat/clumped/dim "idle surplus" look; 0 for a balanced lane.
+  float overbuilt = pow(over_build, OVERBUILD_GAMMA);
 
   // VACANCY (downstream of the choke): thin the highway by parking a fraction of
   // its vesicles far off-screen. Deterministic per instance via the lane-sign
@@ -137,9 +154,12 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   float t = fract((flow_phase + InstanceRoute.y) / InstanceMotion.x);
   float s = travel(t);
 
-  // CONGESTION CLUMP: bias progress toward the middle of the leg so jammed vesicles
-  // bunch up (crowd) instead of spacing evenly -- a visible pile-up.
-  s = mix(s, 0.5 + (s - 0.5) * (1.0 - CONGEST_CLUMP * congestion), congestion);
+  // CLUMP: bias progress toward the middle of the leg so a backed-up lane bunches (crowds)
+  // instead of spacing evenly -- a visible pile-up. An over-built lane clumps (idle surplus);
+  // the bottleneck ALSO clumps via CHOKE_CROWD even though its own over-build is 0 (cargo jams
+  // AT the choke). The two never co-occur on one lane, so `jam` is just whichever applies.
+  float jam = max(overbuilt, CHOKE_CROWD * choke);
+  s = mix(s, 0.5 + (s - 0.5) * (1.0 - CONGEST_CLUMP * jam), jam);
 
   vec2 direction = normalize(to - from);
   vec2 perpendicular = vec2(-direction.y, direction.x);
@@ -149,9 +169,10 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   float arc = 4.0 * s * (1.0 - s);
   float wobble = sin(time * InstanceMotion.z + InstanceMotion.w) * WOBBLE_AMPLITUDE * arc;
 
-  // BOTTLENECK CONSTRICTION: the choke segment squeezes its lane width, so its
-  // vesicles bunch into a tight thread (the pinch).
-  float lane_scale = 1.0 - BOTTLENECK_PINCH * is_bottleneck;
+  // LANE WIDTH: the choke segment SQUEEZES (a tight thread -> "feed this one"); an over-built
+  // lane BOWS WIDER (fat, over-stuffed). Mutually exclusive in practice (the choke's over-build
+  // is 0), so a lane is either pinched or widened, never both.
+  float lane_scale = (1.0 - BOTTLENECK_PINCH * choke) * (1.0 + OVERBUILD_WIDEN * overbuilt);
   float bow = InstanceMotion.y * (ENDPOINT_PINCH + ARC_FAN * arc) * lane_scale;
 
   vec2 vesicle = mix(from, to, s) + perpendicular * (bow + wobble);
@@ -160,7 +181,10 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   // tint, per-segment density (busy segments read a touch brighter), and a
   // per-instance brightness jitter so the cloud isn't flat.  The global
   // `brightness` (output up / brownout down) is applied here too.
-  float lively = (0.62 + 0.38 * density) * brightness * InstanceRoute.w;
+  // DIM over-built lanes: idle surplus reads duller, not hotter. The factor also has to overcome
+  // the extra brightness a fatter, more clumped lane gains under additive blending.
+  float lively = (0.62 + 0.38 * density) * brightness * InstanceRoute.w
+                 * (1.0 - OVERBUILD_DIM * overbuilt);
   vec3 base = cargo_palette[seg];
   vesicle_color = base * tint * lively;
 
@@ -295,9 +319,9 @@ local function send_endpoints(xs, ys, n)
   shader:send("endpoints", unpack(endpoint_uniform, 1, MAX_ENDPOINTS))
 end
 
--- Upload the per-segment flow readouts. `segs` is an array of { congestion,
--- is_bottleneck(0/1), vacancy, density }, one per gap between consecutive
--- endpoints (n - 1 of them).
+-- Upload the per-segment flow readouts. `segs` is an array of { over_build(0..1),
+-- choke(0..1), vacancy, density }, one per gap between consecutive endpoints (n - 1 of
+-- them). See the `segments[]` uniform comment for what each channel drives.
 local function send_segments(segs, n)
   for i = 1, MAX_SEGMENTS do
     local entry = segment_uniform[i]

@@ -43,7 +43,7 @@ local sim = require("lib.layers.complexcell.sim")
 
 -- ===========================================================================
 -- DEFAULTS -- every economy constant lives here so tuning is trivial. These are
--- the spec's first-guess values (docs/PHASE_2_ECONOMY.md). The lab pins them.
+-- the spec's first-guess values (docs/phase2/DESIGN.md). The lab pins them.
 -- ===========================================================================
 local DEFAULTS = {
   POWER_PER_MITO = 10, -- gross ATP/sec per mitochondrion

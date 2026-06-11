@@ -7,10 +7,12 @@
 -- upkeep, and the overall multiplier -- which sim.tick/sim.offline run the shared
 -- economy step on, so idle/offline math never depends on the live agents. The live
 -- world (world.lua) is a cosmetic skin over that baseline, driven only in update()
--- (never backgrounded, so offline stays pure), with exactly THREE real couplings
--- back to the economy: a nutrient-bloom click -> sim.feed_burst, a predator kill
--- -> sim.kill, and a rare prey engulf -> keep an organelle (organelles.acquire +
--- the intake fold). The pure modules know nothing of each other or of love.*; they
+-- (never backgrounded, so offline stays pure), with exactly TWO real couplings
+-- back to the economy: a nutrient-bloom click -> sim.feed_burst, and a rare prey
+-- engulf -> keep an organelle (organelles.acquire + the intake fold). Predation is
+-- NOT a coupling: it is single-sourced through the closed-form pred_cull_frac in
+-- sim.step (folded by intake_for, runs live AND offline) -- live predators are
+-- cosmetic. The pure modules know nothing of each other or of love.*; they
 -- meet only here. Economy runs at a fixed sweet-spot base rate (no dial).
 local save = require("lib.engine.save")
 local fx = require("lib.engine.fx")
@@ -20,6 +22,7 @@ local format = require("lib.engine.format")
 local metabolism = require("lib.layers.cell.metabolism")
 local traits = require("lib.layers.cell.traits")
 local sim = require("lib.layers.cell.sim")
+local pressures = require("lib.layers.cell.pressures")
 local organelles = require("lib.layers.cell.organelles")
 local world = require("lib.layers.cell.world")
 local view = require("lib.layers.cell.view")
@@ -81,7 +84,7 @@ local GROWTH_RATE = 0.1
 -- traits + feeding). When fouling outruns clearance toxicity climbs and throttles
 -- intake (health = TOX_HALF / (TOX_HALF + toxicity)) until upkeep outruns the
 -- choked intake and the colony starves back toward the founder. A bare founder's
--- clearance (traits CLEAN_BASE = 0.15) sits BELOW TOX_PROD, so an UNTOUCHED colony
+-- clearance (traits CLEAN_BASE) sits BELOW TOX_PROD, so an UNTOUCHED colony
 -- is doomed to choke within a minute or two -- the "do nothing and you survive"
 -- hole is closed. Leveling Digestion/Evasion/Photosynthesis (or feeding blooms)
 -- lifts clearance past fouling and the colony thrives. Tuned via sim_lab survival.
@@ -141,11 +144,20 @@ local COMP_MOTILITY_COUNTER = 0.05 -- share restored per Motility level (added t
 -- -> deaths beat births -> spiral to literal 0 (predation is SOLO-LETHAL). PRED_EVASION_GAIN
 -- is the lab-side amplifier turning the shipped (weak ~0.20 maxed) evasion stat into a
 -- real mitigator; PRED_MIT_CAP keeps a maxed build slightly contested (never immune).
--- Retuned 2026-06-08 alongside competition (above): the predation ramp climbs faster
--- (PRED_RAMP 0.008 -> 0.010, PRED_TAU 50 -> 42) so a neglected dish feels the cull
--- sooner. MIRRORED in tools/sim_lab.lua and tests/cell_pressures_spec.lua.
-local PRED_BASE = 0.004 -- floor cull fraction/sec at age 0 (small but nonzero)
-local PRED_RAMP = 0.010 -- added rate over time (the ramping threat)
+-- SINGLE-SOURCED through the closed-form cull now that the live predator kills no longer
+-- debit the population (that double-counted the cull), so the closed form carries the
+-- WHOLE predation pressure. A first pass tripled these (0.004->0.012 / 0.010->0.034) to
+-- "compensate" for the removed live kill -- but that OVERSHOT and broke the rhythm: feed/
+-- digestion builds that used to survive collapsed to predation in ~99s and vitality
+-- (net_rate) spiralled between negative and positive. Retuned 2026-06-11 via sim_lab
+-- survsweep to a MODERATE bump over the old lab-only floor/ramp (0.004/0.010): predation
+-- still bites harder than lab-only -- partially standing in for the removed live kill --
+-- but a founder that feeds + levels Digestion now survives ~2.6 min before it MUST invest
+-- Evasion, a neglected founder still spirals (~90s), and a maxed colony still sprints to
+-- the 1M exit. MIRRORED in tools/sim_lab.lua and tests/cell_pressures_spec.lua -- keep the
+-- three in sync.
+local PRED_BASE = 0.006 -- floor cull fraction/sec at age 0 (small but nonzero)
+local PRED_RAMP = 0.014 -- added rate over time (the ramping threat)
 local PRED_TAU = 42 -- time scale (s) of the predation ramp
 local PRED_MAX = 0.25 -- safety clamp on the per-second cull fraction (never an instant wipe)
 local PRED_EVASION_GAIN = 8.0 -- amplifies the shipped evasion stat into real predation mitigation
@@ -218,6 +230,30 @@ local retired = false
 local collapsing = false -- true while the game-over overlay plays (freezes the sim)
 local collapse_anim = 0 -- remaining seconds of the death overlay
 local COLLAPSE_ANIM = 2.6 -- length of the game-over beat before the fresh reload
+-- The pressure that drove THIS extinction (pressures.WASTE/RIVALS/PREDATORS),
+-- captured at the moment of collapse from the trailing death-attribution read so the
+-- game-over copy names what actually happened. Defaults to the historical waste copy.
+local collapse_cause = pressures.DEFAULT
+
+-- TRAILING DEATH ATTRIBUTION: a per-tick decomposition of the colony's deaths into
+-- the three failure pressures, EMA-smoothed, mirroring the lab harness's per-source
+-- split (tools/sim_lab.lua survival_run). At extinction the largest recent
+-- contribution names the dominant cause. These are a SHORT trailing read, not a
+-- lifetime accumulator -- the death-spiral's FINAL pressure is what the copy reflects.
+local death_attrib = { waste = 0, rivals = 0, predators = 0 }
+local DEATH_ATTRIB_TAU = 8 -- EMA horizon (s) for the trailing per-source death read
+
+-- Game-over CAUSE copy, keyed by the dominant pressure id (pressures.*). Each entry
+-- is the terse death CLAUSE the toast and overlay subline share -- the message names
+-- what actually killed the colony (waste / rivals / predators) instead of always
+-- blaming toxicity. The toast prefixes "The colony "; the overlay subline uses the
+-- bare clause. Both end with COLLAPSE_TAIL (the "a new lineage begins" reseed tell).
+local COLLAPSE_CAUSE = {
+  [pressures.WASTE] = "choked on its own waste",
+  [pressures.RIVALS] = "was crowded out by rivals",
+  [pressures.PREDATORS] = "was hunted to extinction",
+}
+local COLLAPSE_TAIL = " — a new lineage begins"
 
 -- The saturating COMPETITION ramp (mirrors sim_lab.comp_frac): rivals take a
 -- growing share of the food as the lineage ages, climbing toward COMP_FRAC_MAX with
@@ -336,6 +372,13 @@ local function intake_for(state)
     -- Predation: the per-second cull fraction (already evasion-mitigated) sim.step
     -- applies as a floorless, ramping cull -- the closed-form home for predation.
     pred_cull_frac = pred_cull_frac,
+    -- Death-attribution diagnostics (sim.step ignores them): the competition + predation-
+    -- fear throttle factors this fold applied (each <= 1), so the orchestrator can charge
+    -- the carrying-cap STARVATION each throttle caused to the right pressure (rivals vs
+    -- predator fear) when picking the dominant cause of an extinction. Mirrors sim_lab's
+    -- comp_factor / fear_factor. NOT a gameplay field.
+    comp_factor = your_share,
+    fear_factor = fear,
   }
 end
 
@@ -417,11 +460,12 @@ local function buy_unlock(id)
   end
 end
 
--- The colony has FAILED only when it is EXTINCT -- the toxicity cull (sim.lua) has
--- killed every last cell. No aggregate trigger, no vitality threshold: the run
--- ends purely because the population reached 0, the natural end of the die-off. As
--- long as a single cell survives, feeding or leveling cleanup can still turn it
--- around. Returns true the moment the colony is wiped out.
+-- The colony has FAILED only when it is EXTINCT -- one (or a mix) of the three
+-- pressures (toxicity cull, rival competition, predation) has killed every last cell.
+-- No aggregate trigger, no vitality threshold: the run ends purely because the
+-- population reached 0, the natural end of the die-off. As long as a single cell
+-- survives, feeding or leveling the right traits can still turn it around. Returns
+-- true the moment the colony is wiped out.
 local function is_extinct() return cell.state.sim.population <= 0 end
 
 -- Begin the game-over beat: freeze the sim, shake + flash red, toast the cause.
@@ -429,7 +473,11 @@ local function is_extinct() return cell.state.sim.population <= 0 end
 local function begin_collapse()
   collapsing = true
   collapse_anim = COLLAPSE_ANIM
-  toast.show("The colony choked on its own waste — a new lineage begins")
+  -- Name the DOMINANT recent pressure (the trailing per-source death read), so the
+  -- copy matches what actually drove the extinction -- not always the waste default.
+  collapse_cause =
+    pressures.dominant(death_attrib.waste, death_attrib.rivals, death_attrib.predators)
+  toast.show("The colony " .. COLLAPSE_CAUSE[collapse_cause] .. COLLAPSE_TAIL)
   sound.play("pop", { volume = 1.0, pitch_spread = 0.2 })
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = cell.state.sim.population }))
@@ -540,6 +588,8 @@ function cell.load()
   retired = false -- a fresh lineage runs live again (clears any prior phase-2 hand-off)
   collapsing = false -- clear any prior game-over state (a fresh founder runs normally)
   collapse_anim = 0
+  collapse_cause = pressures.DEFAULT -- reset the captured death cause for the new lineage
+  death_attrib.waste, death_attrib.rivals, death_attrib.predators = 0, 0, 0
   sound.load("pop", "assets/sounds/pop.ogg")
   sound.load("bloom", "assets/sounds/bloom.ogg")
   sound.load("endosymbiosis", "assets/sounds/endosymbiosis.ogg")
@@ -575,6 +625,35 @@ function cell.load()
   end
 end
 
+-- Fold ONE tick's deaths into the trailing per-source death attribution (EMA), so
+-- that at extinction the dominant recent pressure names the cause of death. Deaths
+-- this step are births minus the net population change (the same accounting sim.step
+-- uses for net_rate); the pure pressures.attribute splits them across waste / rivals /
+-- predators using the toxicity, the forwarded pred cull, and the throttle factors the
+-- intake fold applied. An event-rate EMA (decays over DEATH_ATTRIB_TAU) keeps it a
+-- SHORT trailing read of the die-off's final pressure, not a lifetime tally. Called
+-- only on the LIVE tick (not offline) -- it drives view copy, never the economy.
+local function track_death_attrib(intake, pop_before, div_before, dt)
+  if dt <= 0 then
+    return
+  end
+  local sim_state = cell.state.sim
+  local births = sim_state.total_divisions - div_before
+  local deaths = math.max(0, births - (sim_state.population - pop_before))
+  local d_waste, d_rivals, d_predators = pressures.attribute(deaths, pop_before, dt, {
+    toxicity = sim_state.toxicity,
+    tox_tolerance = intake.tox_tolerance,
+    pred_cull_frac = intake.pred_cull_frac,
+    comp_factor = intake.comp_factor,
+    fear_factor = intake.fear_factor,
+  })
+  local alpha = 1 - math.exp(-dt / DEATH_ATTRIB_TAU)
+  death_attrib.waste = death_attrib.waste + (d_waste / dt - death_attrib.waste) * alpha
+  death_attrib.rivals = death_attrib.rivals + (d_rivals / dt - death_attrib.rivals) * alpha
+  death_attrib.predators = death_attrib.predators
+    + (d_predators / dt - death_attrib.predators) * alpha
+end
+
 -- Fixed sim tick (runs even while backgrounded). Pure sim: no love.*, no world.
 -- FROZEN while the end-of-phase-1 cinematic is mid-build (up to its reset): the
 -- economy must not mint/starve under the freeze frame. Once the reset has fired
@@ -592,7 +671,11 @@ function cell.tick(tick_dt)
   if collapsing then
     return -- the colony has failed: freeze the sim under the game-over overlay
   end
-  sim.tick(cell.state.sim, tick_dt, intake_for(cell.state))
+  local intake = intake_for(cell.state)
+  local pop_before = cell.state.sim.population
+  local div_before = cell.state.sim.total_divisions
+  sim.tick(cell.state.sim, tick_dt, intake)
+  track_death_attrib(intake, pop_before, div_before, tick_dt)
 end
 
 function cell.update(dt)
@@ -661,7 +744,10 @@ function cell.update(dt)
   end
 
   local predation = traits.is_unlocked(cell.state.traits, "predation")
-  local killed, engulfs, deaths, kill_points, engulf_points = world.update(world_state, dt, {
+  -- The leading return is the COSMETIC predator-strike count; it is intentionally
+  -- discarded -- predation is single-sourced through the closed-form cull (sim.step),
+  -- so a live strike must NOT debit the colony (that would double-count the deaths).
+  local _, engulfs, deaths, kill_points, engulf_points = world.update(world_state, dt, {
     stats = traits.stats(cell.state.traits),
     competition = comp_frac(cell.state.sim.age), -- 0..1 rival intensity -> competitor-cell skin
     dial_tempo = FIXED_TEMPO,
@@ -673,11 +759,13 @@ function cell.update(dt)
     bloom_exclude = bloom_exclude,
     bloom_confine = bloom_confine,
   })
-  -- A live predator kill removes cells from the colony (a population setback the
-  -- energy economy regrows; biomass -- the banked currency -- is untouched).
-  if killed > 0 then
-    sim.kill(cell.state.sim, killed)
-  end
+  -- PREDATION is SINGLE-SOURCED through the closed-form cull in sim.step (the
+  -- age-ramped pred_cull_frac the intake fold forwards), which runs live AND offline.
+  -- The live predators are pure cosmetic theatre: they roam, lunge, and burst their
+  -- victims into red particles (kill_points below), but they DO NOT debit the
+  -- authoritative population -- that would double-count the deaths the closed-form
+  -- cull already takes. world.update still reports kill_points so the kills read on
+  -- screen, scaled to the same predator pressure; the population math owns the rest.
   -- Starvation deaths cover both reconcile's economy cull and the world's
   -- low-cadence starvation turnover; each bursts into recycled food in the world,
   -- so echo it with a view death-fx -- the cell exploding into its OWN color,
@@ -729,8 +817,9 @@ function cell.update(dt)
 
   -- (Milestone capabilities are no longer auto-granted by colony size -- they are
   -- bought from the panel; see buy_unlock. Nothing to check on the tick.)
-  -- Failure: the toxicity cull has driven the colony to extinction. End the run
-  -- into a fresh lineage (game-over beat). Nothing fires while a cell still lives.
+  -- Failure: the pressures (toxicity / competition / predation) have driven the colony
+  -- to extinction. End the run into a fresh lineage (game-over beat). begin_collapse
+  -- names the dominant cause. Nothing fires while a cell still lives.
   if is_extinct() then
     begin_collapse()
   end
@@ -1083,7 +1172,7 @@ local function draw_collapse(width)
     color = colors.quaternary,
     align = "center",
   })
-  text(rect(0, height / 2 + 8, width, 18), "choked on its own waste — a new lineage begins", {
+  text(rect(0, height / 2 + 8, width, 18), COLLAPSE_CAUSE[collapse_cause] .. COLLAPSE_TAIL, {
     font = "hud",
     color = colors.with_alpha(colors.ui.text, 0.85),
     align = "center",

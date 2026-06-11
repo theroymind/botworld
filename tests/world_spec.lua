@@ -322,6 +322,21 @@ check(saw, "predators incur once predation is unlocked and threats are live")
 check(killed_low > 0, "low-evasion cells get killed by predators")
 check(#hunted.cells > 0, "the colony regrows after kills (reconcile heals it)")
 
+-- PREDATION IS SINGLE-SOURCED (live predators are cosmetic): world.update reports a
+-- kill COUNT but never debits the economy-authoritative population. The orchestrator
+-- holds target_population fixed (the closed-form sim owns it); the live cell set
+-- reconciles BACK toward that target after kills, so the visible swarm never falls
+-- below the colony size the closed form sustains -- the kills are pure churn/theatre.
+-- (After many incursions at a steady target, the live set still tracks the target.)
+do
+  local capped_target = math.min(100, world.MAX_AGENTS) -- run_predation drives target_population = 100
+  check(
+    #hunted.cells >= capped_target - 1,
+    "the live cell set reconciles back to the authoritative target after kills "
+      .. "(predator kills never debit the colony -- predation is single-sourced)"
+  )
+end
+
 -- Full evasion dodges every strike: predators still appear, but kill nothing.
 local _, killed_armoured = run_predation(11, 1)
 check(killed_armoured == 0, "full evasion dodges every predator strike")

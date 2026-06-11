@@ -2,10 +2,12 @@
 -- economy in sim.lua. A myriad of cells drift, sense and chase nutrient motes,
 -- engulf prey, and (when predation is unlocked) get hunted by drifting predators.
 -- None of this feeds the economy: the only economy couplings live in the
--- orchestrator (a nutrient-bloom click -> sim.feed_burst; a predator kill ->
--- sim.kill; a rare prey engulf -> keep an organelle). world.update just reports
--- the kills, the prey engulfs, and where starving cells died so the orchestrator
--- can route those; everything else here is for the eye.
+-- orchestrator (a nutrient-bloom click -> sim.feed_burst; a rare prey engulf ->
+-- keep an organelle). PREDATION is single-sourced through the closed-form cull in
+-- sim.step, so the live predator kills are PURELY cosmetic -- world.update reports
+-- kill_points only so the view can burst them on screen, never to debit the colony.
+-- world.update reports the kill positions, the prey engulfs, and where starving
+-- cells died so the orchestrator can route those; everything else here is for the eye.
 --
 -- The agent count is reconciled toward the closed-form colony size each update
 -- (births rate-limited so a grown colony fills in smoothly, never in a flurry),
@@ -1090,11 +1092,12 @@ local function step_blooms(state, dt, exclude, confine)
   end
 end
 
--- Persistent, live-only predators. Returns (killed, kill_points): the number of
--- cells killed this update so the orchestrator can debit the colony (sim.kill), AND
--- the {x,y} positions of those kills so the view can burst each into RED particles
--- (distinct from the cell-colored starvation burst). Evasion lets a cell flee a
--- strike, so the evasion trait visibly matters.
+-- Persistent, live-only predators. Returns (killed, kill_points): the COSMETIC
+-- count of cells the on-screen predators struck this update (it does NOT debit the
+-- authoritative colony -- predation is single-sourced through the closed-form cull
+-- in sim.step), AND the {x,y} positions of those kills so the view can burst each
+-- into RED particles (distinct from the cell-colored starvation burst). Evasion lets
+-- a cell flee a strike, so the evasion trait visibly matters on screen too.
 --
 -- The pack is MAINTAINED rather than spawned-then-expired: once the colony is worth
 -- hunting, predators drift in from the edges to fill a menace-scaled target and then
@@ -1222,13 +1225,14 @@ end
 --                        avoid (screen UI -- the panel -- projected to world)
 --   bloom_confine     -- optional world-space rect blooms must spawn WITHIN
 --                        (the founder-lock camera frame projected to world)
--- Returns (killed, engulfs, death_points, kill_points, engulf_points): cells
--- killed by predators (debit the colony), prey fully engulfed this frame (roll
+-- Returns (killed, engulfs, death_points, kill_points, engulf_points): the COSMETIC
+-- count of predator strikes (NOT an economy debit -- predation is single-sourced
+-- through the closed-form cull in sim.step), prey fully engulfed this frame (roll
 -- endosymbiosis), the positions where cells STARVED -- both reconcile's economy
 -- cull and the low-cadence starvation turnover -- for the cell-colored death-fx,
 -- the positions where cells were KILLED by predators for the red death-fx, and
 -- the positions where PREY engulfs completed for the reverse-burst feed-fx
--- (cosmetic; no economy coupling beyond the existing kill debit).
+-- (all cosmetic; the only economy couplings are feed_burst + organelle keep).
 function world.update(state, dt, opts)
   opts = opts or {}
   local stats = opts.stats or { speed = 60, sense_range = 70, evasion = 0 }

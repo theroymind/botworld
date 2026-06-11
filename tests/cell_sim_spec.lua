@@ -252,19 +252,6 @@ check(
 )
 check(sim.capacity({}) >= 1, "capacity floors at 1 for an empty intake")
 
--- kill removes cells (a live predator delta): population falls, floored at 1, and
--- the banked biomass is untouched (a kill is a setback the economy regrows).
-s = sim.new()
-s.population = 10
-s.biomass = 50
-local lost = sim.kill(s, 3)
-check(lost == 3, "kill returns the cells lost")
-check(s.population == 7, "kill reduces the population")
-check(s.biomass == 50, "kill never touches banked biomass")
-local over = sim.kill(s, 100)
-check(s.population == 1, "kill floors the population at 1")
-check(over == 6, "kill clamps to the cells available above the floor")
-
 -- Spend deducts biomass; overspend is rejected.
 s = sim.new()
 s.biomass = 100

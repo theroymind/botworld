@@ -1,12 +1,14 @@
 # botworld — game plan
 
 Distilled brainstorm, 2026-06-07 (rev. 2026-06-08). The cell layer's detail lives in
-`docs/CELL_LAYER.md`; the complex-cell layer (phase 2, in design) in `docs/PHASE_2.md`.
+`docs/phase1/DESIGN.md`; the complex-cell layer (phase 2, in design) in `docs/phase2/DESIGN.md`.
+Every phase follows the four-doc structure in `docs/PHASE_TEMPLATE.md` (DESIGN / BALANCE /
+FAILURE / PRESTIGE).
 
 ## Status & how to read this plan
 
-- **Phase 1 (cell colony): built and tuned** — see `docs/CELL_LAYER.md`.
-- **Phase 2 (complex cell): in design** — see `docs/PHASE_2.md`.
+- **Phase 1 (cell colony): built and tuned** — see `docs/phase1/DESIGN.md`.
+- **Phase 2 (complex cell): in design** — see `docs/phase2/DESIGN.md`.
 - **Everything past phase 2 is an intentionally loose VISION, not a spec.** The scale
   progression below (organisms → animals → … → galaxy) is the north star; the *mechanics* of
   those phases are **not decided**. Each phase gets its own dedicated brainstorm — the way
@@ -64,7 +66,7 @@ The thing the player actually *does* across the whole game:
   never a fail-state); live feedback as you drag. **Litmus test: you can clear any phase without
   ever opening the knob panel — tuning is opt-in upside.** *(Exception, decided 2026-06-08:
   phase 1 now has a real fail-state — a waste/vitality pressure that ends the run if you
-  neglect the dish entirely. See `docs/CELL_LAYER.md`. The "no fail-state" rule still governs
+  neglect the dish entirely. See `docs/phase1/FAILURE.md`. The "no fail-state" rule still governs
   the later automated phases; phase 1 wanted teeth.)*
 
 ## Scale ladder (the vision — mechanics TBD)
@@ -75,8 +77,8 @@ evolve-gate to be brainstormed when we reach them.
 
 | # | Phase | Scale / fantasy | Mechanics |
 |---|-------|-----------------|-----------|
-| 1 | Cell | grow a single-celled colony in a dish | **built** — see `docs/CELL_LAYER.md` |
-| 2 | Complex cell | zoom inside one cell; build its organelles | **in design** — see `docs/PHASE_2.md` |
+| 1 | Cell | grow a single-celled colony in a dish | **built** — see `docs/phase1/DESIGN.md` |
+| 2 | Complex cell | zoom inside one cell; build its organelles | **in design** — see `docs/phase2/DESIGN.md` |
 | 3+ | Organisms → animals → minds → planet → solar system → galaxy → ? | life keeps scaling up, each scale its own sim joined by a zoom transition | **open — brainstorm per phase** |
 
 Threads to resolve for the future ladder (per phase, not now): what the core verb is at each
@@ -117,14 +119,16 @@ immediate-mode UI, GPU swarm renderer.
 ### Phase 1 — One playable cell layer *(done)*
 A living micro-world of cells that drift, sense and eat, divide (the swarm fills as you grow),
 and evolve via direct trait levels + milestone unlocks. Closed-form economy, save + offline.
-See `docs/CELL_LAYER.md` (and `docs/CELL_GROWTH.md` for the growth/balance arc).
+See `docs/phase1/DESIGN.md` (and `docs/phase1/BALANCE.md` for the growth/balance arc,
+`docs/phase1/FAILURE.md` for the fail-state, `docs/phase1/PRESTIGE.md` for the endosymbiosis seam).
 
 ### Phase 2 — The complex-cell layer *(next)*
-Build the design in `docs/PHASE_2.md`: the zoom-in seam, energy as the currency, a self-revealing
+Build the design in `docs/phase2/DESIGN.md`: the zoom-in seam, energy as the currency, a self-revealing
 upgrade catalog, flow-based readouts (congestion / vacancy / brownout), and the end-of-phase
-plant/animal fork. Reuse the GPU swarm renderer (pointed inward) and the `sim_lab` harness for
-on-paper balance. A balance/biology revision of the first draft is in review in
-`docs/PHASE_2_BALANCE.md` (two-sided ROS pendulum, stage recipe ratios, player gauges).
+plant/animal fork (`docs/phase2/PRESTIGE.md`). Reuse the GPU swarm renderer (pointed inward)
+and the `sim_lab` harness for on-paper balance. Tuning numbers live in `docs/phase2/BALANCE.md`
+(two-sided ROS pendulum, stage recipe ratios, player gauges); the oxidative-stress fail-state
+in `docs/phase2/FAILURE.md`.
 
 ### Beyond — open
 Further layers, co-op, and the automation ramp are designed when reached, each with its own

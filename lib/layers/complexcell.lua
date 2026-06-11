@@ -60,7 +60,7 @@ local DEV_FRESH_START = true
 -- COLLAPSE -- the phase-2 lose state, mirroring cell.lua's extinction beat. When the
 -- sim's oxidative stress saturates (state.stress >= catalog.STRESS_FAIL, a power
 -- deficit run to its end) the cell LYSES: a short game-over overlay freezes the sim,
--- flashes + shakes, then a FRESH cell seeds (the same wipe+reload as [r]).
+-- shakes, then a FRESH cell seeds (the same wipe+reload as [r]).
 local collapsing = false -- true while the lysis overlay plays (freezes the sim)
 local collapse_anim = 0 -- remaining seconds of the lysis overlay
 local COLLAPSE_ANIM = 2.6 -- length of the lysis beat before the fresh reload (matches cell.lua)
@@ -391,9 +391,10 @@ local function lethal_problem(s)
 end
 
 -- Begin the LYSIS game-over beat (the phase-2 sibling of cell.lua's begin_collapse):
--- freeze the sim, flash + shake red, toast the cause, play a death sound. The overlay
--- runs for COLLAPSE_ANIM, then update() wipes the save and seeds a fresh cell -- the
--- same reset as [r]. One-shot via the collapsing flag; cleared on every (re)build.
+-- freeze the sim, shake, toast the cause, play a death sound. No full-screen flash --
+-- those are reserved for phase transitions; the dimming overlay + shake carry the beat.
+-- The overlay runs for COLLAPSE_ANIM, then update() wipes the save and seeds a fresh
+-- cell -- the same reset as [r]. One-shot via the collapsing flag; cleared on every (re)build.
 local function begin_collapse()
   collapsing = true
   collapse_anim = COLLAPSE_ANIM
@@ -401,7 +402,6 @@ local function begin_collapse()
     string.format("The cell burst — %s. A new cell begins", lethal_problem(complexcell.state.sim))
   )
   sound.play("endosymbiosis")
-  view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(
     view_state,
     fx.shake({ mag = 10, life = 0.7, seed = math.floor(complexcell.state.sim.built) })
@@ -470,7 +470,7 @@ function complexcell.update(dt)
   update_music_layers(complexcell.state.sim.built) -- thicken the score as `built` climbs
 
   -- The cell has LYSED: the game-over beat owns the frame. Advance only the view (so the
-  -- red flash + shake play) and the overlay clock, then -- when it elapses -- wipe the
+  -- shake plays) and the overlay clock, then -- when it elapses -- wipe the
   -- save and seed a fresh cell (the same reset as [r], via enter_from_seam). Mirrors
   -- cell.update's collapsing branch.
   if collapsing then
@@ -651,10 +651,6 @@ local function integrate_stage(s, id)
     if catalog.unlock_stage(s, id) then
       local def = catalog.STAGE_DEFS[id]
       toast.show(string.format("%s is online", def.label))
-      view.spawn(
-        view_state,
-        fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 })
-      )
       persist()
     end
   end
@@ -670,7 +666,8 @@ end
 -- The manual ATP TAP: a cytoplasm click injects an ATP burst into the buffer (clamped
 -- at the ceiling), on a RANDOM 5-10s cooldown so a held/drummed click can't drain it.
 -- The burst scales with gross power (TAP_POWER_SECONDS of production), so it keeps
--- helping as the cell grows. Spawns a pulse + flash + soft beat so the tap reads.
+-- helping as the cell grows. Spawns a pulse + particle burst AT the mitochondrion + soft
+-- beat so the tap reads locally -- no full-screen flash (matches phase 1's local feed beat).
 local function tap_atp(s, x, y)
   if atp_tap_cooldown > 0 then
     return
@@ -682,7 +679,7 @@ local function tap_atp(s, x, y)
   local burst = catalog.fold(s).power * TAP_POWER_SECONDS
   s.energy = math.min(s.energy + burst, catalog.buffer_max(s))
   view.spawn(view_state, fx.pulse({ x = x, y = y, color = colors.secondary_bright }))
-  view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.08, life = 0.15 }))
+  view.spawn(view_state, fx.burst({ x = x, y = y, color = colors.secondary_bright, seed = x + y }))
   sound.play("cytoplasm_active", { volume = 0.8 })
 end
 

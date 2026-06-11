@@ -9,7 +9,7 @@
 -- hauling between them, inside a big wobbling membrane. The orchestrator
 -- (complexcell.lua) draws the panel/HUD on top -- this file draws NOTHING of the UI.
 --
--- ANATOMICAL ZONES (the phase-2 rework, docs/PHASE_2_INTERIOR.md sections 1-2). The
+-- ANATOMICAL ZONES (the phase-2 rework, docs/phase2/DESIGN.md sections 1-2). The
 -- old single endpoint RING is gone. Each pipeline stage now sits at a STABLE,
 -- anatomically-inspired position keyed to the reference cross-section: nucleus at the
 -- centre hub; ribosomes + rough ER as a band hugging the nucleus on one side; the
@@ -29,7 +29,7 @@
 -- the global flow scalars, and a cargo-type palette) and raises the live instance
 -- count. The membrane + nucleus + organelles stay CPU primitives FRAMING that cloud.
 --
--- READING STATE THROUGH FLOW (the core ask -- docs/PHASE_2_INTERIOR.md sections 4-5).
+-- READING STATE THROUGH FLOW (the core ask -- docs/phase2/DESIGN.md sections 4-5).
 -- Every visual is a CONTINUOUS response to a snapshot field, never a discrete state
 -- machine:
 --   * MEMBRANE -- a soft body disk with a bright wobbling rim. Rim glow eases with
@@ -49,10 +49,13 @@
 --   * EFFICIENCY (`efficiency`, 0..1) -- the DOMINANT liveliness driver: it sets the
 --     swarm's global speed + brightness. Optimal (eff ~= 1) = fast + bright; low eff =
 --     slow + dim. The eased brownout dim/slow then composes on top.
---   * CONGESTION (per-stage 0..1) -- a backed-up stage's SEGMENT clumps + slows.
---   * BOTTLENECK (`bottleneck_id`) -- the pinning stage's segment CONSTRICTS into a
---     thread, AND its organelle gets a SPOTLIGHT (a pulsing outline halo on the body).
---   * VACANCY -- segments DOWNSTREAM of the bottleneck thin out (parked off-screen).
+--   * OVER-BUILD (per-stage 0..1) -- a stage leveled ABOVE the line's throughput is idle
+--     surplus: its SEGMENT bows FATTER, clumps, and DIMS (over-stuffed, not a hot lane).
+--   * CHOKE (severity 0..1) -- the bottleneck's segment CONSTRICTS into a tight thread and
+--     piles cargo up at it, scaled by how hard it pins the line (1 - flow_balance), so a
+--     BALANCED cell reads uniform (no false choke on the nominal minimum lane). No halo.
+--   * VACANCY -- segments DOWNSTREAM of the bottleneck thin out (parked off-screen), faded
+--     where the lane is itself over-built so over-build wins on a lane that is both.
 --   * BROWNOUT (`brownout`) -- an energy deficit DIMS + SLOWS the whole swarm, eased
 --     over time; the mitochondria gutter FIRST (drawn dim under brownout).
 --   * `fuel_factor` -- a subtle whole-interior TINT (>1 plant/green, <1 animal/warm).
@@ -947,7 +950,7 @@ end
 --   * endpoints = one per UNLOCKED stage at its STABLE anatomical ZONE position, in
 --     pipeline order, then FIXED mitochondria emitters.
 --   * segments  = one per gap between consecutive endpoints, carrying the flow
---     readouts { congestion, is_bottleneck, vacancy, density } the shader reads.
+--     readouts { over_build, choke, vacancy, density } the shader reads.
 -- All cheap: a few dozen table writes, no per-vesicle work.
 local function build_routes(state, snapshot, cx, cy, r)
   local stages = snapshot.stages or {}
@@ -992,6 +995,21 @@ local function build_routes(state, snapshot, cx, cy, r)
     ordered[ep_count] = nil
   end
 
+  -- CHOKE SEVERITY: how hard the bottleneck actually pins the line, derived from the per-lane
+  -- over-build already in the snapshot. Since each lane's congestion is its capacity above the
+  -- line's throughput (over_i = throughput * congestion_i), the total excess is throughput * the
+  -- congestion sum, so flow_balance = 1/(1 + sum) and the severity = sum/(1 + sum) = 1 - flow
+  -- balance. It is 0 for a balanced cell (no false choke on the nominal minimum lane) and rises as
+  -- over-building spreads. The view drives the choke pinch/crowd by THIS, not a binary flag.
+  local sum_congestion = 0
+  for i = 1, #stages do
+    local stage = stages[i]
+    if stage.unlocked then
+      sum_congestion = sum_congestion + clamp01(stage.congestion or 0)
+    end
+  end
+  local choke_severity = sum_congestion / (1 + sum_congestion)
+
   -- Segments: one per gap between consecutive endpoints. Readout from the DOWNSTREAM
   -- endpoint's stage; mito emitter segments are calm neutral lanes.
   local seg_count = math.max(ep_count - 1, 0)
@@ -1004,7 +1022,7 @@ local function build_routes(state, snapshot, cx, cy, r)
     end
     if row then
       local congestion = clamp01(row.congestion or 0)
-      local is_bn = row.is_bottleneck and 1 or 0
+      local choke = row.is_bottleneck and choke_severity or 0
       local vac = 0
       if bn_index then
         local d = (STAGE_INDEX[row.id] or k) - bn_index
@@ -1012,9 +1030,14 @@ local function build_routes(state, snapshot, cx, cy, r)
           vac = clamp01(d / (#STAGE_ORDER - bn_index + 0.001))
         end
       end
+      -- A lane that is BOTH downstream of the choke (vacant) and over-built (congested) would read
+      -- as starved and over-stuffed at once. Over-build is the actionable "you over-invested here"
+      -- signal, so let it win: fade the sparse/starved look in proportion to the lane's own over-
+      -- build, leaving vacancy for correctly-sized downstream lanes.
+      vac = vac * (1 - congestion)
       local cap = row.cap or 0
       local fill = cap > 0 and clamp01((row.level or 0) / cap) or 0
-      seg[1], seg[2], seg[3], seg[4] = congestion, is_bn, vac, 0.4 + 0.6 * fill
+      seg[1], seg[2], seg[3], seg[4] = congestion, choke, vac, 0.4 + 0.6 * fill
     else
       seg[1], seg[2], seg[3], seg[4] = 0, 0, 0, 0.6
     end

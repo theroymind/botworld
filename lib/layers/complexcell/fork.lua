@@ -3,7 +3,7 @@
 -- wiring legible. This is the phase-2 sibling of nothing in phase 1 -- where the
 -- cell layer's endosymbiosis finale white-outs into a fresh lineage, the complex
 -- cell's finale white-outs into a CHOICE: light-fed plant vs. eating-fed animal,
--- the defining fork that (per docs/PHASE_2.md) slams the fuel mix to one pole and
+-- the defining fork that (per docs/phase2/PRESTIGE.md) slams the fuel mix to one pole and
 -- shapes the phase-3 ascension. Phase 3 isn't built, so the chosen path lands on a
 -- graceful "to be continued" placeholder for now.
 --
@@ -28,7 +28,7 @@ local button = ui.primitives.button
 local fork = {}
 
 -- The two kingdoms. Each carries its display copy and its one-line phase-3 bias --
--- pulled straight from docs/PHASE_2.md's fork section.
+-- pulled straight from docs/phase2/PRESTIGE.md's fork section.
 fork.CHOICES = {
   {
     id = "plant",

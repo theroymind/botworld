@@ -99,11 +99,13 @@ local BIOFILM_DIFFUSION = 0.0012 -- per-stage: upkeep penalty per cell (the self
 local GROWTH_RATE = 0.1 -- MIRRORS cell.lua: compounding surplus per cell (x mult)
 
 -- ===========================================================================
--- PROTOTYPE -- TUNE ME. The two NEW failure pressures from FAILURE_PRESSURES.md,
--- modelled in the LAB ONLY (no sim.step change yet). They are gated behind the
--- cfg.competition / cfg.predation flags so the scenario/growth/sweep tables stay
--- byte-identical; only the `survival` / `survsweep` modes turn them on. Sweep
--- these with `survsweep <KNOB> ...`, then port the winners into the closed form.
+-- The two failure pressures from docs/phase1/FAILURE.md are now LIVE in the
+-- closed form: predation as a per-second cull in sim.step (sim.lua pred_cull_frac)
+-- and competition + predation-fear folded into the intake mult in cell.lua. The
+-- lab MIRRORS them here for tuning. They are gated behind the cfg.competition /
+-- cfg.predation flags so the scenario/growth/sweep tables stay byte-identical;
+-- only the `survival` / `survsweep` modes turn them on. Sweep these with
+-- `survsweep <KNOB> ...` to re-tune, keeping the lab and closed form in step.
 -- ===========================================================================
 
 -- COMPETITION (Pressure #2: nutrient rivals -- a crowding tax). A rival population
@@ -164,8 +166,15 @@ local COMP_MOTILITY_COUNTER = 0.05 -- share restored per Motility level (added t
 -- the colony WITHOUT saturating, which hard-capped the late/high-pop end so no build could
 -- climb. The saturating pop ramp replaces it -- pressure plateaus at PRED_BASE+PRED_RAMP
 -- (<= PRED_MAX) and stops chasing size, so a fully-countered colony is not capped.
-local PRED_BASE = 0.004 -- floor cull fraction/sec at t=0 (mitigation 1) -- small but nonzero
-local PRED_RAMP = 0.010 -- the ramp's added rate over time (the ramping threat) [retuned 2026-06-08 0.008->0.010; mirrored in cell.lua + cell_pressures_spec.lua]
+-- RAMPED UP now that predation is SINGLE-SOURCED through the closed-form cull in
+-- sim.step (the live predator kills no longer debit the population -- that double-
+-- counted the cull). The closed form now carries the WHOLE predation pressure, so
+-- the floor + ramp were raised to keep the survival challenge comparable to the old
+-- double-counted feel: a neglected founder spirals to extinction in ~80-85s, an
+-- evasive build shrugs it off, and a maxed colony still sprints to 1M in ~5 min.
+-- MIRRORED in cell.lua + cell_pressures_spec.lua.
+local PRED_BASE = 0.006 -- floor cull fraction/sec at t=0 (mitigation 1) -- small but nonzero
+local PRED_RAMP = 0.014 -- the ramp's added rate over time (the ramping threat) [mirrored in cell.lua + cell_pressures_spec.lua]
 local PRED_TAU = 42 -- TIME scale (seconds) of the predation ramp (keyed on elapsed run time; a persisted state.age replays it offline) [retuned 2026-06-08 50->42]
 -- (PRED_LOG_POP RETIRED entirely: the saturating pop ramp above subsumes it -- a
 -- non-saturating size-amplification hard-capped the millions climb, so it is gone.)
@@ -271,6 +280,9 @@ local function intake_for(cfg, population, t)
   -- forage gain) still help via forage_mult x COMP_COUNTER_GAIN. A mobile forager keeps
   -- your_share near 1 while an immobile colony eats the full crowding tax. counter in
   -- [0,1]; effective tax = comp_frac * (1-counter).
+  -- Capture each throttle's factor (<= 1) so the caller can attribute the carrying-cap
+  -- starvation it causes to the right pressure (competition vs predation fear).
+  local comp_factor, fear_factor = 1, 1
   if cfg.competition and t then
     local motility = traits.level_of(tstate, "motility")
     local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
@@ -279,7 +291,8 @@ local function intake_for(cfg, population, t)
     elseif counter > 1 then
       counter = 1
     end
-    mult = mult * (1 / (1 + comp_frac(t or 0) * (1 - counter)))
+    comp_factor = 1 / (1 + comp_frac(t or 0) * (1 - counter))
+    mult = mult * comp_factor
   end
   -- PREDATION FEAR / HARASSMENT throttle (prototype) -- the death-spiral driver.
   -- Heavy predation makes cells FLEE instead of feed, so income (and thus births)
@@ -289,13 +302,19 @@ local function intake_for(cfg, population, t)
   -- still reaches the millions) while a ZERO-evasion build's births are suppressed
   -- AND the floorless cull runs -> deaths beat births -> spiral to literal 0 even on
   -- clean water. Clamped to [FEAR_FLOOR, 1] so fear can never zero income on its own.
+  -- The closed-form predation cull (mirrors cell.lua): the evasion-mitigated
+  -- per-second cull fraction forwarded as pred_cull_frac so sim.step applies it --
+  -- the SINGLE source of predation deaths, live AND offline (no separate lab cull).
+  local pred_cull_frac
   if cfg.predation and t then
-    local fear = 1 - PRED_FEAR * effective_pred_pressure(cfg, population, t)
+    pred_cull_frac = effective_pred_pressure(cfg, population, t)
+    local fear = 1 - PRED_FEAR * pred_cull_frac
     if fear < FEAR_FLOOR then
       fear = FEAR_FLOOR
     elseif fear > 1 then
       fear = 1
     end
+    fear_factor = fear
     mult = mult * fear
   end
   -- Compounding channel, mirroring cell.lua: per-cell income that covers upkeep
@@ -332,6 +351,14 @@ local function intake_for(cfg, population, t)
     tox_half = tox_half,
     tox_tolerance = tox_tolerance,
     tox_kill_k = tox_kill_k,
+    -- Predation: the evasion-mitigated cull fraction sim.step applies as the floorless,
+    -- ramping cull (the closed-form home for predation -- mirrors cell.lua's intake fold).
+    pred_cull_frac = pred_cull_frac,
+    -- Lab-only diagnostics (sim.step ignores them): the competition + predation-fear
+    -- throttle factors this fold applied, so survival_run can attribute the carrying-cap
+    -- starvation each throttle caused to the right pressure column. NOT a game field.
+    comp_factor = comp_factor,
+    fear_factor = fear_factor,
   }
 end
 
@@ -509,7 +536,7 @@ local function scenario_table()
     )
   end
   print(string.rep("-", 78))
-  print("note: render cap is MAX_AGENTS=300; K above that needs a higher visual sample.")
+  print("note: render cap is MAX_AGENTS=15000; K above that needs a higher visual sample.")
   print("")
 end
 
@@ -726,15 +753,17 @@ end
 --
 -- PER-PRESSURE DEATH ATTRIBUTION (re-tune pass). The deaths sim.step folds in are
 -- two kinds: carrying-capacity STARVATION (energy went negative) and the TOXICITY
--- CULL (waste past tolerance). They are split here by the only signal we have from
--- outside the step: when toxicity is over TOX_TOLERANCE the lethal cull is active,
--- so this step's sim_deaths are charged to TOXICITY; otherwise to STARVATION. The
--- lab-only PREDATION cull is already separate (applied here). NOTE on competition:
--- it is an intake THROTTLE, not a direct cull -- it never kills a cell by itself.
--- Its fingerprint is the STARVATION column: while rivals choke the intake mult the
--- throttled colony tips over its carrying capacity and starves, so the starvation
--- deaths under an active competition ramp ARE competition's contribution. The
--- returned stats carry comp_active so the caller can flag this.
+-- CULL (waste past tolerance), plus the PREDATION cull (pred_cull_frac, now folded
+-- into sim.step like the shipped game -- there is no separate lab cull). They are
+-- split here by the signals we have: the predation cull's direct kills are mirrored
+-- from the same evasion-mitigated fraction (charged to PREDATION); when toxicity is
+-- over TOX_TOLERANCE the remaining deaths are the lethal toxicity cull (charged to
+-- TOXICITY); otherwise they are carrying-cap STARVATION driven by the intake
+-- throttles. BOTH competition (rival crowding) AND predation FEAR are intake
+-- throttles, never direct kills, so the starvation they cause is split between the
+-- COMPETITION column (d_starv) and the PREDATION column (d_pred) in proportion to how
+-- hard each factor bit the mult this step -- so the death-shares reflect predation's
+-- FULL footprint (its direct cull AND its fear-starvation), not just the cull half.
 --
 -- Returns: samples, time-to-extinction (nil if it survives), worst (most negative)
 -- net/min after first growth, and a stats table:
@@ -768,18 +797,57 @@ local function survival_run(cfg, feed_each, checkpoints, max_t)
   while t < max_t do
     local pop_before = state.population
     local div_before = state.total_divisions
-    sim.step(state, dt, intake_for(cfg, state.population, t))
+    -- PREDATION is now SINGLE-SOURCED through the closed-form cull inside sim.step
+    -- (intake.pred_cull_frac), exactly like the shipped game -- there is NO separate
+    -- post-step lab cull. To keep the death-SHARE columns meaningful we attribute the
+    -- predation portion of this step's deaths by mirroring sim.lua's pred_death_debt:
+    -- the same evasion-mitigated cull fraction times the pre-step population, smoothed
+    -- by the fractional-death accumulator. (The TOTAL deaths and the extinction time
+    -- are owned by sim.step; this split is for reporting only.)
+    local pcf = pred_pressure(t) * pred_survive
+    local pred_deaths = 0
+    if cfg.predation and pop_before > 0 then
+      pred_debt = pred_debt + pcf * dt * pop_before
+      pred_deaths = math.floor(pred_debt)
+      if pred_deaths > pop_before then
+        pred_deaths = pop_before
+      end
+      pred_debt = pred_debt - pred_deaths
+    else
+      pred_debt = 0
+    end
+    local intake = intake_for(cfg, state.population, t)
+    sim.step(state, dt, intake)
     -- Births this step = divisions minted; sim.step deaths = the (births - net pop
-    -- change) the economy culled (carrying-capacity starvation + the toxicity cull).
+    -- change) the economy culled (starvation + toxicity + the predation cull).
     local births = state.total_divisions - div_before
     local sim_deaths = math.max(0, births - (state.population - pop_before))
-    -- ATTRIBUTE the step's sim deaths: the lethal toxicity cull is active iff waste
-    -- is over tolerance, so charge those deaths to TOXICITY; otherwise STARVATION
-    -- (the carrying-cap trim, which an active competition throttle drives).
+    -- Clamp the attributed direct pred-cull share to the deaths that actually occurred.
+    if pred_deaths > sim_deaths then
+      pred_deaths = sim_deaths
+    end
+    d_pred = d_pred + pred_deaths
+    -- ATTRIBUTE the remaining (non-direct-cull) sim deaths. If the lethal toxicity cull
+    -- is active (waste over tolerance) they are TOXICITY's. Otherwise they are carrying-
+    -- cap STARVATION driven by the intake throttles -- and BOTH competition AND predation
+    -- FEAR throttle the intake, so split that starvation between the COMPETITION and
+    -- PREDATION columns in proportion to how hard each factor bit the mult this step
+    -- (bite = 1 - factor). This charges fear-induced starvation to predation, so the
+    -- death-shares show predation's FULL footprint (direct cull + fear), not just the cull.
+    local non_pred_deaths = sim_deaths - pred_deaths
     if cfg.toxicity and (state.toxicity or 0) > TOX_TOLERANCE then
-      d_tox = d_tox + sim_deaths
+      d_tox = d_tox + non_pred_deaths
     else
-      d_starv = d_starv + sim_deaths
+      local comp_bite = 1 - (intake.comp_factor or 1)
+      local fear_bite = 1 - (intake.fear_factor or 1)
+      local total_bite = comp_bite + fear_bite
+      if total_bite > 0 then
+        local fear_share = non_pred_deaths * (fear_bite / total_bite)
+        d_pred = d_pred + fear_share
+        d_starv = d_starv + (non_pred_deaths - fear_share)
+      else
+        d_starv = d_starv + non_pred_deaths
+      end
     end
     t = t + dt
     if feed_each then
@@ -789,27 +857,10 @@ local function survival_run(cfg, feed_each, checkpoints, max_t)
         sim.feed_burst(state, FEED_ENERGY, FEED_TOX_CLEAR)
       end
     end
-    -- RAMPING PREDATION (prototype, lab-only death term) -- applied AFTER sim.step,
-    -- as a fraction of the surviving colony, mitigated by evasion. Floors at 0
-    -- (extinction allowed); a fractional-death debt keeps it smooth.
-    local pred_deaths = 0
-    if cfg.predation and state.population > 0 then
-      local frac = pred_pressure(t) * pred_survive * dt
-      pred_debt = pred_debt + frac * state.population
-      pred_deaths = math.floor(pred_debt)
-      if pred_deaths > 0 then
-        if pred_deaths > state.population then
-          pred_deaths = state.population
-        end
-        state.population = state.population - pred_deaths
-        pred_debt = pred_debt - pred_deaths
-      end
-    else
-      pred_debt = 0
-    end
-    d_pred = d_pred + pred_deaths
     -- NET replication per minute (births - all deaths), EMA-smoothed over ~12s.
-    local net_step = (births - sim_deaths - pred_deaths) / dt * 60
+    -- sim_deaths already folds in the predation cull (it runs inside sim.step now),
+    -- so the net is simply births minus the total sim deaths.
+    local net_step = (births - sim_deaths) / dt * 60
     local alpha = 1 - math.exp(-dt / 12)
     net_per_min = net_per_min + (net_step - net_per_min) * alpha
     if state.population > 1 then

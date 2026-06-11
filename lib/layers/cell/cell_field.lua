@@ -46,6 +46,16 @@ local instance_mesh
 local attractor_uniform = {} -- reused vec4 array -> "attractors" uniform
 local repulsor_uniform = {} -- reused vec4 array -> "repulsors" uniform
 local elapsed = 0
+-- Fine-weave phase, integrated on the CPU so a mid-run motility change scales the
+-- weave RATE without snapping the phase. The shader used to fold the rate in as
+-- time * (WEAVE_RATE * swim_scale); when swim_scale changed, that angle jumped by
+-- elapsed * Δrate -- a large, effectively random offset that snapped EVERY cell's
+-- weave at once (the visible "glitch" on each early Motility upgrade, until the
+-- rate saturated). Integrating ∫ rate dt here keeps the phase continuous across
+-- rate changes. last_swim is the most recent motility rate scalar (set at draw,
+-- applied by the next update); a one-frame lag is irrelevant for a cosmetic weave.
+local weave_phase = 0
+local last_swim = 1
 local loaded = false
 
 cell_field.count = 0
@@ -67,9 +77,11 @@ local SWIM_RATE = 1.1 -- weave angular speed (rad/sec), shared; phase desyncs ce
 local SIZE_JITTER_MIN, SIZE_JITTER_MAX = 0.7, 1.3 -- per-cell size variation
 local ALPHA_JITTER_MIN, ALPHA_JITTER_MAX = 0.62, 0.95 -- per-cell brightness variation
 
--- BLOOM_MAX / PRED_MAX and the run/weave constants are baked into the shader (via a
--- const block) so the loops have constant bounds (required by GLSL ES on the iOS
--- build) and the gait needs no per-cell rate uniform.
+-- BLOOM_MAX / PRED_MAX and the run constants are baked into the shader (via a const
+-- block) so the loops have constant bounds (required by GLSL ES on the iOS build) and
+-- the gait needs no per-cell rate uniform. SWIM_RATE is NOT baked: the weave rate is
+-- integrated CPU-side into weave_phase (see the weave_phase note above) so a motility
+-- change never snaps the phase.
 local VERTEX_SHADER_TEMPLATE = [[
 uniform float time;
 uniform vec2  field;        // current field extent (world units): run scale + tier
@@ -77,10 +89,11 @@ uniform vec3  body_color;    // cell token (body pass) or mito token (mark pass)
 uniform float base_half;     // cell body half-size in world units
 uniform float pass_mode;     // 0 = cell body, 1 = mito mark
 // Trait-driven look. All neutral at their defaults (the field renders exactly as
-// before when stats are absent): swim_scale 1 (motility -> dart vs drift on the
-// fine weave), size_scale 1 (evasion -> a firmer, slightly larger body + mark),
-// sense_halo 0 (chemotaxis -> a faint additive twinkle lift, a "sensing" shimmer).
-uniform float swim_scale;    // motility: scales the fine-weave angular rate
+// before when stats are absent): weave_phase the base-rate weave clock (motility ->
+// dart vs drift on the fine weave; the CPU integrates the RATE so a motility change
+// bends the phase forward instead of snapping it), size_scale 1 (evasion -> a firmer,
+// slightly larger body + mark), sense_halo 0 (chemotaxis -> a faint additive twinkle).
+uniform float weave_phase;   // motility: CPU-integrated fine-weave phase (radians), continuous across rate changes
 uniform float size_scale;    // evasion: scales the body/mark half-size
 uniform float sense_halo;    // chemotaxis: 0..~1 additive alpha shimmer (sense glow)
 uniform int   attractor_count;
@@ -94,7 +107,7 @@ attribute vec4 InstanceJit;  // wobble radius, size jitter, alpha jitter, phase 
 varying vec4 cell_color;
 varying vec2 quad_uv;   // local quad coords in [-1,1]^2; |quad_uv| <= 1 is the disc
 
-// Baked motion constants (RUN_COUNT/RUN_TIME/RUN_LEN, WEAVE_RATE, MARK_*). const int
+// Baked motion constants (RUN_COUNT/RUN_TIME/RUN_LEN, MARK_*). const int
 // RUN_COUNT is a constant expression so it can bound the loops on GLSL ES (iOS).
 %s
 
@@ -141,10 +154,12 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   }
   vec2 pos = home + walk * (RUN_LEN * run_jit) * field;
 
-  // Gentle fine weave on top so each cell wriggles as it swims. swim_scale
-  // (motility) drives the weave's angular RATE: a leveled, motile colony darts/
-  // wriggles faster, a sluggish one drifts. Defaults to WEAVE_RATE (swim_scale 1).
-  float ang = time * (WEAVE_RATE * swim_scale) + phase * two_pi;
+  // Gentle fine weave on top so each cell wriggles as it swims. weave_phase is the
+  // CPU-integrated weave clock (motility scales its RATE): a leveled, motile colony
+  // darts/wriggles faster, a sluggish one drifts. Pre-integrated so a mid-run rate
+  // change advances the phase smoothly instead of snapping it -- the old time*rate
+  // form jumped by elapsed*Δrate on every Motility upgrade (a whole-field glitch).
+  float ang = weave_phase + phase * two_pi;
   pos += vec2(cos(ang), sin(ang * 1.3)) * InstanceJit.x;
 
   // Attractors (nutrient blooms): EASE toward the food by a fraction of the
@@ -277,13 +292,11 @@ function cell_field.load()
     "const int RUN_COUNT = %d;\n"
       .. "const float RUN_TIME = %f;\n"
       .. "const float RUN_LEN = %f;\n"
-      .. "const float WEAVE_RATE = %f;\n"
       .. "const float MARK_SCALE = %f;\n"
       .. "const float MARK_ALPHA = %f;",
     RUN_COUNT,
     RUN_TIME,
     RUN_LEN,
-    SWIM_RATE,
     MARK_SCALE,
     MARK_ALPHA
   )
@@ -322,7 +335,13 @@ end
 -- Advance the field clock. Cheap: one scalar accumulate (the time uniform is sent
 -- in draw, the only place we touch the shader, so the module stays headless until
 -- something renders).
-function cell_field.update(dt) elapsed = elapsed + dt end
+function cell_field.update(dt)
+  elapsed = elapsed + dt
+  -- Advance the weave clock at the current motility rate (SWIM_RATE * last_swim).
+  -- Integrating here -- rather than recomputing time * rate in the shader -- means a
+  -- changed rate only bends the phase forward, never snaps it.
+  weave_phase = weave_phase + SWIM_RATE * last_swim * dt
+end
 
 -- Copy a list of { x, y, radius, strength } points into a reused vec4 uniform
 -- array, padding the unused tail with zeros, and return the live count.
@@ -372,8 +391,11 @@ function cell_field.draw(params)
   shader:send("time", elapsed)
   shader:send("field", { params.field_w, params.field_h })
   shader:send("base_half", params.base_half)
-  -- Trait knobs, nil-safe: omitted -> the neutral look (1/1/0).
-  shader:send("swim_scale", params.swim_scale or 1)
+  -- Trait knobs, nil-safe: omitted -> the neutral look (rate 1 / size 1 / halo 0).
+  -- Motility feeds the weave as a pre-integrated PHASE (continuous across rate
+  -- changes); record the rate here so the next update integrates at the new motility.
+  last_swim = params.swim_scale or 1
+  shader:send("weave_phase", weave_phase)
   shader:send("size_scale", params.size_scale or 1)
   shader:send("sense_halo", params.sense_halo or 0)
   shader:send("attractor_count", attractor_count)

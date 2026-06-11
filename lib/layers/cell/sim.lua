@@ -10,13 +10,15 @@
 -- kept. The colony floors at 1 (the founder never fully dies), so idle is gentle.
 --
 -- The live agent sim (world.lua) is a cosmetic skin over this closed form, with
--- exactly THREE real live deltas routed in by the orchestrator:
+-- exactly TWO real live deltas routed in by the orchestrator:
 --   * feed_burst -- a nutrient-bloom click credits the energy reserve;
---   * kill       -- a live predator removes cells (population setback the energy
---                   economy regrows; biomass untouched -- never a currency loss);
 --   * (endosymbiosis lives in organelles.lua + the orchestrator: a rare prey
 --      engulf keeps an organelle, folded into intake -- the sim only banks the
 --      acquired-organelle SET and total_divisions that gate it).
+-- PREDATION is NOT a live delta: it is single-sourced through the closed-form
+-- pred_cull_frac cull in sim.step (folded by the orchestrator's intake), so it runs
+-- live AND offline identically. The on-screen predators are cosmetic theatre only --
+-- they never touch the authoritative population.
 --
 -- tick and offline share ONE step(state, dt, intake) so live and offline stay
 -- identical and deterministic (no rng anywhere -- division-cost jitter is a pure
@@ -293,16 +295,6 @@ function sim.feed_burst(state, amount, tox_clear)
     state.toxicity = math.max(0, (state.toxicity or 0) - tox_clear)
   end
   return amount
-end
-
--- A live predator kill removes cells from the colony. Population floors at 1;
--- biomass is untouched (a kill is a population setback the energy economy regrows,
--- never a currency loss). Live-only: never applied offline. Returns cells lost.
-function sim.kill(state, n)
-  n = n or 0
-  local lost = math.min(math.max(math.floor(n), 0), state.population - 1)
-  state.population = state.population - lost
-  return lost
 end
 
 -- Lump-sum catch-up for time away: replay the shared step in fixed sub-steps so
