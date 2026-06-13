@@ -62,8 +62,8 @@ honest outcome of neglecting it.
 2. **Divide** — The energy reserve auto-spends on cell division; the visible swarm grows.
    More cells = more passive generation (the economy compounds — see below).
 3. **Level** — Spend biomass to raise trait levels and chase the two synergy pairs.
-4. **Evolve** — Save up biomass to buy the milestone unlocks (photosynthesis, then
-   phagocytosis) as the colony reveals them.
+4. **Evolve** — Collapse a generation into Spores and buy the permanent milestone unlocks
+   (photosynthesis → engulf → mitochondria) on the meta-tree (see [PRESTIGE.md](PRESTIGE.md)).
 5. **Drift together (co-op)** — Specialize, and your aura + niche construction quietly lift
    nearby lineages and the shared medium. Automatic; no management.
 6. **Offline** — The dish keeps metabolizing as background math (aggregate-number offline
@@ -94,18 +94,22 @@ Evasion) — see [BALANCE.md](BALANCE.md) for the `√(a·b)` shape and constant
 
 ### The milestone unlock spine
 
-Capabilities are **evolutions the player buys** — not auto-fired research. Colony size only
-gates the *reveal*: once the colony reaches a capability's reveal pop it appears in the
-panel as a buyable "evolve" row, and the player spends biomass to evolve it. Each opens a
-closed-form income channel *and* world contents *and* a visual tell. There are exactly
-**two** buyable unlocks:
+Capabilities are **permanent evolutions on the Spore meta-tree** ([PRESTIGE.md](PRESTIGE.md)),
+not in-run purchases — they're bought once with Spores and inherited by every later
+generation ("your descendants remember"). Each opens a closed-form income channel *and* world
+contents *and* a visual tell. The spine is:
 
 **Absorption** (start — ambient motes; the always-on state, not a purchase) →
-**Photosynthesis** (reveals ~colony 5, costs ~150 biomass; light → biomass, and reveals the
-trait) → **Phagocytosis** (reveals ~colony 24, costs ~2500 biomass; your cells hunt &
-engulf prey — legitimate at the unicellular scale). Phagocytosis also `enables_predators` —
-the paired hazard cells that eat cells which fail to flee (Evasion mitigates) ride on the
-same unlock; predators are not a separate purchase. (Costs in [BALANCE.md](BALANCE.md).)
+**Photosynthesis** (the Spore tree's root unlock; light → biomass, and reveals the trait) →
+**Engulf / Phagocytosis** (the tree's gate node, unlocked only once both branch capstones are
+maxed; your cells hunt & engulf prey — legitimate at the unicellular scale) →
+**Mitochondria** (Engulf maxed; the endosymbiosis chance toward the phase-2 seam). Engulf also
+`enables_predators` — the paired hazard cells that eat cells which fail to flee (Evasion
+mitigates) ride on the same unlock; predators are not a separate purchase. Spore costs and
+gate prereqs in [BALANCE.md](BALANCE.md); the full tree and loop in [PRESTIGE.md](PRESTIGE.md).
+
+Within a single generation the player still spends **biomass** on the five direct trait levels
+above — that's the fast curve that resets each loop, riding on top of the permanent tree.
 
 ## The economy (closed-form spec)
 
