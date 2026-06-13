@@ -112,9 +112,40 @@ local function command_give(args)
   end
 end
 
+-- The `trait` subcommand that lists every phase's traits instead of setting one. Named
+-- so the dispatch below carries no inline literal (and so `trait list` reads as one
+-- word, not a trait id that happens to be "list").
+local TRAIT_LIST_SUBCOMMAND = "list"
+
+-- console `trait list`: print every registered phase's leveled traits/stages with their
+-- CURRENT levels, in phase order -- a CROSS-LAYER readout (not just the active layer), so
+-- the whole progression is visible at a glance. Phases with no trait seam are skipped; a
+-- registered-but-unloaded phase prints "(not loaded)" (mirrors the overlay collectors).
+local function command_trait_list()
+  for _, name in ipairs(layers.names()) do
+    local mod = modules[name]
+    if mod and mod.debug_traits then
+      console.print(name .. ":")
+      local rows = mod.debug_traits()
+      if rows then
+        for _, row in ipairs(rows) do
+          console.print(string.format("  %-16s %d", row.id, row.level), CONSOLE_OK)
+        end
+      else
+        console.print("  (not loaded)", CONSOLE_ERR)
+      end
+    end
+  end
+end
+
 -- console `trait <id> <level>`: set a leveled trait/stage on the active layer to an
 -- absolute level, printing the post-clamp readback (or the seam's error string).
+-- `trait list` instead dumps every phase's current trait levels (see above).
 local function command_trait(args)
+  if args[1] == TRAIT_LIST_SUBCOMMAND then
+    command_trait_list()
+    return
+  end
   local mod = active_module()
   if not mod then
     print_no_seam("trait")
@@ -123,7 +154,7 @@ local function command_trait(args)
   local id = args[1]
   local level = tonumber(args[2])
   if not id or not level then
-    console.print("trait: usage: trait <id> <level>", CONSOLE_ERR)
+    console.print("trait: usage: trait <id> <level>  |  trait list", CONSOLE_ERR)
     return
   end
   local ok, err = mod.debug_set(id, level)
@@ -271,7 +302,13 @@ function registration.register_all()
     "give",
     { desc = "give <resource> <amount> to the active layer", fn = command_give }
   )
-  console.register("trait", { desc = "set <id> <level> on the active layer", fn = command_trait })
+  console.register(
+    "trait",
+    {
+      desc = "set <id> <level> on the active layer; `trait list` dumps all phases",
+      fn = command_trait,
+    }
+  )
   console.register("unlock", { desc = "unlock <id> on the active layer", fn = command_unlock })
   console.register(
     "screenshot",

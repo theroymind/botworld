@@ -1,9 +1,9 @@
--- Generic prestige kernel: a leveled, gated skill tree spent in a meta-currency
+-- Generic prestige core: a leveled, gated skill tree spent in a meta-currency
 -- that SURVIVES the within-phase reset, plus a high-water "peak" observer that
 -- decides the payout. Layer-agnostic and pure Lua 5.1 (no love.*) so it runs
 -- headless under plain lua for tests and the balance harness. One instance per
 -- layer that supplies node defs; the phase's data module owns the defs + the fold
--- that turns node levels into economy modifiers (this kernel knows nothing of any
+-- that turns node levels into economy modifiers (this core knows nothing of any
 -- economy). Distinct from economy.lua -- that models owned-count generators +
 -- one-shot upgrades; this models leveled nodes with per-node caps, tier-multiplied
 -- geometric cost, requires-by-MAXED gating, and a currency that persists across the
@@ -26,7 +26,7 @@
 -- feeds via observe(); collapse(penalty) banks floor(peak * penalty) into the
 -- currency (and lifetime) and zeroes the peak -- penalty 1 for a voluntary cash-out,
 -- 0.5 for a full collapse. lifetime never drops on spend (the always-on bonus reads it).
-local spore_tree = {}
+local progression_tree = {}
 
 local tree = {}
 tree.__index = tree
@@ -39,15 +39,11 @@ local function copy(t)
   return out
 end
 
-local function node_def(self, id)
-  return assert(self.node_by_id[id], "unknown spore node: " .. tostring(id))
-end
-
-function spore_tree.new(defs, opts)
+function progression_tree.new(defs, opts)
   local self = setmetatable({}, tree)
   opts = opts or {}
   self.defs = defs or {}
-  self.currency_name = opts.currency or "spores"
+  self.currency_name = opts.currency or "points"
   self.tier_mult = opts.tier_mult or 1
   self.node_by_id = {}
   self.levels = {}
@@ -106,7 +102,7 @@ function tree.can_buy(self, id)
   return self.currency >= self:node_cost(id)
 end
 
--- Deduct the cost (the kernel owns the wallet, like economy.buy_upgrade) and add
+-- Deduct the cost (the core owns the wallet, like economy.buy_upgrade) and add
 -- one level. Returns success; the caller persists.
 function tree.buy(self, id)
   if not self:can_buy(id) then
@@ -147,7 +143,7 @@ end
 function tree.bankable(self, penalty) return math.floor(self.peak * (penalty or 1)) end
 
 -- Bank floor(peak * penalty) into the currency (and lifetime) and zero the peak
--- for the next generation. penalty 1 = voluntary sporulate (full), 0.5 = full
+-- for the next generation. penalty 1 = voluntary reincarnate (full), 0.5 = full
 -- collapse / extinction (half). Returns the amount banked.
 function tree.collapse(self, penalty)
   local gained = self:bankable(penalty)
@@ -170,8 +166,8 @@ end
 -- Rebuild an instance from defs + serialize() data. Missing fields keep fresh
 -- defaults, unknown node ids are dropped, and a saved level is clamped to the
 -- def's CURRENT cap -- so saves survive a changed/reduced tree.
-function spore_tree.load(defs, opts, data)
-  local self = spore_tree.new(defs, opts)
+function progression_tree.load(defs, opts, data)
+  local self = progression_tree.new(defs, opts)
   data = data or {}
   if type(data.currency) == "number" and data.currency >= 0 then
     self.currency = data.currency
@@ -192,4 +188,4 @@ function spore_tree.load(defs, opts, data)
   return self
 end
 
-return spore_tree
+return progression_tree

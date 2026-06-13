@@ -51,64 +51,64 @@ Per-trait economic constants (`PHOTO_PER`, `CLEAN_PER_PHOTO`, `FORAGE_MOTILITY_P
 `EVASION_K`, `CLEAN_PER_EVASION`) live in `traits.lua` and parameterise the per-pressure
 counters mapped in [FAILURE.md](FAILURE.md).
 
-## Spore prestige constants
+## Endospore prestige constants
 
-**Status: in design** — the within-phase Spore loop ([PRESTIGE.md](PRESTIGE.md)) is not yet
-built, so these are *placeholder* values to tune, not locked. The generic high-water kernel
-lives in `lib/engine/spore_tree.lua`; the phase-1 tree defs, the spore-value formula, the
-intake fold, and the `SPORE_*` constants below live in `lib/layers/cell/spores.lua`, **mirrored
+**Status: in design** — the within-phase Endospore loop ([PRESTIGE.md](PRESTIGE.md)) is not yet
+built, so these are *placeholder* values to tune, not locked. The generic high-water core
+lives in `lib/engine/progression_tree.lua`; the phase-1 tree defs, the endospore-value formula, the
+intake fold, and the `ENDOSPORE_*` constants below live in `lib/layers/cell/endospores.lua`, **mirrored
 in the harness** under the standing mirror rule (`tools/sim_lab.lua`, which grows a `prestige`
 mode that replays N accelerating loops and reports total playtime against the ~15-min budget).
 
 **Earning** — a running peak-observer, not a cash-out formula. The colony has an instantaneous
-**spore value**; the loop tracks its running peak (high-water, ratchets up only) across the
+**endospore value**; the loop tracks its running peak (high-water, ratchets up only) across the
 generation, and banks on reset:
 
 ```
 health  = TOX_HALF / (TOX_HALF + toxicity)                       -- toxicity health factor
-vitality = 1 + SPORE_VITALITY_WEIGHT · max(per_capita_net_replication, 0)
-spore_value = SPORE_EARN_K · population^SPORE_GROWTH_EXP · health · vitality
-peak    = max(peak, spore_value)                                 -- per-tick high-water
+vitality = 1 + ENDOSPORE_VITALITY_WEIGHT · max(per_capita_net_replication, 0)
+endospore_value = ENDOSPORE_EARN_K · population^ENDOSPORE_GROWTH_EXP · health · vitality
+peak    = max(peak, endospore_value)                                 -- per-tick high-water
 
-banked  = floor( peak )         on manual sporulate (full peak)
+banked  = floor( peak )         on manual reincarnate (full peak)
 banked  = floor( peak / 2 )     on full collapse / extinction (half peak)
 ```
 
 | Constant | Placeholder | Why |
 |---|---|---|
-| `SPORE_EARN_K` | 1.0 | Spore-value scalar; dial so loop 1's peak yields enough to open one branch node. |
-| `SPORE_GROWTH_EXP` | 0.5 | The `√` diminishing curve on population in the spore value — makes the *tree*, not grinding one long run, the lever. |
-| `SPORE_VITALITY_WEIGHT` | 1.0 | How hard per-capita net replication ([FAILURE.md](FAILURE.md)) lifts the vitality term — rewards peaking healthy. |
-| `SPORE_LIFETIME_BONUS` | 0.005 | Small always-on global intake bonus per lifetime Spore earned, so a weak run still counts (the "spent but not wasted" mark). |
+| `ENDOSPORE_EARN_K` | 1.0 | Endospore-value scalar; dial so loop 1's peak yields enough to open one branch node. |
+| `ENDOSPORE_GROWTH_EXP` | 0.5 | The `√` diminishing curve on population in the endospore value — makes the *tree*, not grinding one long run, the lever. |
+| `ENDOSPORE_VITALITY_WEIGHT` | 1.0 | How hard per-capita net replication ([FAILURE.md](FAILURE.md)) lifts the vitality term — rewards peaking healthy. |
+| `ENDOSPORE_LIFETIME_BONUS` | 0.005 | Small always-on global intake bonus per lifetime Endospore earned, so a weak run still counts (the "spent but not wasted" mark). |
 
 **Tree node effects** — multiplicative, permanent across resets; level caps in parens:
 
 | Node (cap) | Constant | Placeholder (per level) |
 |---|---|---|
 | Photosynthesis (1) | — | unlocks the photosynthesis income channel |
-| Photosynthetic Efficiency (5) | `SPORE_PHOTO_EFF_PER` | +0.08 biomass/sec from photosynthesis |
-| Flagellar Drive (5) | `SPORE_FLAGELLA_PER` | +0.06 swim speed & forage |
-| Chemotactic Reach (5) | `SPORE_CHEMO_PER` | +0.07 sense range |
-| Mitotic Speed (5) | `SPORE_MITOSIS_PER` | −0.05 division cost |
-| Metabolic Mastery (3, capstone) | `SPORE_METABOLIC_PER` | +0.10 all intake |
-| Detox Vacuoles (5) | `SPORE_DETOX_PER` | +0.10 waste cleanup |
-| Membrane Integrity (5) | `SPORE_MEMBRANE_PER` | +0.08 evasion |
-| Foraging Dominance (5) | `SPORE_FORAGE_DOM_PER` | +0.08 competition counter |
-| Homeostasis (3, capstone) | `SPORE_HOMEO_PER` | +0.10 vitality / pressure dampening |
-| Engulf (5, gate) | `SPORE_ENGULF_PROGRESS_PER` | +0.15 health & reproduction progress per engulf |
+| Photosynthetic Efficiency (5) | `ENDOSPORE_PHOTO_EFF_PER` | +0.08 biomass/sec from photosynthesis |
+| Flagellar Drive (5) | `ENDOSPORE_FLAGELLA_PER` | +0.06 swim speed & forage |
+| Chemotactic Reach (5) | `ENDOSPORE_CHEMO_PER` | +0.07 sense range |
+| Mitotic Speed (5) | `ENDOSPORE_MITOSIS_PER` | −0.05 division cost |
+| Metabolic Mastery (3, capstone) | `ENDOSPORE_METABOLIC_PER` | +0.10 all intake |
+| Detox Vacuoles (5) | `ENDOSPORE_DETOX_PER` | +0.10 waste cleanup |
+| Membrane Integrity (5) | `ENDOSPORE_MEMBRANE_PER` | +0.08 evasion |
+| Foraging Dominance (5) | `ENDOSPORE_FORAGE_DOM_PER` | +0.08 competition counter |
+| Homeostasis (3, capstone) | `ENDOSPORE_HOMEO_PER` | +0.10 vitality / pressure dampening |
+| Engulf (5, gate) | `ENDOSPORE_ENGULF_PROGRESS_PER` | +0.15 health & reproduction progress per engulf |
 | Mitochondria (5, phase-2 gate) | `ENDO_MITO_PER` | per-level boost to the endosymbiosis chance toward near-certain |
 
-**Costs** — Spore spend per node level:
+**Costs** — Endospore spend per node level:
 
 | Constant | Placeholder | Why |
 |---|---|---|
-| `SPORE_COST_BASE` | 1 | Cost of the Photosynthesis root (first spend; trivial). |
-| `SPORE_COST_GROWTH` | 1.6 | Geometric per-level multiplier within a node (1.5–1.7 band). |
-| `SPORE_TIER_MULT` | 10 | Each tier (branch → capstone → Engulf → Mitochondria) ~10× the previous; the capstone wall enforces "master both branches first." |
+| `ENDOSPORE_COST_BASE` | 1 | Cost of the Photosynthesis root (first spend; trivial). |
+| `ENDOSPORE_COST_GROWTH` | 1.6 | Geometric per-level multiplier within a node (1.5–1.7 band). |
+| `ENDOSPORE_TIER_MULT` | 10 | Each tier (branch → capstone → Engulf → Mitochondria) ~10× the previous; the capstone wall enforces "master both branches first." |
 
 **Pacing target:** ~5–7 accelerating loops totalling ~15 minutes — first loop ~4–5 min,
-decaying toward ~90 s as carried Spores let later climbs blow through the early curve. Tune
-`SPORE_EARN_K` / `SPORE_COST_GROWTH` / `SPORE_TIER_MULT` against the harness `prestige` mode.
+decaying toward ~90 s as carried Endospores let later climbs blow through the early curve. Tune
+`ENDOSPORE_EARN_K` / `ENDOSPORE_COST_GROWTH` / `ENDOSPORE_TIER_MULT` against the harness `prestige` mode.
 
 ## Cost curves & gates
 
@@ -117,12 +117,12 @@ decaying toward ~90 s as carried Spores let later climbs blow through the early 
 - **Organelle gates:** the mitochondrion / chloroplast unlock at **350 / 1000**
   lifetime-division thresholds.
 - **Endosymbiosis gate:** there is *no* fixed threshold — the run resolves on an RNG proc
-  whose odds ramp with colony size, and (once the Spore loop ships) are driven toward
+  whose odds ramp with colony size, and (once the Endospore loop ships) are driven toward
   near-certain by the **Mitochondria** node via `ENDO_MITO_PER` (see [PRESTIGE.md](PRESTIGE.md)
-  and the Spore prestige constants below).
-- **Spore tree cost:** geometric per level within a node (`SPORE_COST_GROWTH` per level) and
-  each tier scaled by `SPORE_TIER_MULT` over the previous, so the path runs Photosynthesis
-  (trivial) → branch fill → capstones (steep) → Engulf → Mitochondria. See the Spore prestige
+  and the Endospore prestige constants below).
+- **Endospore tree cost:** geometric per level within a node (`ENDOSPORE_COST_GROWTH` per level) and
+  each tier scaled by `ENDOSPORE_TIER_MULT` over the previous, so the path runs Photosynthesis
+  (trivial) → branch fill → capstones (steep) → Engulf → Mitochondria. See the Endospore prestige
   constants below.
 - **Capstone / gate prereqs:** both capstones require their branch **fully maxed**; Engulf
   requires both capstones maxed; Mitochondria requires Engulf maxed (L5).

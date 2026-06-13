@@ -1,6 +1,6 @@
--- Sporulate confirm modal: the manual prestige cash-out gate. Where the
--- endosymbiosis finale (transition.lua) ENDS phase 1 into phase 2, sporulation is
--- the VOLUNTARY within-phase loop -- bank the colony's banked spore peak, collapse
+-- Reincarnate confirm modal: the manual prestige cash-out gate. Where the
+-- endosymbiosis finale (transition.lua) ENDS phase 1 into phase 2, reincarnation is
+-- the VOLUNTARY within-phase loop -- bank the colony's banked endospore peak, collapse
 -- this generation, and regrow faster off the spent tree. This module is the confirm
 -- card the player taps before that collapse fires: it states what will be banked and
 -- the beat ("collapse this generation -- regrow faster"), then routes the choice back
@@ -21,7 +21,7 @@ local rect = ui.primitives.rect
 local text = ui.primitives.text
 local button = ui.primitives.button
 
-local sporulate = {}
+local reincarnate = {}
 
 -- Card geometry for the centered modal (screen-space, computed each draw).
 local CARD_W = 360
@@ -66,10 +66,10 @@ local function button_node(id, label, accent, on_click)
   }
 end
 
--- The confirm card: a centered title, the banked-spores line, the trade-off beat, and
+-- The confirm card: a centered title, the banked-endospores line, the trade-off beat, and
 -- the confirm/cancel button row. `reveal` (0..1) scrims the dish and is the fade hook
 -- (1 = fully up). Returns the click map for hit-testing.
-function sporulate.draw_card(opts)
+function reincarnate.draw_card(opts)
   local w, h = love.graphics.getDimensions()
   local reveal = opts.reveal or 1
   draw_scrim(0.72 * reveal)
@@ -80,12 +80,12 @@ function sporulate.draw_card(opts)
   -- The card backing as a content container; the copy + buttons stack inside its pad.
   primitives.container(rect(rx, ry, CARD_W, CARD_H), "scene_panel")
 
-  text(rect(rx, ry + 24, CARD_W, 28), "Sporulate?", {
+  text(rect(rx, ry + 24, CARD_W, 28), "Reincarnate?", {
     font = "hud_lg",
     color = colors.secondary,
     align = "center",
   })
-  text(rect(rx, ry + 72, CARD_W, 20), "bank " .. format.number(opts.amount) .. " spores", {
+  text(rect(rx, ry + 72, CARD_W, 20), "bank " .. format.number(opts.amount) .. " endospores", {
     font = "hud",
     color = colors.ui.text,
     align = "center",
@@ -98,8 +98,8 @@ function sporulate.draw_card(opts)
 
   -- The two buttons as an hstack resolved into a rect inside the card's lower pad.
   local row = layout.hstack({
-    button_node("sporulate_cancel", "keep growing", colors.ui.text, opts.on_cancel),
-    button_node("sporulate_confirm", "sporulate", colors.secondary, opts.on_confirm),
+    button_node("reincarnate_cancel", "keep growing", colors.ui.text, opts.on_cancel),
+    button_node("reincarnate_confirm", "reincarnate", colors.secondary, opts.on_confirm),
   }, { gap = BTN_GAP })
   local row_x = rx + 24
   local row_y = ry + CARD_H - BTN_H - 24
@@ -110,12 +110,12 @@ end
 
 -- Convenience for the orchestrator: begin a UI-kit frame, draw the card, and commit
 -- interaction. opts = { amount, reveal, on_confirm, on_cancel }. Returns the click map.
-function sporulate.draw(opts)
+function reincarnate.draw(opts)
   interaction.begin_frame()
-  local click_map = sporulate.draw_card(opts)
+  local click_map = reincarnate.draw_card(opts)
   local mx, my = love.mouse.getPosition()
   interaction.commit_frame(mx, my, love.mouse.isDown(1))
   return click_map
 end
 
-return sporulate
+return reincarnate

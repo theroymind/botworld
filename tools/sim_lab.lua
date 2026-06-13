@@ -35,15 +35,15 @@ local metabolism = require("lib.layers.cell.metabolism")
 local traits = require("lib.layers.cell.traits")
 local organelles = require("lib.layers.cell.organelles")
 
--- Loaded for the `prestige` mode (the spore meta-progression rig). Unlike the economy
+-- Loaded for the `prestige` mode (the endospore meta-progression rig). Unlike the economy
 -- constants above -- which are MIRRORED here as a divergent copy -- the prestige path uses
--- the REAL spores module directly: spores.lua is the SINGLE SOURCE for every SPORE_*
+-- the REAL endospores module directly: endospores.lua is the SINGLE SOURCE for every ENDOSPORE_*
 -- constant, the defs spine, and the value/fold helpers, so this harness stays a TRUE
 -- regression reference for it (no copy to drift). The "mirror rule" here therefore means:
--- never re-type a SPORE_* magnitude in this file -- pull it from spores.constants / the
--- module if a numeric reference is ever needed. spore_tree is the kernel the loops drive.
-local spores = require("lib.layers.cell.spores")
-local spore_tree = require("lib.engine.spore_tree")
+-- never re-type a ENDOSPORE_* magnitude in this file -- pull it from endospores.constants / the
+-- module if a numeric reference is ever needed. progression_tree is the core the loops drive.
+local endospores = require("lib.layers.cell.endospores")
+local progression_tree = require("lib.engine.progression_tree")
 
 -- ---------------------------------------------------------------------------
 -- Game constants, mirrored from lib/layers/cell.lua. Kept here as the BASELINE
@@ -262,14 +262,14 @@ local function intake_for(cfg, population, t)
   local stats = traits.stats(tstate)
   local set = cfg.organelles or {}
 
-  -- SPORE prestige fold (the `prestige` mode only): when cfg carries a spore_tree
+  -- ENDOSPORE prestige fold (the `prestige` mode only): when cfg carries a progression_tree
   -- instance, mix its bought-node modifiers into this intake at the SAME points the
   -- game does (so the climb accelerates as the tree fills). Neutral (all 1 / 0) at
-  -- level 0, so it never moves a config that didn't set cfg.spores -- the existing
+  -- level 0, so it never moves a config that didn't set cfg.endospores -- the existing
   -- scenario/growth/sweep/survival folds stay byte-identical (sp is nil there).
   local sp
-  if cfg.spores then
-    sp = spores.fold(cfg.spores)
+  if cfg.endospores then
+    sp = endospores.fold(cfg.endospores)
   end
 
   local photo = 0
@@ -293,9 +293,21 @@ local function intake_for(cfg, population, t)
     upkeep = upkeep * (1 + BIOFILM_DIFFUSION * s * (population or 1))
   end
 
-  local mult = traits.income_mult(tstate) * organelles.intake_mult(set)
+  -- Capability income: gate on the config's plain `unlocked` dict (the single-generation
+  -- modes never need a tree) and source the flat-on-unlock magnitudes from endospores.lua
+  -- (PHOTO_INCOME / ENGULF_INCOME) so the lab never re-types them -- mirrors the game's
+  -- endospores.capabilities().unlock_income, which replaced traits.income_mult.
+  local C = endospores.constants
+  local unlock_income = 1
+  if cfg.unlocked.photosynthesis then
+    unlock_income = unlock_income + C.PHOTO_INCOME
+  end
+  if cfg.unlocked.predation then
+    unlock_income = unlock_income + C.ENGULF_INCOME
+  end
+  local mult = unlock_income * organelles.intake_mult(set)
   if sp then
-    mult = mult * sp.all_intake -- spore all-intake capstone + lifetime bonus
+    mult = mult * sp.all_intake -- endospore all-intake capstone + lifetime bonus
   end
   -- COMPETITION throttle (prototype): rivals thin your share of the food. Applied
   -- to the mult so it scales ALL gain channels (photo + foraging + compounding),
@@ -310,7 +322,7 @@ local function intake_for(cfg, population, t)
   -- starvation it causes to the right pressure (competition vs predation fear).
   -- pressure_damp (Homeostasis capstone): dampens BOTH the competition crowding and the
   -- predation fear/cull, mirroring the game. Clamped to 0.9 max so it can never zero a
-  -- pressure outright. Neutral (0 damp) without spores.
+  -- pressure outright. Neutral (0 damp) without endospores.
   local pressure_damp = 0
   if sp then
     pressure_damp = math.min(sp.pressure_damp, 0.9)
@@ -321,6 +333,7 @@ local function intake_for(cfg, population, t)
     local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
     if sp then
       counter = counter + sp.comp_counter -- Foraging Dominance branch restores share
+      counter = counter + sp.sense_bonus -- Chemotactic Reach (chemo) node: sensing holds your share
     end
     if counter < 0 then
       counter = 0
@@ -344,7 +357,7 @@ local function intake_for(cfg, population, t)
   local pred_cull_frac
   if cfg.predation and t then
     if sp then
-      -- Spore membrane evasion (evasion_add) folds in BEFORE mitigation, and the
+      -- Endospore membrane evasion (evasion_add) folds in BEFORE mitigation, and the
       -- Homeostasis damp softens the residual cull -- mirroring the game's predation fold.
       local evasion = (traits.stats(tstate).evasion or 0) + sp.evasion_add
       pred_cull_frac = pred_pressure(t or 0) * evasion_mitigation(evasion) * (1 - pressure_damp)
@@ -381,9 +394,9 @@ local function intake_for(cfg, population, t)
     tox_tolerance = TOX_TOLERANCE
     tox_kill_k = TOX_KILL_K
   end
-  -- Spore terms that map onto the per-cell channels: Flagella -> forage, Detox ->
+  -- Endospore terms that map onto the per-cell channels: Flagella -> forage, Detox ->
   -- cleanup (additive units/sec, only meaningful when toxicity is modelled), Mitosis ->
-  -- cheaper division (div_mult < 1). All neutral without spores.
+  -- cheaper division (div_mult < 1). All neutral without endospores.
   local forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult
   local div_mult = stats.div_mult
   if sp then
@@ -1398,15 +1411,15 @@ local function survival_sweep(knob, lo, hi, step)
 end
 
 -- ---------------------------------------------------------------------------
--- PRESTIGE -- the spore meta-progression rig. Replays N ACCELERATING grow ->
--- cash-out -> spend loops on ONE persistent spore_tree: each loop grows a maxed-ish
--- colony (with cfg.spores = the tree, so every bought node feeds the NEXT climb),
+-- PRESTIGE -- the endospore meta-progression rig. Replays N ACCELERATING grow ->
+-- cash-out -> spend loops on ONE persistent progression_tree: each loop grows a maxed-ish
+-- colony (with cfg.endospores = the tree, so every bought node feeds the NEXT climb),
 -- cashes out at a target population (or a sim-time cap), banks the peak via
 -- tree:collapse(1), then GREEDILY auto-buys the cheapest affordable node until broke.
 -- The readout is the per-loop sim-MINUTES to cash out and the CUMULATIVE total vs the
--- ~15-min budget (docs/phase1/BALANCE.md), so this is the tuning rig for the SPORE_*
+-- ~15-min budget (docs/phase1/BALANCE.md), so this is the tuning rig for the ENDOSPORE_*
 -- earning / cost constants (EARN_K / COST_GROWTH / TIER_MULT) -- all of which live in
--- spores.lua; this mode never re-types them, it just measures the loop they produce.
+-- endospores.lua; this mode never re-types them, it just measures the loop they produce.
 -- ---------------------------------------------------------------------------
 
 -- Defaults for the prestige rig. PRESTIGE_TARGET is the cash-out population (the loop
@@ -1417,8 +1430,8 @@ local PRESTIGE_TARGET = 1000000 -- cash-out population per loop (the phase-1 mil
 local PRESTIGE_MAX_T = 60 * 60 -- 1h per-loop sim cap (safety: never spin forever)
 local PRESTIGE_STEP_DT = 1 -- seconds per economy step (matches the survival/growth drivers)
 
--- Grow ONE prestige loop forward on the real economy with cfg.spores live, feeding the
--- tree spores.value() every step so its peak ratchets with the colony's health x growth.
+-- Grow ONE prestige loop forward on the real economy with cfg.endospores live, feeding the
+-- tree endospores.value() every step so its peak ratchets with the colony's health x growth.
 -- Reuses the run()/survival_run() stepping shape (sim.step on intake_for) and
 -- survival_run's peak tracker. Stops at PRESTIGE_TARGET or the sim-time cap; returns the
 -- elapsed sim seconds and the peak population reached.
@@ -1430,9 +1443,9 @@ local function prestige_grow(cfg, tox_half)
   while t < PRESTIGE_MAX_T do
     sim.step(state, dt, intake_for(cfg, state.population, t))
     t = t + dt
-    -- Feed the kernel the instantaneous spore-value (health x growth), so the peak it
+    -- Feed the core the instantaneous endospore-value (health x growth), so the peak it
     -- banks reflects the colony at its healthiest -- the same value the live game observes.
-    cfg.spores:observe(spores.value(state, { tox_half = tox_half }))
+    cfg.endospores:observe(endospores.value(state, { tox_half = tox_half }))
     if state.population > peak then
       peak = state.population
     end
@@ -1444,14 +1457,14 @@ local function prestige_grow(cfg, tox_half)
 end
 
 -- Greedily spend the banked currency: repeatedly buy the CHEAPEST currently-affordable
--- node until none is buyable. Scans spores.defs() each pass (the spine is small), so a
+-- node until none is buyable. Scans endospores.defs() each pass (the spine is small), so a
 -- newly-maxed branch that unlocks a capstone is picked up on the next scan. Returns the
 -- number of levels bought this cash-out.
 local function prestige_autobuy(tree)
   local bought = 0
   while true do
     local best_id, best_cost = nil, math.huge
-    for _, def in ipairs(spores.defs()) do
+    for _, def in ipairs(endospores.defs()) do
       if tree:can_buy(def.id) then
         local cost = tree:node_cost(def.id)
         if cost < best_cost then
@@ -1472,7 +1485,7 @@ end
 -- level > 0, in spine order), e.g. "photosynthesis:1 flagella:3 chemo:2".
 local function prestige_owned(tree)
   local parts = {}
-  for _, def in ipairs(spores.defs()) do
+  for _, def in ipairs(endospores.defs()) do
     local lv = tree:level_of(def.id)
     if lv > 0 then
       parts[#parts + 1] = string.format("%s:%d", def.id, lv)
@@ -1486,19 +1499,19 @@ end
 
 local function prestige_mode(loops_arg)
   local loops = tonumber(loops_arg) or PRESTIGE_LOOPS_DEFAULT
-  -- ONE persistent tree across all loops -- the whole point: spores banked + spent in
-  -- loop N accelerate loop N+1. spores.lua owns the defs/opts (and the SPORE_* costs).
-  local tree = spore_tree.new(spores.defs(), spores.tree_opts())
+  -- ONE persistent tree across all loops -- the whole point: endospores banked + spent in
+  -- loop N accelerate loop N+1. endospores.lua owns the defs/opts (and the ENDOSPORE_* costs).
+  local tree = progression_tree.new(endospores.defs(), endospores.tree_opts())
   -- The growth config every loop reuses: the maxed colony with the compounding climb on
   -- (the best-growth cfg the growth/survival modes use), plus the live tree so the climb
   -- accelerates as the tree fills. tox_half is the harness's mirrored TOX_HALF -- the
-  -- toxicity-half curve spores.value() needs (shared with the live intake throttle).
-  local cfg = maxed_cfg({ growth_rate = GROWTH_RATE, spores = tree })
+  -- toxicity-half curve endospores.value() needs (shared with the live intake throttle).
+  local cfg = maxed_cfg({ growth_rate = GROWTH_RATE, endospores = tree })
 
   print("")
   print(
     string.format(
-      "prestige -- %d accelerating spore loops (cash out at %s, persistent tree)",
+      "prestige -- %d accelerating endospore loops (cash out at %s, persistent tree)",
       loops,
       fmt_pop(PRESTIGE_TARGET)
     )
@@ -1546,10 +1559,12 @@ local function prestige_mode(loops_arg)
       cumulative / 60,
       BUDGET_MIN,
       (cumulative / 60 <= BUDGET_MIN) and "within budget"
-        or "OVER budget (tune EARN_K / COST_GROWTH / TIER_MULT in spores.lua)"
+        or "OVER budget (tune EARN_K / COST_GROWTH / TIER_MULT in endospores.lua)"
     )
   )
-  print("tune the SPORE_* earning/cost constants in lib/layers/cell/spores.lua, then re-run.")
+  print(
+    "tune the ENDOSPORE_* earning/cost constants in lib/layers/cell/endospores.lua, then re-run."
+  )
   print("")
 end
 

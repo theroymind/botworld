@@ -1,13 +1,18 @@
 -- Traits: the cell layer's upgrade system, reworked from the old genome strand
--- into a flat list of direct trait LEVELS plus milestone UNLOCKS. No slots, no
--- splicing, no hidden adjacency -- every row is one concrete, gamified buff
--- ("swim speed +12%") that the player levels for a rising per-trait cost, and
--- every level visibly changes every cell. Effects are DERIVED, never stored:
--- fold the levels into a `stats` table the sim and the world both read. Unlocks
--- are colony-milestone capabilities (photosynthesis, then predation) that open
--- closed-form income channels and reveal world contents. Pure Lua 5.1 (no
--- love.*) so it runs headless under tests. Adding a trait is one TRAITS entry
--- (plus one draw fragment in view.lua); adding an unlock is one UNLOCKS entry.
+-- into a flat list of direct trait LEVELS. No slots, no splicing, no hidden
+-- adjacency -- every row is one concrete, gamified buff ("swim speed +12%") that
+-- the player levels for a rising per-trait cost, and every level visibly changes
+-- every cell. Effects are DERIVED, never stored: fold the levels into a `stats`
+-- table the sim and the world both read. Pure Lua 5.1 (no love.*) so it runs
+-- headless under tests. Adding a trait is one TRAITS entry (plus one draw fragment
+-- in view.lua).
+--
+-- The milestone CAPABILITIES (photosynthesis, phagocytosis, the endosymbiosis proc)
+-- no longer live here -- they were retired from the in-run biomass-unlock system and
+-- now live on the permanent endospore tree (lib/layers/cell/endospores.lua). A trait
+-- row may still be GATED behind a capability via `locked_until` (the Photosynthesis
+-- row appears only once the Photosynthesis root is bought); is_available reads that
+-- gate from the capability set the orchestrator folds out of endospores.capabilities.
 --
 -- Two trait PAIRS also synergize (see SYN_* below): the cross-terms are explicit
 -- and legible (not the old hidden strand adjacency), and reward a balanced build
@@ -24,7 +29,7 @@ local TRAITS = {
     label = "Photosynthesis",
     hint = "+18% biomass/sec, oxygenates",
     base_cost = 10,
-    locked_until = "photosynthesis", -- revealed by the early milestone
+    locked_until = "photosynthesis", -- capability key: revealed once the Photosynthesis root is bought
   },
   { id = "motility", label = "Motility", hint = "swim speed +25%, +8% forage", base_cost = 8 },
   { id = "sensing", label = "Chemotaxis", hint = "sense range +14", base_cost = 8 },
@@ -80,50 +85,6 @@ local CLEAN_PER_PHOTO = 0.12 -- photosynthesis oxygenates the medium
 local SYN_REACH = 0.06 -- Motility x Chemotaxis: forage cap x (1 + this * sqrt(motility*sensing))
 local SYN_THRIFT = 0.02 -- Digestion x Evasion:   upkeep   / (1 + this * sqrt(digestion*evasion))
 
--- Milestone unlocks, in reach order. These are EVOLUTIONS THE PLAYER BUYS, not
--- auto-fired research: `pop` is now only the colony size at which the option
--- REVEALS in the panel (so the pacing/teaser still tracks colony growth), and
--- `cost` is the biomass the player must spend to evolve it. Each opens a
--- closed-form income channel (`income`, added to the gain multiplier) and adds
--- world contents + a visual tell. Costs are deliberately STEEP for the phase the
--- capability appears in -- a real save-up, the "expensive research" beat -- and
--- are first-pass values to tune in tools/sim_lab.lua against the biomass curve.
--- Absorption (ambient motes) is the always-on start state, so it is NOT a buyable
--- unlock; these two are.
-local UNLOCKS = {
-  {
-    id = "photosynthesis",
-    label = "Photosynthesis",
-    pop = 5, -- reveals (becomes buyable) once the colony reaches this size
-    cost = 150, -- biomass to evolve it -- a steep early save-up
-    income = 0.3,
-    tell = "pigment blooms — light becomes biomass",
-  },
-  {
-    id = "predation",
-    label = "Phagocytosis",
-    pop = 24, -- reveals once the colony reaches this size
-    cost = 2500, -- biomass to evolve it -- a steep mid-phase gate
-    income = 0.8,
-    spawns_prey = true,
-    enables_predators = true,
-    tell = "your cells hunt and engulf prey",
-  },
-}
-
-local UNLOCK_BY_ID = {}
-for _, def in ipairs(UNLOCKS) do
-  UNLOCK_BY_ID[def.id] = def
-end
-
--- Self-revealing teaser thresholds (UI ONLY). A not-yet-revealed capability stays
--- HIDDEN while the colony is tiny, surfaces as an unnamed silhouette as it grows,
--- then is NAMED just before the colony reaches its `pop` gate (at which point
--- is_revealed flips and it becomes a real buy row). Fractions of the gate, echoing
--- phase 2's catalog.reveal break points so the two phases tease at the same cadence.
-local SILHOUETTE_AT = 0.5 -- pop fraction of the gate at which an unnamed tease appears
-local NAMED_AT = 0.75 -- pop fraction at which the capability is named
-
 function traits.new()
   return {
     levels = {
@@ -133,7 +94,6 @@ function traits.new()
       digestion = 0,
       evasion = 0,
     },
-    unlocked = {}, -- id -> true once a milestone has fired
   }
 end
 
@@ -209,121 +169,33 @@ function traits.def(id) return BY_ID[id] end
 -- into the state's internal `levels` table.
 function traits.level_of(state, id) return state.levels[id] or 0 end
 
--- A trait row is available once it has no lock, or once its gating unlock has
--- fired. Locked rows show as "reach colony N" in the panel.
-function traits.is_available(state, id)
+-- A trait row is available once it has no capability lock, or once the capability
+-- gating it has been bought on the endospore tree. `caps` is the orchestrator's
+-- capability set (endospores.capabilities): caps[def.locked_until] is true once the
+-- gating node is bought. A nil caps (or a missing capability) keeps a gated row hidden,
+-- so the Photosynthesis row stays out of the panel until the Photosynthesis root is bought.
+function traits.is_available(_state, id, caps)
   local def = BY_ID[id]
   if not def or not def.locked_until then
     return true
   end
-  return state.unlocked[def.locked_until] == true
+  return caps ~= nil and caps[def.locked_until] == true
 end
 
--- Milestone unlock defs, in reach order; treat as read-only.
-function traits.unlocks() return UNLOCKS end
-
-function traits.is_unlocked(state, id) return state.unlocked[id] == true end
-
--- Mark a milestone fired. Returns the def if this flips it on for the first
--- time (so the caller can toast + react), nil if already unlocked or unknown.
-function traits.unlock(state, id)
-  local def = UNLOCK_BY_ID[id]
-  if not def or state.unlocked[id] then
-    return nil
-  end
-  state.unlocked[id] = true
-  return def
-end
-
--- The next milestone the colony has not yet evolved, for the panel's "next at
--- colony N" notice. nil once every unlock has been bought.
-function traits.next_unlock(state)
-  for _, def in ipairs(UNLOCKS) do
-    if not state.unlocked[def.id] then
-      return def
-    end
-  end
-  return nil
-end
-
--- Biomass cost to evolve a milestone capability. math.huge for an unknown id, so
--- an affordability check on a bad id always fails closed.
-function traits.unlock_cost(id)
-  local def = UNLOCK_BY_ID[id]
-  return def and def.cost or math.huge
-end
-
--- Has the colony grown enough for this capability to REVEAL (become buyable)?
--- Below its `pop` the panel shows a dim "colony N" teaser instead of a buy button;
--- at/above it the player may spend the biomass cost to evolve it. This replaces
--- the old auto-fire: reaching `pop` only OFFERS the purchase, never grants it.
-function traits.is_revealed(_state, id, pop)
-  local def = UNLOCK_BY_ID[id]
-  if not def then
-    return false
-  end
-  return (pop or 0) >= def.pop
-end
-
--- Classify how close the colony is to a not-yet-revealed capability's reveal pop,
--- for the self-revealing teaser: "hidden" (< SILHOUETTE_AT of the gate), "silhouette"
--- (>= SILHOUETTE_AT, unnamed), "named" (>= NAMED_AT, the capability is named). There
--- is no "ready" stage -- at/above the gate is_revealed flips and the capability shows
--- as a real buy row instead of a teaser. Mirrors phase 2's catalog.reveal stair-step.
-function traits.reveal_stage(pop, def)
-  local frac = (pop or 0) / def.pop
-  if frac >= NAMED_AT then
-    return "named"
-  elseif frac >= SILHOUETTE_AT then
-    return "silhouette"
-  end
-  return "hidden"
-end
-
--- The next capability the teaser should hint at: the first one (in reach order) that
--- is neither already evolved nor yet revealed. A revealed-but-unbought capability is
--- skipped -- it shows as its own buy row, so the footer teases the beat BEYOND it. nil
--- once nothing remains to tease (everything is revealed or evolved).
-function traits.next_teaser(state, pop)
-  for _, def in ipairs(UNLOCKS) do
-    if not state.unlocked[def.id] and not traits.is_revealed(state, def.id, pop) then
-      return def
-    end
-  end
-  return nil
-end
-
--- Closed-form income multiplier from fired unlocks: each opened channel is an
--- extra food source, folded into the gain side of the economy.
-function traits.income_mult(state)
-  local mult = 1
-  for _, def in ipairs(UNLOCKS) do
-    if state.unlocked[def.id] then
-      mult = mult + def.income
-    end
-  end
-  return mult
-end
-
--- The set the world reads to decide what contents to spawn (prey, predators).
-function traits.unlocked_set(state) return state.unlocked end
-
--- Plain-data snapshot for saving (no metatable; mirrors economy.serialize).
+-- Plain-data snapshot for saving (no metatable; mirrors economy.serialize). Capabilities
+-- live on the endospore tree now, so only the trait levels are persisted here.
 function traits.serialize(state)
   local levels = {}
   for _, id in ipairs(ORDER) do
     levels[id] = state.levels[id] or 0
   end
-  local unlocked = {}
-  for id in pairs(state.unlocked) do
-    unlocked[id] = true
-  end
-  return { levels = levels, unlocked = unlocked }
+  return { levels = levels }
 end
 
--- Rebuild from serialize() data, tolerant of added/removed ids: unknown trait
--- and unlock ids are dropped, missing ones keep their fresh defaults, so saves
--- survive a changed trait/unlock set.
+-- Rebuild from serialize() data, tolerant of added/removed ids: unknown trait ids are
+-- dropped, missing ones keep their fresh defaults, so saves survive a changed trait set.
+-- An old save's `traits.unlocked` slice is silently ignored -- the capabilities migrated
+-- to the endospore tree, so a resumed lineage simply starts climbing it.
 function traits.load(data)
   local state = traits.new()
   data = data or {}
@@ -337,12 +209,6 @@ function traits.load(data)
     local lv = levels[id]
     if type(lv) == "number" and lv > 0 then
       state.levels[id] = math.floor(lv)
-    end
-  end
-  local unlocked = data.unlocked or {}
-  for id in pairs(unlocked) do
-    if UNLOCK_BY_ID[id] then
-      state.unlocked[id] = true
     end
   end
   return state

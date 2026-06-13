@@ -16,11 +16,12 @@ end
 
 local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
--- Fresh state: every trait at level 0, nothing unlocked.
+-- Fresh state: every trait at level 0. Capabilities live on the endospore tree now, so
+-- traits carries levels only (no `unlocked` slice).
 local t = traits.new()
 check(t.levels.photosynthesis == 0, "fresh photosynthesis level 0")
 check(t.levels.evasion == 0, "fresh evasion level 0")
-check(next(t.unlocked) == nil, "fresh unlocked set empty")
+check(t.unlocked == nil, "fresh state carries no unlocked slice (capabilities moved to the tree)")
 
 -- Neutral stats at all-zero: multipliers 1, bases at founder values, evasion 0.
 local s0 = traits.stats(t)
@@ -115,60 +116,34 @@ check(traits.cost(t, "nonsense") == math.huge, "unknown trait costs infinity")
 -- Hints are concrete strings.
 check(traits.hint("evasion") == "evade +5%, clears waste", "evasion hint reads concretely")
 
--- Photosynthesis row is locked until its milestone fires; others are free.
+-- is_available(state, id, caps): a trait with no capability lock is always available; the
+-- Photosynthesis row is gated behind the Photosynthesis capability, which the orchestrator
+-- folds out of the endospore tree (endospores.capabilities) into `caps`. Hidden without
+-- caps.photosynthesis, shown with it. A nil caps keeps the gated row hidden.
 t = traits.new()
-check(not traits.is_available(t, "photosynthesis"), "photosynthesis locked at start")
-check(traits.is_available(t, "motility"), "motility available at start")
-
--- Unlocks: fire by id, flip is_unlocked, raise income, advance next_unlock.
-t = traits.new()
-check(not traits.is_unlocked(t, "photosynthesis"), "photosynthesis unlock starts off")
-check(approx(traits.income_mult(t), 1), "no income channels before any unlock")
-local first = traits.next_unlock(t)
-check(first.id == "photosynthesis", "photosynthesis is the first milestone")
-check(first.pop > 0, "milestone carries a colony reveal threshold")
-
--- Milestones are now BOUGHT, not auto-fired: each carries a biomass cost, and the
--- colony only REVEALS the purchase once it reaches the milestone's `pop`.
-check(first.cost and first.cost > 0, "milestone carries a biomass cost")
-check(traits.unlock_cost("photosynthesis") == first.cost, "unlock_cost returns the def cost")
-check(traits.unlock_cost("nonsuch") == math.huge, "unlock_cost of an unknown id is huge")
-check(not traits.is_revealed(t, "photosynthesis", first.pop - 1), "hidden below the reveal pop")
-check(traits.is_revealed(t, "photosynthesis", first.pop), "revealed at/above the reveal pop")
+check(traits.is_available(t, "motility", nil), "unlocked-free trait available with nil caps")
+check(traits.is_available(t, "motility", {}), "unlocked-free trait available with empty caps")
+check(not traits.is_available(t, "photosynthesis", nil), "photo row hidden with nil caps")
 check(
-  traits.unlock_cost("predation") > traits.unlock_cost("photosynthesis"),
-  "the later milestone costs more"
+  not traits.is_available(t, "photosynthesis", { photosynthesis = false }),
+  "photo row hidden while the Photosynthesis capability is unbought"
+)
+check(
+  traits.is_available(t, "photosynthesis", { photosynthesis = true }),
+  "photo row shown once the Photosynthesis capability is bought"
 )
 
-local fired = traits.unlock(t, "photosynthesis")
-check(fired and fired.id == "photosynthesis", "unlock returns the def on first fire")
-check(traits.is_unlocked(t, "photosynthesis"), "unlock flips is_unlocked")
-check(traits.is_available(t, "photosynthesis"), "photosynthesis row available after unlock")
-check(traits.income_mult(t) > 1, "unlocking opens an income channel")
-check(traits.unlock(t, "photosynthesis") == nil, "re-firing a unlock is a no-op")
-check(traits.next_unlock(t).id == "predation", "next milestone advances to predation")
-
--- Predation is the income + world-contents milestone.
-traits.unlock(t, "predation")
-check(traits.next_unlock(t) == nil, "no milestones left once both fire")
-local pred = nil
-for _, def in ipairs(traits.unlocks()) do
-  if def.id == "predation" then
-    pred = def
-  end
-end
-check(pred.spawns_prey and pred.enables_predators, "predation spawns prey and enables predators")
-
--- Serialize -> load round-trip preserves levels and unlocks.
+-- Serialize -> load round-trip preserves trait levels (capabilities are no longer part of
+-- the trait state -- they live on the endospore tree's own save slice).
 t = traits.new()
 traits.level(t, "photosynthesis")
 traits.level(t, "photosynthesis")
 traits.level(t, "evasion")
-traits.unlock(t, "photosynthesis")
-local loaded = traits.load(traits.serialize(t))
+local serialized = traits.serialize(t)
+check(serialized.unlocked == nil, "serialize carries no unlocked slice")
+local loaded = traits.load(serialized)
 check(loaded.levels.photosynthesis == 2, "round-trip trait level")
 check(loaded.levels.evasion == 1, "round-trip second trait level")
-check(traits.is_unlocked(loaded, "photosynthesis"), "round-trip unlock")
 check(approx(traits.stats(loaded).photo_mult, traits.stats(t).photo_mult), "round-trip stats")
 
 -- Legacy migration: an old save's "membrane" level loads as "evasion".
@@ -176,72 +151,17 @@ local migrated = traits.load({ levels = { membrane = 3 } })
 check(migrated.levels.evasion == 3, "legacy membrane level migrates to evasion")
 check(migrated.levels.membrane == nil, "the old membrane key is not retained")
 
--- Load tolerates missing, partial, and stale data.
+-- Load tolerates missing, partial, and stale data -- including an OLD save's `unlocked`
+-- slice, which is silently dropped now that capabilities live on the endospore tree.
 local fresh = traits.load(nil)
 check(fresh.levels.photosynthesis == 0, "load nil: fresh levels")
-check(next(fresh.unlocked) == nil, "load nil: nothing unlocked")
+check(fresh.unlocked == nil, "load nil: no unlocked slice")
 local stale = traits.load({
   levels = { photosynthesis = 3, ghost_trait = 9 },
-  unlocked = { predation = true, ghost_unlock = true },
+  unlocked = { predation = true, ghost_unlock = true }, -- legacy slice: ignored, no crash
 })
 check(stale.levels.photosynthesis == 3, "stale load: known level kept")
 check(stale.levels.motility == 0, "stale load: missing level defaults to 0")
-check(traits.is_unlocked(stale, "predation"), "stale load: known unlock kept")
-check(stale.unlocked.ghost_unlock == nil, "stale load: unknown unlock dropped")
-
--- Self-revealing evolutions teaser. reveal_stage classifies how close the colony is
--- to a capability's reveal pop; the exact thresholds are an implementation detail, so
--- assert BEHAVIOUR derived from each def's own `pop` gate, not the magic fractions.
-local photo = traits.unlocks()[1]
-local predation = traits.unlocks()[2]
-check(traits.reveal_stage(0, photo) == "hidden", "a tiny colony keeps the capability hidden")
-check(
-  traits.reveal_stage(photo.pop, photo) ~= "hidden",
-  "at the gate the capability is no longer hidden"
-)
-check(
-  traits.reveal_stage(photo.pop - 1, photo) == "named",
-  "just below the gate the capability is named"
-)
-
--- The stage only ever advances as the colony grows (hidden -> silhouette -> named).
-local rank = { hidden = 0, silhouette = 1, named = 2 }
-local prev = -1
-for p = 0, predation.pop do
-  local r = rank[traits.reveal_stage(p, predation)]
-  check(r >= prev, "reveal stage never regresses as the colony grows")
-  prev = r
-end
-
--- The teaser passes through an unnamed silhouette before it names the capability.
-local saw_silhouette = false
-for p = 0, predation.pop do
-  if traits.reveal_stage(p, predation) == "silhouette" then
-    saw_silhouette = true
-  end
-end
-check(saw_silhouette, "the teaser passes through an unnamed silhouette stage")
-
--- next_teaser points at the first capability that is neither revealed nor evolved.
-local teaser_state = traits.new()
-check(
-  traits.next_teaser(teaser_state, 0).id == "photosynthesis",
-  "teaser points at the first capability"
-)
-check(
-  traits.next_teaser(teaser_state, photo.pop).id == "predation",
-  "a revealed capability is skipped (it has its own buy row) -- tease the next one"
-)
-traits.unlock(teaser_state, "photosynthesis")
-check(
-  traits.next_teaser(teaser_state, 0).id == "predation",
-  "an evolved capability is skipped by the teaser"
-)
-traits.unlock(teaser_state, "predation")
-check(traits.next_teaser(teaser_state, 0) == nil, "nothing left to tease once all are evolved")
-check(
-  traits.next_teaser(traits.new(), predation.pop) == nil,
-  "nothing to tease when every capability is already revealed"
-)
+check(stale.unlocked == nil, "stale load: legacy unlocked slice dropped (capabilities on the tree)")
 
 print("all tests passed (" .. checks .. " checks)")

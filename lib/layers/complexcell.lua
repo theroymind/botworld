@@ -1233,6 +1233,22 @@ function complexcell.debug_get(field)
   return nil
 end
 
+-- Ordered snapshot of this layer's assembly-line STAGES with their CURRENT levels,
+-- for the console `trait list` (phase 2 calls them stages, but the console vocabulary
+-- unifies stages and traits under one command). nil when unloaded. Reuses
+-- catalog.STAGES for the canonical pipeline order; an unleveled stage reads 0.
+function complexcell.debug_traits()
+  if not complexcell.state then
+    return nil
+  end
+  local stages = complexcell.state.sim.stages
+  local out = {}
+  for _, id in ipairs(catalog.STAGES) do
+    out[#out + 1] = { id = id, level = stages[id] or 0 }
+  end
+  return out
+end
+
 -- Set a single numeric/level field, APPLYING the documented clamp, then persist().
 -- `built` only ever RISES (monotonic). Returns true on success, or false + a reason
 -- on an unloaded layer / unrecognised field.

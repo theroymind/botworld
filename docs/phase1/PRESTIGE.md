@@ -1,47 +1,47 @@
 # Phase 1 — cell layer: prestige
 
-Phase 1 prestige is a **within-phase Spore loop** (grow → collapse → spend → regrow,
+Phase 1 prestige is a **within-phase Endospore loop** (grow → collapse → spend → regrow,
 faster) that climbs a permanent skill tree to its peak — **Mitochondria** — which makes the
 **endosymbiosis proc** reliable. The proc is the climax: a kept engulf that resolves the run
 and zooms *into* the triggering cell, the seam into phase 2. Inherits the master prestige &
 zoom model ([`../../GAME_PLAN.md`](../../GAME_PLAN.md)).
 
-There are **two** prestige layers and they nest: the *within-phase* Spore loop runs many
+There are **two** prestige layers and they nest: the *within-phase* Endospore loop runs many
 generations inside phase 1; the *cross-phase* seam fires once, when Mitochondria carries the
-endosymbiosis proc, and collapses all of phase 1 into a single number for phase 2. The Spore
+endosymbiosis proc, and collapses all of phase 1 into a single number for phase 2. The Endospore
 loop is **strictly within-phase**: it owns the per-generation prestige and nothing crossing
 the seam — the cross-phase carry below is its own, separate system.
 
-## Within-phase prestige — the Spore loop
+## Within-phase prestige — the Endospore loop
 
 **Status: in design.** The named spend model for the cell layer (each later phase gets its
 own; see [`../../GAME_PLAN.md`](../../GAME_PLAN.md)). A generation grows under the age-ramped
 pressures (competition + predation, [FAILURE.md](FAILURE.md)); the player banks it into
-**Spores** by sporulating, then spends them on a permanent tree. Each regrowth re-climbs
+**Endospores** by reincarnating, then spends them on a permanent tree. Each regrowth re-climbs
 faster and peaks higher — the compounding ramp that gives the phase its playtime.
 
-### The currency: Spores
+### The currency: Endospores
 
 Bacterial endospores — the dormant survival capsule a colony forms under hostile conditions,
 then germinates into a fitter generation; the reset *is* the metaphor.
 
-Spores reward the generation's **peak**, not a cash-out snapshot. The colony has an
-instantaneous **spore value** = `health × growth`, folded from population, the toxicity
+Endospores reward the generation's **peak**, not a cash-out snapshot. The colony has an
+instantaneous **endospore value** = `health × growth`, folded from population, the toxicity
 health factor, and a per-capita vitality term (formula and constants in
 [BALANCE.md](BALANCE.md)). The loop tracks the running **high-water peak** of that value
 across the generation — the peak only ratchets up, never down, so a colony banks its best
 moment even if it sickens afterward.
 
-Banking comes in two grades: **sporulating manually banks the full peak**; a **full collapse
+Banking comes in two grades: **reincarnating manually banks the full peak**; a **full collapse
 (extinction) banks half the peak** — the reset still pays, just at a discount for letting it
-die. The peak resets each generation. Spores are **spent** on the tree, with a small always-on
-global intake bonus per lifetime Spore so a weak run still counts.
+die. The peak resets each generation. Endospores are **spent** on the tree, with a small always-on
+global intake bonus per lifetime Endospore so a weak run still counts.
 
 ### Two compounding layers
 
 - **In-run (biomass, resets every generation).** The five direct traits ([DESIGN.md](DESIGN.md))
   level fast, then plateau at the pressure ramp — the fast curve re-run every loop.
-- **Meta (Spores, permanent).** The tree raises the floor *and* the ceiling, so each fresh
+- **Meta (Endospores, permanent).** The tree raises the floor *and* the ceiling, so each fresh
   climb starts steeper and peaks higher. A couple of nodes (Mitotic Speed, Metabolic Mastery)
   specifically speed up *re-leveling the in-run traits*, so a reset feels like skipping the
   early game, never re-grinding it.
@@ -71,16 +71,16 @@ effects, level caps, and gate prereqs live in [BALANCE.md](BALANCE.md).
 ```
 
 **Engulf is the accelerator.** Once unlocked, engulfing prey feeds the run's health +
-reproduction progress directly — the same two terms that pay out Spores — and each of its
+reproduction progress directly — the same two terms that pay out Endospores — and each of its
 levels makes that dump bigger, collapsing loop time toward the short end of the budget.
 Maxing it is also the *only* path to Mitochondria.
 
 ### The reset beat
 
-Collapse is **manual only** — a player-clicked **sporulate**. Nothing in the sim ever forces
+Collapse is **manual only** — a player-clicked **reincarnate**. Nothing in the sim ever forces
 it. The age-ramped pressures are pure *texture*: a generation gets more contested as
 `state.age` climbs ([FAILURE.md](FAILURE.md)), and since banking takes the running peak, the
-decision is "sporulate now and pocket the full peak, or push for a higher peak and risk
+decision is "reincarnate now and pocket the full peak, or push for a higher peak and risk
 letting the colony slide into a half-paying extinction." No hard force and no artificial
 decay — the teeth already in the sim do the work.
 
@@ -100,7 +100,7 @@ isolation fade carries the frame across the seam — the zoom itself is the brid
 ## The end-of-phase choice
 
 None in phase 1 — the run resolves on the endosymbiosis proc with no ascension-defining
-fork. The Spore tree is the standing build choice; it carries forward as the seam multiplier
+fork. The Endospore tree is the standing build choice; it carries forward as the seam multiplier
 below.
 
 ## The seam out
@@ -109,13 +109,13 @@ below.
 continues *inside* the engulfing cell: the bacterium it just kept becomes its first
 **mitochondrion**, and the collapsed colony carries forward as a **single number** — the
 "becomes a statistic" beat. The carried multiplier is framed off the run's meta progress
-(peak Spores / tree depth at the seam), so phase 2 starts richer for a deeper phase-1 climb.
+(peak Endospores / tree depth at the seam), so phase 2 starts richer for a deeper phase-1 climb.
 Phase 2 is a *complex single cell*, **not** multicellular — going multicellular is a **later**
 phase ([`../../GAME_PLAN.md`](../../GAME_PLAN.md)).
 
 The seam itself — its cinematic and the lineage handoff — stays exactly as built
 (`lib/layers/cell/transition.lua` + the lineage transition). The seam multiplier / cross-phase
-carry is **not** designed or built by the Spore loop; that within-phase prestige engine stops
+carry is **not** designed or built by the Endospore loop; that within-phase prestige engine stops
 at the seam and owns no part of the cross-phase number.
 
 ## The seam in
@@ -131,14 +131,14 @@ layer opens out of the same teal isolation fade (no flash, no cut). The engulfed
 becomes the new cell's first mitochondrion. (`[r]` still wipes to a fresh founder for
 debugging.)
 
-The **Spore loop is in design** — until it ships, the run resolves on the existing
+The **Endospore loop is in design** — until it ships, the run resolves on the existing
 size-ramped endosymbiosis proc (the Mitochondria node folds into that same chance once built).
 
 ## Open questions
 
 - **Capstone strictness:** both capstones require their branch **fully maxed** to unlock
   Engulf (the standing call); revisit if the loop runs long against the ~15-min budget.
-- **Spore payout shape:** the exact spore-value weighting (population exponent, vitality
+- **Endospore payout shape:** the exact endospore-value weighting (population exponent, vitality
   weight) and the full-vs-half banking split (tuning — see [BALANCE.md](BALANCE.md)).
-- **Seam multiplier framing:** how peak Spores / tree depth maps to phase 2's starting state
+- **Seam multiplier framing:** how peak Endospores / tree depth maps to phase 2's starting state
   (ties into [DESIGN.md](DESIGN.md)'s trait/catalog-cap question).

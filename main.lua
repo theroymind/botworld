@@ -48,6 +48,9 @@ local BUILD_HASH_BOTTOM = 22
 -- The debug economy overlay's panel width (love-ui overlay PANEL_WIDTH is 180); we
 -- inset it from the right edge by this so the corner HUD sits flush top-right.
 local OVERLAY_PANEL_W = 180
+-- Right-edge gap for the overlay. The kit insets its content a few px inside the
+-- (x, y) we pass, so without this margin the panel's right edge runs off-screen.
+local OVERLAY_MARGIN = 8
 -- Top-left inset for the optional FPS readout (clears the HUD/edge, stays unobtrusive).
 local FPS_INSET = 10
 
@@ -178,8 +181,13 @@ function love.draw()
   -- with no debug UI in the shot. (The connector drains via screenshot.is_pending(),
   -- so this single call also serves automation; no separate automation:post_draw.)
   screenshot.post_draw()
-  -- Debug layer LAST, on top of everything and out of the screenshot.
-  overlay.draw(love.graphics.getWidth() - OVERLAY_PANEL_W, 0)
+  -- Debug layer LAST, on top of everything and out of the screenshot. Full window
+  -- height as the viewport so the overlay uses the whole right column before scrolling.
+  overlay.draw(
+    love.graphics.getWidth() - OVERLAY_PANEL_W - OVERLAY_MARGIN,
+    0,
+    love.graphics.getHeight()
+  )
   panel.draw()
   console.draw()
 end
@@ -271,6 +279,11 @@ function love.wheelmoved(dx, dy)
     return
   end
   if panel.is_visible() and panel.wheelmoved(dy) then
+    return
+  end
+  -- The overlay self-gates on the cursor (returns false unless the pointer is over
+  -- the HUD), so a miss falls through to the layer's zoom unchanged.
+  if overlay.visible and overlay.wheelmoved(dy) then
     return
   end
   layers.wheelmoved(dx, dy)

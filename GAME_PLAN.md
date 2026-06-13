@@ -23,7 +23,7 @@ FAILURE / PRESTIGE).
 An idle/incremental game about life scaling up: single cell → complex cell → organisms →
 animals → minds → planet → solar system → galaxy. You tend **one lineage** and zoom between
 scales, watching the thing you grew at one scale become a statistic at the next. Spirit: a
-mix of **Spore** (evolve your own thing, shaped by your choices) and **incremental** (numbers
+mix of **Endospore** (evolve your own thing, shaped by your choices) and **incremental** (numbers
 grow; optimization is the strategy).
 
 ## Pillars

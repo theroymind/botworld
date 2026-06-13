@@ -1,14 +1,14 @@
--- Standalone spec for lib/engine/spore_tree.lua, the pure prestige-tree kernel.
--- Plain Lua 5.1, no framework. Run from the repo root: lua tests/spore_tree_spec.lua
+-- Standalone spec for lib/engine/progression_tree.lua, the pure prestige-tree core.
+-- Plain Lua 5.1, no framework. Run from the repo root: lua tests/progression_tree_spec.lua
 --
--- Asserts the kernel's INVARIANTS -- requires-by-MAXED gating, tier-multiplied
+-- Asserts the core's INVARIANTS -- requires-by-MAXED gating, tier-multiplied
 -- geometric cost, currency conservation on buy, effect summation, the peak/bank
 -- high-water loop, and load tolerance -- all derived from the in-spec defs and the
 -- module's documented formulas, never hardcoded outputs.
 local root = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. package.path
 
-local spore_tree = require("lib.engine.spore_tree")
+local progression_tree = require("lib.engine.progression_tree")
 
 local checks = 0
 
@@ -21,7 +21,7 @@ end
 
 local function approx(a, b) return math.abs(a - b) < 1e-9 end
 
--- The kernel's documented cost formula, re-derived here from the def so the cost
+-- The core's documented cost formula, re-derived here from the def so the cost
 -- guards assert the SHAPE (ceil(base * growth^level) * tier_mult^tier) rather than a
 -- pre-computed magic number.
 local function expected_cost(def, level, tier_mult)
@@ -32,7 +32,7 @@ end
 -- nodes (cap 2) each requiring the root maxed, and a tier-2 capstone (cap 1) requiring
 -- BOTH branches maxed. effects let us exercise effect_total across keys/tiers.
 local ROOT, BRANCH_A, BRANCH_B, CAPSTONE = "root", "branch_a", "branch_b", "capstone"
-local CURRENCY, TIER_MULT = "spores", 10
+local CURRENCY, TIER_MULT = "points", 10
 
 local function defs()
   return {
@@ -80,7 +80,7 @@ end
 
 -- A fully-funded fresh instance: lots of currency so buys are limited only by gating.
 local function rich_tree()
-  local t = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local t = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
   t.currency = 1e9
   return t
 end
@@ -199,7 +199,7 @@ end
 -- maxed or locked node returns false.
 -- ============================================================================
 do
-  local t = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local t = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
 
   -- Locked node buy is a no-op even with infinite currency.
   t.currency = 1e9
@@ -217,7 +217,7 @@ do
   check(t:level_of(ROOT) == lvl_before + 1, "buy raises the level by exactly 1")
 
   -- Unaffordable buy: set currency just below the next cost -> no-op false.
-  local fresh = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local fresh = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
   local next_cost = fresh:node_cost(ROOT)
   fresh.currency = next_cost - 1
   local c0, l0 = fresh.currency, fresh:level_of(ROOT)
@@ -278,7 +278,7 @@ end
 -- ============================================================================
 do
   local PENALTY_FULL, PENALTY_HALF = 1, 0.5
-  local t = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local t = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
 
   -- observe(a); observe(b<a); observe(c>a) leaves the peak at the high-water c.
   local a, b, c = 100.7, 40.2, 250.9
@@ -306,9 +306,9 @@ do
 
   -- The HALF relationship: collapsing the SAME peak at 0.5 banks floor(peak*0.5).
   local peak_value = 333.9
-  local full = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local full = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
   full:observe(peak_value)
-  local half = spore_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
+  local half = progression_tree.new(defs(), { currency = CURRENCY, tier_mult = TIER_MULT })
   half:observe(peak_value)
   check(
     half:collapse(PENALTY_HALF) == math.floor(peak_value * PENALTY_HALF),
@@ -333,7 +333,7 @@ do
   t:observe(123.4)
   t.lifetime = 77
   local data = t:serialize()
-  local loaded = spore_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, data)
+  local loaded = progression_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, data)
   check(loaded.currency == t.currency, "round-trip currency")
   check(loaded.lifetime == t.lifetime, "round-trip lifetime")
   check(loaded.peak == t.peak, "round-trip peak")
@@ -343,25 +343,25 @@ do
 
   -- A saved level ABOVE the node's cap clamps to cap on load.
   local branch_def = def_by_id(defs(), BRANCH_A)
-  local over = spore_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
+  local over = progression_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
     levels = { [BRANCH_A] = branch_def.cap + 5 },
   })
   check(over:level_of(BRANCH_A) == branch_def.cap, "a saved level above cap clamps to cap on load")
 
   -- An unknown node id in saved levels is dropped (not resurrected as a node).
-  local stale = spore_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
+  local stale = progression_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
     levels = { ghost = 3 },
   })
   check(stale.levels.ghost == nil, "an unknown saved node id is dropped")
   check(stale.node_by_id.ghost == nil, "the dropped id never becomes a real node")
 
   -- Missing fields keep fresh defaults.
-  local fresh = spore_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, nil)
+  local fresh = progression_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, nil)
   check(fresh.currency == 0, "load nil data: currency defaults to 0")
   check(fresh.lifetime == 0, "load nil data: lifetime defaults to 0")
   check(fresh.peak == 0, "load nil data: peak defaults to 0")
   check(fresh:level_of(ROOT) == 0, "load nil data: levels default to 0")
-  local partial = spore_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
+  local partial = progression_tree.load(defs(), { currency = CURRENCY, tier_mult = TIER_MULT }, {
     currency = 42,
   })
   check(partial.currency == 42, "partial load: provided field restored")

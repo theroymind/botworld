@@ -61,8 +61,8 @@ local function defs()
         unlock_at = { resource = "biomass", amount = 60 },
       },
       {
-        id = "spores",
-        name = "Spores",
+        id = "booster",
+        name = "Booster",
         cost = 10,
         cost_resource = "biomass",
         target = "global",
@@ -120,8 +120,8 @@ check(eco:upgrade_visible("cilia"), "upgrade visible at lifetime threshold")
 check(not eco:can_buy_upgrade("cilia"), "visible but unaffordable")
 eco:add("biomass", 30)
 check(eco:can_buy_upgrade("cilia"), "visible and affordable")
-check(not eco:can_buy_upgrade("spores"), "affordable but locked stays unbuyable")
-check(not eco:buy_upgrade("spores"), "locked upgrade buy fails")
+check(not eco:can_buy_upgrade("booster"), "affordable but locked stays unbuyable")
+check(not eco:buy_upgrade("booster"), "locked upgrade buy fails")
 check(eco:buy_upgrade("cilia"), "upgrade buy succeeds")
 check(eco:amount("biomass") == 10, "upgrade buy deducts cost")
 check(eco:upgrade_purchased("cilia"), "purchase recorded")
@@ -158,7 +158,7 @@ check(loaded:generator_owned("cell") == 1, "round-trip owned cell")
 check(loaded:generator_owned("colony") == 1, "round-trip owned colony")
 check(loaded:upgrade_purchased("cilia"), "round-trip purchased upgrade")
 check(loaded:upgrade_purchased("mitochondria"), "round-trip purchased global upgrade")
-check(not loaded:upgrade_purchased("spores"), "round-trip unpurchased upgrade")
+check(not loaded:upgrade_purchased("booster"), "round-trip unpurchased upgrade")
 check(loaded.global_multiplier == 2, "round-trip global_multiplier")
 check(approx(loaded:rate("biomass"), eco:rate("biomass")), "round-trip rate")
 check(loaded:generator_cost("cell") == eco:generator_cost("cell"), "round-trip cost curve")

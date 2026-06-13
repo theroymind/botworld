@@ -27,14 +27,14 @@ local organelles = require("lib.layers.cell.organelles")
 local world = require("lib.layers.cell.world")
 local view = require("lib.layers.cell.view")
 local transition = require("lib.layers.cell.transition")
--- The Spore prestige loop: the generic leveled-tree kernel, the phase-1 data over it,
+-- The Endospore prestige loop: the generic leveled-tree core, the phase-1 data over it,
 -- and the confirm modal. The tree's meta-currency survives the within-phase reset
--- (sporulate / extinction bank into it); spores.fold mixes its node levels into the
--- intake (neutral at level 0, so a fresh game is unchanged); sporulate.lua is the
+-- (reincarnate / extinction bank into it); endospores.fold mixes its node levels into the
+-- intake (neutral at level 0, so a fresh game is unchanged); reincarnate.lua is the
 -- voluntary cash-out card.
-local spore_tree = require("lib.engine.spore_tree")
-local spores = require("lib.layers.cell.spores")
-local sporulate = require("lib.layers.cell.sporulate")
+local progression_tree = require("lib.engine.progression_tree")
+local endospores = require("lib.layers.cell.endospores")
+local reincarnate = require("lib.layers.cell.reincarnate")
 -- Phase-2 seam: the endosymbiosis finale no longer restarts phase 1 -- it zooms
 -- INTO the cell and hands off to the complex-cell layer (see begin_lineage_transition).
 local layers = require("lib.engine.layers")
@@ -173,7 +173,7 @@ local PRED_MIT_CAP = 0.97 -- max fraction of predation a high-evasion build can 
 local PRED_FEAR = 8.0 -- intake suppression per unit effective predation pressure (the fear gain) [lab-locked; softened from 18 in the lab's pop re-key so a neglected founder still grows enough for toxicity+competition to stay co-dominant]
 local FEAR_FLOOR = 0.0 -- min surviving fraction of intake under max fear (0 -> fear can fully starve income)
 
--- Spore Homeostasis (the resilience capstone) DAMPENS the competition + predation
+-- Endospore Homeostasis (the resilience capstone) DAMPENS the competition + predation
 -- ramps by its folded pressure_damp, but it can never FULLY neutralize a pressure --
 -- a colony that buys infinite Homeostasis must still face some crowding and some
 -- predation, or the late game becomes unloseable. Cap the dampening at this fraction.
@@ -192,6 +192,15 @@ local ENDO_STEP = 100000 -- past the start, the chance ramps once per this many 
 local ENDO_BASE_CHANCE = 0.000004 -- per-engulf floor before the ramp (possible but very rare)
 local ENDO_RAMP_PER_STEP = 0.0006 -- added to the chance per ENDO_STEP cells past the ramp start
 local FEED_ENERGY = 40 -- nutrient reserve a bloom feed credits
+-- ENGULF ACCELERATOR burst magnitudes (PRESTIGE.md). A completed prey engulf dumps a
+-- burst of reproduction (energy reserve) + health (waste cleared) into the run, EACH
+-- scaled by the Engulf tree level via endospores' engulf_progress per-level scalar -- so
+-- climbing Engulf visibly speeds regrowth and collapses loop time (the accelerator). The
+-- same kind of live burst as a bloom feed (FEED_ENERGY / FEED_TOX_CLEAR), per engulf, so
+-- the magnitudes sit a touch below a bloom. FIRST-PASS values -- tune in the balance-lab
+-- against the engulf_progress per-level scalar (deferred).
+local ENGULF_ENERGY = 30 -- reproduction (energy reserve) per engulf, x engulf_progress
+local ENGULF_TOX_CLEAR = 4 -- waste flushed (health) per engulf, x engulf_progress
 
 -- The metabolism dial has been removed; the economy runs at the sweet-spot base
 -- rate baked in here so offline / online math never diverges.
@@ -205,16 +214,24 @@ local PAD = 16
 local BTN_W = 96 -- fixed-width trait button, pinned right by the fill label column
 local TRAIT_BTN_H = 40
 local TOGGLE_BTN_W = 26 -- square minimize/expand toggle pinned to the title row's right
+local ENDOSPORE_TREE_BTN_W = 92 -- the "endospore tree" header button that opens the prestige modal
+local ENDOSPORE_TREE_GROUP_GAP = 44 -- px between the Growth / Resilience blocks in the tree modal
 
 -- Panel collapse: when true the panel shrinks to just its title row (the toggle
 -- stays reachable so it can be expanded again). In-memory only -- a fresh launch
 -- opens expanded.
 local panel_collapsed = false
 
--- Sporulate confirm modal: true while the player is being asked to confirm the
+-- Reincarnate confirm modal: true while the player is being asked to confirm the
 -- voluntary prestige cash-out. In-memory only (a fresh launch opens with no modal).
 -- While true, cell.draw stamps the modal and cell.mousepressed hit-tests it first.
-local sporulate_confirming = false
+local reincarnate_confirming = false
+
+-- Endospore tree modal: true while the prestige-tree surface is open (opened from the
+-- header button, the only place the endospore nodes are spent now). In-memory only. While
+-- true, cell.draw stamps the modal under any reincarnate confirm and cell.mousepressed
+-- hit-tests it (after the confirm, which sits on top).
+local endospore_tree_open = false
 
 -- VITALITY BAND thresholds -- a qualitative weak->strong read driven by PER-CAPITA
 -- net replication (net_rate / population), so it's SCALE-INVARIANT: the same per-cell
@@ -273,8 +290,8 @@ local COLLAPSE_CAUSE = {
   [pressures.PREDATORS] = "was hunted to extinction",
 }
 local COLLAPSE_TAIL = " — a new lineage begins"
--- Extinction is the INVOLUNTARY collapse: it banks only HALF the spore peak (a
--- voluntary sporulate banks the full peak). The lost generation still pays forward.
+-- Extinction is the INVOLUNTARY collapse: it banks only HALF the endospore peak (a
+-- voluntary reincarnate banks the full peak). The lost generation still pays forward.
 local EXTINCTION_PENALTY = 0.5
 
 -- The saturating COMPETITION ramp (mirrors sim_lab.comp_frac): rivals take a
@@ -318,17 +335,21 @@ end
 local function intake_for(state)
   local stats = traits.stats(state.traits)
   local set = state.sim.organelles
-  -- The spore tree's folded economy modifiers (NEUTRAL at level 0: multipliers 1,
+  -- The endospore tree's folded economy modifiers (NEUTRAL at level 0: multipliers 1,
   -- additive terms 0), threaded into the existing fold below. A fresh game (empty
-  -- tree) leaves every term identity, so the intake is byte-identical to pre-spore.
-  local sp = spores.fold(state.spores)
+  -- tree) leaves every term identity, so the intake is byte-identical to pre-endospore.
+  local sp = endospores.fold(state.endospores)
+  -- The endospore tree's capability gates (photosynthesis / phagocytosis) + the
+  -- flat-on-unlock income multiplier. Single source for the milestone gates the
+  -- in-run biomass unlocks used to own (gating on level_of >= 1, i.e. BOUGHT).
+  local caps = endospores.capabilities(state.endospores)
   local photo = 0
-  if traits.is_unlocked(state.traits, "photosynthesis") then
+  if caps.photosynthesis then
     photo = PHOTO_LIGHT * stats.photo_mult * sp.photo_mult
   end
   photo = photo + organelles.photo_bonus(set)
   local upkeep = metabolism.loss(FIXED_TEMPO) * stats.upkeep_mult * UPKEEP_SCALE
-  local mult = traits.income_mult(state.traits) * organelles.intake_mult(set) * sp.all_intake
+  local mult = caps.unlock_income * organelles.intake_mult(set) * sp.all_intake
 
   -- The lineage clock the two age-keyed pressures ramp on (seconds since lineage
   -- start; ticked by sim.step, so it advances identically online and offline).
@@ -346,12 +367,13 @@ local function intake_for(state)
   local counter = COMP_MOTILITY_COUNTER * motility
     + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
     + sp.comp_counter
+    + sp.sense_bonus -- the Chemotactic Reach (chemo) node: sharper sensing holds your food share
   if counter < 0 then
     counter = 0
   elseif counter > 1 then
     counter = 1
   end
-  -- Spore Homeostasis DAMPENS both age-ramped pressures (competition + predation) by
+  -- Endospore Homeostasis DAMPENS both age-ramped pressures (competition + predation) by
   -- the folded pressure_damp, capped at PRESSURE_DAMP_CAP so a maxed tree never fully
   -- cancels a pressure. damp_factor scales the two ramps DOWN below.
   local damp_factor = 1 - math.min(sp.pressure_damp, PRESSURE_DAMP_CAP)
@@ -446,7 +468,7 @@ local function persist()
   save.write(SAVE_NAME, {
     traits = traits.serialize(cell.state.traits),
     sim = sim.serialize(cell.state.sim),
-    spores = spore_tree.serialize(cell.state.spores), -- the prestige tree (survives the reset)
+    endospores = cell.state.endospores:serialize(), -- the prestige tree (survives the reset)
     stamp = os.time(),
     -- legacy `genome` and `dial` keys (old systems) are intentionally not written.
   })
@@ -467,32 +489,6 @@ local function feed_bloom(b)
   view.spawn(view_state, fx.shake({ mag = 4, life = 0.26, seed = b.x + b.y }))
 end
 
--- Buy a milestone capability (photosynthesis, phagocytosis): the player spends
--- biomass to EVOLVE it, replacing the old auto-fire. Guarded on the reveal gate
--- (colony must have reached the capability's `pop`) and affordability; on success
--- it deducts the cost, flips the unlock on (opening its closed-form income channel
--- and letting the world spawn its contents), toasts the tell, and persists. A
--- no-op if already owned, not yet revealed, or unaffordable.
-local function buy_unlock(id)
-  local pop = cell.state.sim.population
-  if traits.is_unlocked(cell.state.traits, id) then
-    return
-  end
-  if not traits.is_revealed(cell.state.traits, id, pop) then
-    return
-  end
-  local cost = traits.unlock_cost(id)
-  if not sim.spend(cell.state.sim, cost) then
-    return
-  end
-  local fired = traits.unlock(cell.state.traits, id)
-  if fired then
-    toast.show(string.format("Evolved %s — %s", fired.label, fired.tell))
-    view.spawn(view_state, fx.flash({ color = colors.secondary_bright, alpha = 0.22, life = 0.4 }))
-    persist()
-  end
-end
-
 -- The colony has FAILED only when it is EXTINCT -- one (or a mix) of the three
 -- pressures (toxicity cull, rival competition, predation) has killed every last cell.
 -- No aggregate trigger, no vitality threshold: the run ends purely because the
@@ -510,17 +506,17 @@ local function begin_collapse()
   -- copy matches what actually drove the extinction -- not always the waste default.
   collapse_cause =
     pressures.dominant(death_attrib.waste, death_attrib.rivals, death_attrib.predators)
-  -- The colony still BANKS half its spore peak on extinction (the collapse itself
+  -- The colony still BANKS half its endospore peak on extinction (the collapse itself
   -- fires later, in cell.update's collapsing branch -- so read the bankable amount
   -- NOW, before the peak is zeroed, to name it in the death toast).
-  local banked = cell.state.spores:bankable(EXTINCTION_PENALTY)
+  local banked = cell.state.endospores:bankable(EXTINCTION_PENALTY)
   toast.show(
     "The colony "
       .. COLLAPSE_CAUSE[collapse_cause]
       .. COLLAPSE_TAIL
       .. " — banked "
       .. format.number(banked)
-      .. " spores (½)"
+      .. " endospores (½)"
   )
   sound.play("pop", { volume = 1.0, pitch_spread = 0.2 })
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
@@ -607,10 +603,16 @@ local function roll_endosymbiosis(engulfs, engulf_points, predation)
   if transition.active(transition_state) then
     return
   end
+  -- The endosymbiosis proc is IMPOSSIBLE until the Mitochondria node is bought: the jump
+  -- to phase 2 is "the capability to absorb the mitochondrion", earned by maxing Engulf
+  -- and then buying Mitochondria. Below level 1 no engulf can ever keep the partner.
+  if cell.state.endospores:level_of("mitochondria") < 1 then
+    return
+  end
   local s = cell.state.sim
-  -- The spore Mitochondria node lifts the per-engulf keep chance toward near-certain.
+  -- The endospore Mitochondria node lifts the per-engulf keep chance toward near-certain.
   -- Folded in here (not threaded through the stateless endo_chance) and re-clamped <= 1.
-  local chance = endo_chance(s.population) + spores.fold(cell.state.spores).endo_chance_add
+  local chance = endo_chance(s.population) + endospores.fold(cell.state.endospores).endo_chance_add
   if chance > 1 then
     chance = 1
   end
@@ -635,7 +637,7 @@ end
 
 -- Seed the live world + view for a fresh founder colony: a new cosmetic swarm over
 -- the current sim baseline. Factored out of cell.load so the in-run reseed (after a
--- sporulate / a half-bank extinction) rebuilds the SAME founder world without touching
+-- reincarnate / a half-bank extinction) rebuilds the SAME founder world without touching
 -- the prestige tree or the save. Reads love.graphics for the aspect (1280x720 headless).
 local function seed_world()
   view_state = view.new()
@@ -650,9 +652,9 @@ local function seed_world()
 end
 
 -- Reset the IN-RUN state for a fresh generation but KEEP the prestige tree (the
--- banked spores survive the within-phase reset, per the spore loop's whole point).
+-- banked endospores survive the within-phase reset, per the endospore loop's whole point).
 -- The traits + sim reset to the founder; the world/view reseed. Does NOT remove the
--- save and does NOT rebuild cell.state.spores. Persists the fresh generation.
+-- save and does NOT rebuild cell.state.endospores. Persists the fresh generation.
 local function reseed_in_run()
   collapsing = false
   collapse_anim = 0
@@ -664,29 +666,30 @@ local function reseed_in_run()
   persist()
 end
 
--- Open the sporulate confirm modal -- the voluntary prestige cash-out gate. A no-op
+-- Open the reincarnate confirm modal -- the voluntary prestige cash-out gate. A no-op
 -- unless a full collapse would actually bank something (a peak above 0), so the
--- button never opens an empty "bank 0 spores" card.
-local SPORULATE_PENALTY = 1 -- voluntary cash-out banks the FULL peak (extinction banks half)
-local function open_sporulate()
-  if cell.state.spores:bankable(SPORULATE_PENALTY) > 0 then
-    sporulate_confirming = true
+-- button never opens an empty "bank 0 endospores" card.
+local REINCARNATE_PENALTY = 1 -- voluntary cash-out banks the FULL peak (extinction banks half)
+local function open_reincarnate()
+  if cell.state.endospores:bankable(REINCARNATE_PENALTY) > 0 then
+    reincarnate_confirming = true
   end
 end
 
--- Confirm the sporulate: close the modal and arm the "white" collapse cinematic on
+-- Confirm the reincarnate: close the modal and arm the "white" collapse cinematic on
 -- the swarm centre. The actual bank + in-run reseed fire at the white peak (on_reset),
 -- so the colony you banked dissolves into the flash and the fresh founder emerges out
 -- of it. Style "white" (vs the endosymbiosis finale's "dive") so the two read apart.
-local function do_sporulate()
-  sporulate_confirming = false
+local function do_reincarnate()
+  reincarnate_confirming = false
+  endospore_tree_open = false -- the tree modal opened it; close it behind the cinematic
   local base_zoom = view_state.camera.zoom
   local cx, cy = world.swarm_center(world_state)
   transition.begin(transition_state, {
     style = "white",
     x = cx,
     y = cy,
-    title = "SPORULATION",
+    title = "REINCARNATION",
     kicker = "collapse",
     subtitle = "regrow",
     on_focus = function(x, y, mult) view.focus(view_state, x, y, base_zoom * mult) end,
@@ -694,8 +697,8 @@ local function do_sporulate()
       view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
     end,
     on_reset = function()
-      local gained = cell.state.spores:collapse(SPORULATE_PENALTY)
-      toast.show("Sporulated — banked " .. format.number(gained) .. " spores")
+      local gained = cell.state.endospores:collapse(REINCARNATE_PENALTY)
+      toast.show("Reincarnated — banked " .. format.number(gained) .. " endospores")
       reseed_in_run()
     end,
   })
@@ -716,7 +719,7 @@ function cell.load()
     sim = sim.load(data.sim),
     -- The prestige tree loads from its own save slice (tolerant of a missing/changed
     -- tree). Neutral until spent, so a fresh game behaves identically.
-    spores = spore_tree.load(spores.defs(), spores.tree_opts(), data.spores),
+    endospores = progression_tree.load(endospores.defs(), endospores.tree_opts(), data.endospores),
   }
   seed_world()
 
@@ -787,10 +790,10 @@ function cell.tick(tick_dt)
   local pop_before = cell.state.sim.population
   local div_before = cell.state.sim.total_divisions
   sim.tick(cell.state.sim, tick_dt, intake)
-  -- Ratchet the prestige peak from this tick's instantaneous spore-value (health x
+  -- Ratchet the prestige peak from this tick's instantaneous endospore-value (health x
   -- growth). Live economy path only (past the retired/transition/collapsing guards
   -- above), so the peak reflects an actually-running colony at its healthiest.
-  cell.state.spores:observe(spores.value(cell.state.sim, { tox_half = TOX_HALF }))
+  cell.state.endospores:observe(endospores.value(cell.state.sim, { tox_half = TOX_HALF }))
   track_death_attrib(intake, pop_before, div_before, tick_dt)
 end
 
@@ -819,10 +822,10 @@ function cell.update(dt)
     toast.update(dt)
     collapse_anim = collapse_anim - dt
     if collapse_anim <= 0 then
-      -- Half-bank the spore peak and reseed the IN-RUN state -- the prestige tree
+      -- Half-bank the endospore peak and reseed the IN-RUN state -- the prestige tree
       -- survives, so this is NOT a wipe. ([r] remains the true full wipe.) The death
       -- toast (begin_collapse) already named the banked amount before the peak zeroed.
-      cell.state.spores:collapse(EXTINCTION_PENALTY)
+      cell.state.endospores:collapse(EXTINCTION_PENALTY)
       reseed_in_run() -- fresh founder; clears collapsing
     end
     return
@@ -862,7 +865,9 @@ function cell.update(dt)
     bloom_confine = { x = x1 + r, y = y1 + r, w = (x2 - x1) - r * 2, h = (y2 - y1) - r * 2 }
   end
 
-  local predation = traits.is_unlocked(cell.state.traits, "predation")
+  -- Phagocytosis is a tree capability now (Engulf level >= 1), so the world's prey +
+  -- cosmetic predators key off the endospore capability gate, not an in-run unlock.
+  local predation = endospores.capabilities(cell.state.endospores).predation
   -- The leading return is the COSMETIC predator-strike count; it is intentionally
   -- discarded -- predation is single-sourced through the closed-form cull (sim.step),
   -- so a live strike must NOT debit the colony (that would double-count the deaths).
@@ -873,7 +878,7 @@ function cell.update(dt)
     aspect = aspect,
     target_population = target_population(cell.state),
     sim_cap = SIM_CAP, -- bound the CPU-simulated set; the visible swarm is the GPU field
-    unlocked = traits.unlocked_set(cell.state.traits),
+    unlocked = { predation = predation }, -- world only reads .predation (prey/predators)
     threats_enabled = predation,
     bloom_exclude = bloom_exclude,
     bloom_confine = bloom_confine,
@@ -928,14 +933,26 @@ function cell.update(dt)
       )
     end
   end
-  -- Phase 1's climax: a prey engulf may keep the partner (endo_chance ramps with
-  -- colony size), ending the run into a new lineage -- rare early, near-certain huge.
   if engulfs and engulfs > 0 then
+    -- ENGULF ACCELERATOR (PRESTIGE.md): each prey engulf dumps reproduction (energy ->
+    -- divisions) + health (waste cleared) into the run, scaled by the Engulf tree level
+    -- via engulf_progress -- so each Engulf level visibly speeds regrowth and collapses
+    -- loop time. Reuses sim.feed_burst (energy = reproduction, tox_clear = health). Live-
+    -- only (engulfs never occur offline, like the bloom-feed coupling), so the
+    -- deterministic offline core is untouched. Neutral until Engulf is bought (progress 0).
+    local progress = cell.state.endospores:effect_total("engulf_progress")
+    if progress > 0 then
+      sim.feed_burst(
+        cell.state.sim,
+        engulfs * ENGULF_ENERGY * progress,
+        engulfs * ENGULF_TOX_CLEAR * progress
+      )
+    end
+    -- Phase 1's climax: a prey engulf may keep the partner (endo_chance ramps with colony
+    -- size, gated on Mitochondria), ending the run into a new lineage -- rare even then.
     roll_endosymbiosis(engulfs, engulf_points, predation)
   end
 
-  -- (Milestone capabilities are no longer auto-granted by colony size -- they are
-  -- bought from the panel; see buy_unlock. Nothing to check on the tick.)
   -- Failure: the pressures (toxicity / competition / predation) have driven the colony
   -- to extinction. End the run into a fresh lineage (game-over beat). begin_collapse
   -- names the dominant cause. Nothing fires while a cell still lives.
@@ -1011,11 +1028,27 @@ local function toggle_button_node()
   }
 end
 
+-- The title-row "endospore tree" button: opens the prestige-tree modal (the only surface that
+-- spends endospores now -- the panel no longer lists the nodes). Pinned to the title row left
+-- of the minimize toggle, so it stays reachable even when the panel is collapsed.
+local function endospore_tree_button_node()
+  return {
+    type = "node",
+    w = ENDOSPORE_TREE_BTN_W,
+    h = "fill",
+    draw_fn = function(r)
+      button.draw(r, "endospore tree", { font = "hud_small", id = "open_endospore_tree" })
+    end,
+    on_click = function() endospore_tree_open = true end,
+    resolved_rect = nil,
+  }
+end
+
 -- One trait row: a fill-width label column (name + level over a concrete hint) and a
 -- right-pinned level-up button. Built ONLY for AVAILABLE traits -- the panel skips a
--- trait still gated behind an unfired evolution, so the Photosynthesis trait stays out
--- of this list until the Photosynthesis capability is evolved (then it appears here as
--- a normal levelable row -- the evolution "becomes" the trait, never a "needs X" gate).
+-- trait still gated behind a capability, so the Photosynthesis trait stays out of this
+-- list until the Photosynthesis root is bought on the endospore tree (then it appears
+-- here as a normal levelable row -- the capability "becomes" the trait, never a gate).
 local function trait_row(state, id)
   local def = traits.def(id)
   local level = state.traits.levels[id]
@@ -1051,7 +1084,7 @@ end
 -- the section only appears once the rare event is reachable.
 local function organelle_children(state)
   local held = organelles.acquired_list(state.sim.organelles)
-  local predation = traits.is_unlocked(state.traits, "predation")
+  local predation = endospores.capabilities(state.endospores).predation
   if #held == 0 and not predation then
     return nil
   end
@@ -1072,101 +1105,6 @@ local function organelle_children(state)
         color = colors.with_alpha(colors.ui.text_muted, 0.6),
       })
     )
-  end
-  return children
-end
-
--- The EVOLUTIONS section: the milestone capabilities the player BUYS (formerly
--- auto-granted). One row per REVEALED-but-unbought capability -- a buy button gated
--- on biomass once the colony has grown enough to REVEAL it. A capability the colony
--- has not yet revealed is NOT listed here (no spoiler); it is teased only by the
--- self-revealing footer until it reveals. Owned capabilities drop out of this section
--- (photosynthesis becomes a normal levelable trait; phagocytosis just switches hunting
--- on). nil while nothing is revealed and once every capability is evolved, so the
--- section appears only when there is a capability to buy.
-local function capability_children(state)
-  local pop = state.sim.population
-  local rows = {}
-  for _, def in ipairs(traits.unlocks()) do
-    -- Only REVEALED-but-unbought capabilities show as rows. A not-yet-revealed
-    -- capability is no longer dumped here (no "colony N" spoiler) -- it is teased
-    -- only by the self-revealing footer until the colony reaches its gate.
-    if
-      not traits.is_unlocked(state.traits, def.id) and traits.is_revealed(state.traits, def.id, pop)
-    then
-      local label_col = layout.vstack({
-        layout.text(def.label, { color = colors.ui.text }),
-        layout.text(def.tell, { color = colors.ui.text_faint }),
-      }, { gap = 2 })
-
-      local cost = traits.unlock_cost(def.id)
-      local affordable = sim.can_spend(state.sim, cost)
-      local right = action_button_node({
-        label = "evolve",
-        sublabel = format.number(cost) .. " bm",
-        enabled = affordable,
-        w = BTN_W,
-        h = TRAIT_BTN_H,
-        id = "unlock_" .. def.id,
-        on_click = function() buy_unlock(def.id) end,
-      })
-      table.insert(rows, layout.hstack({ label_col, right }, { gap = theme.spacing.sm }))
-    end
-  end
-  if #rows == 0 then
-    return nil
-  end
-  table.insert(rows, 1, layout.text("evolutions", { color = colors.ui.text_dim }))
-  return rows
-end
-
--- The SPORE TREE section: the prestige loop's panel. Leads with a sporulate action
--- button (the voluntary cash-out, enabled once a peak is bankable), then one buy row
--- per UNLOCKED node (locked nodes are hidden -- the same reveal discipline as the
--- evolutions section, where a gated capability simply doesn't list). Each row buys one
--- level off the spore currency. Always shown (the tree is always present), so unlike
--- the capability/organelle sections this never returns nil.
-local function spore_children(state)
-  local tree = state.spores
-  local bankable = tree:bankable(SPORULATE_PENALTY)
-  local children = {
-    layout.text("spores", { color = colors.ui.text_dim }),
-    action_button_node({
-      label = "sporulate",
-      sublabel = format.number(bankable) .. " spores",
-      enabled = bankable > 0,
-      w = BTN_W,
-      h = TRAIT_BTN_H,
-      id = "sporulate",
-      on_click = open_sporulate,
-    }),
-  }
-  for _, def in ipairs(spores.defs()) do
-    if tree:is_unlocked(def.id) then
-      local level = tree:level_of(def.id)
-      local can_buy = tree:can_buy(def.id)
-      local label_col = layout.vstack({
-        layout.text(
-          string.format("%s   Lv %d/%d", def.label, level, def.cap),
-          { color = colors.ui.text }
-        ),
-      }, { gap = 2 })
-      local right = action_button_node({
-        label = tree:is_maxed(def.id) and "maxed" or "grow",
-        sublabel = tree:is_maxed(def.id) and "—"
-          or (format.number(tree:node_cost(def.id)) .. " spores"),
-        enabled = can_buy,
-        w = BTN_W,
-        h = TRAIT_BTN_H,
-        id = "spore_" .. def.id,
-        on_click = function()
-          if state.spores:buy(def.id) then
-            persist()
-          end
-        end,
-      })
-      table.insert(children, layout.hstack({ label_col, right }, { gap = theme.spacing.sm }))
-    end
   end
   return children
 end
@@ -1226,6 +1164,7 @@ local function build_panel(state)
       "biomass  " .. format.number(state.sim.biomass),
       { size = "lg", color = colors.ui.text }
     ),
+    endospore_tree_button_node(),
     toggle_button_node(),
   }, { gap = theme.spacing.sm })
 
@@ -1238,15 +1177,15 @@ local function build_panel(state)
     header,
     layout.text(string.format("colony  %d", pop), { color = colors.ui.text_dim })
   )
-  -- Compact prestige read: the banked spore currency and the bankable peak, so the
-  -- at-a-glance number stays visible even when the spore tree section is empty/hidden.
+  -- Compact prestige read: the banked endospore currency and the bankable peak, so the
+  -- at-a-glance number stays visible even when the endospore tree section is empty/hidden.
   table.insert(
     header,
     layout.text(
       string.format(
-        "spores  %s  (+%s)",
-        format.number(state.spores:currency_amount()),
-        format.number(state.spores:bankable(1))
+        "endospores  %s  (+%s)",
+        format.number(state.endospores:currency_amount()),
+        format.number(state.endospores:bankable(1))
       ),
       { color = colors.secondary }
     )
@@ -1285,14 +1224,13 @@ local function build_panel(state)
     })
   )
 
-  -- Trait list: concrete, direct levels. No slots, no splicing.
+  -- Trait list: concrete, direct levels. No slots, no splicing. The endospore tree's
+  -- capability gates decide which gated rows appear (the Photosynthesis row only once the
+  -- Photosynthesis root is bought) -- the capability "becomes" the trait, never a "needs X" gate.
+  local caps = endospores.capabilities(state.endospores)
   local trait_children = { layout.text("traits", { color = colors.ui.text_dim }) }
   for _, id in ipairs(TRAIT_IDS) do
-    -- Skip a trait still gated behind an unfired evolution (the Photosynthesis trait
-    -- until the Photosynthesis capability is evolved): it shows in the evolutions
-    -- section as an "evolve" purchase, then appears here as a levelable row -- never as
-    -- a "needs Photosynthesis" gate in this list.
-    if traits.is_available(state.traits, id) then
+    if traits.is_available(state.traits, id, caps) then
       table.insert(trait_children, trait_row(state, id))
     end
   end
@@ -1302,39 +1240,92 @@ local function build_panel(state)
     layout.vstack(trait_children, { gap = theme.spacing.sm }),
   }
 
-  local spore_group = spore_children(state)
-  if spore_group then
-    table.insert(groups, layout.vstack(spore_group, { gap = theme.spacing.sm }))
-  end
-
-  local capability_group = capability_children(state)
-  if capability_group then
-    table.insert(groups, layout.vstack(capability_group, { gap = theme.spacing.sm }))
-  end
-
   local organelle_group = organelle_children(state)
   if organelle_group then
     table.insert(groups, layout.vstack(organelle_group, { gap = theme.spacing.xs }))
   end
 
-  -- Self-revealing teaser for the next capability the colony has not yet revealed:
-  -- a silhouette as the colony grows toward the gate, then the named capability just
-  -- before it reveals (where it becomes a real "evolve" row above). No spoiler cost,
-  -- no "next:" -- and a fresh tiny colony (still hidden) or a fully-evolved one (nil)
-  -- simply gets no footer line. Mirrors phase 2's self-revealing footer.
-  local nxt = traits.next_teaser(state.traits, state.sim.population)
-  local stage = nxt and traits.reveal_stage(state.sim.population, nxt)
-  local tease
-  if stage == "named" then
-    tease = string.format("%s — almost ready", nxt.label)
-  elseif stage == "silhouette" then
-    tease = "something is forming in the colony…"
-  end
-  if tease then
-    table.insert(groups, layout.text(tease, { color = colors.ui.text_muted }))
+  return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
+end
+
+-- Map the endospore tree's live state onto the generic love-ui tree_modal config. The widget
+-- owns NO endospore semantics -- we compute each node's accent (teal maxed / green buyable /
+-- grey held / faint locked), dim flag, and pre-formatted Lv + cost lines here, plus the header
+-- title, currency subtitle, the reincarnate action, and the buy / cash-out / close callbacks.
+local function build_endospore_tree_config(state)
+  local tree = state.endospores
+  local nodes = {}
+  for _, def in ipairs(endospores.defs()) do
+    local unlocked = tree:is_unlocked(def.id)
+    local maxed = tree:is_maxed(def.id)
+    local can_buy = tree:can_buy(def.id)
+    local accent
+    if maxed then
+      accent = colors.primary
+    elseif can_buy then
+      accent = colors.secondary
+    elseif unlocked then
+      accent = colors.ui.border
+    else
+      accent = colors.ui.border_dim
+    end
+    local lines
+    if not unlocked then
+      lines = { { text = "locked", color = colors.ui.text_muted } }
+    elseif maxed then
+      lines = {
+        {
+          text = string.format("Lv %d/%d", tree:level_of(def.id), def.cap),
+          color = colors.ui.text_dim,
+        },
+        { text = "MAX", color = colors.primary },
+      }
+    else
+      lines = {
+        {
+          text = string.format("Lv %d/%d", tree:level_of(def.id), def.cap),
+          color = colors.ui.text_dim,
+        },
+        {
+          text = format.number(tree:node_cost(def.id)) .. " esp",
+          color = can_buy and colors.secondary or colors.quaternary,
+        },
+      }
+    end
+    nodes[#nodes + 1] = {
+      id = def.id,
+      label = def.short or def.label,
+      tier = def.tier,
+      requires = def.requires,
+      accent = accent,
+      dim = not unlocked,
+      lines = lines,
+      can_click = can_buy,
+    }
   end
 
-  return layout.vstack(groups, { padding = PAD, gap = theme.spacing.md })
+  local bankable = tree:bankable(REINCARNATE_PENALTY)
+  return {
+    nodes = nodes,
+    title = "ENDOSPORE TREE",
+    title_color = colors.secondary,
+    subtitle = "endospores  " .. format.number(tree:currency_amount()),
+    action = {
+      label = "reincarnate (+" .. format.number(bankable) .. ")",
+      enabled = bankable > 0,
+    },
+    footer = "click a node to grow it  ·  banked endospores are permanent",
+    group_gap = ENDOSPORE_TREE_GROUP_GAP,
+    edge_color = colors.with_alpha(colors.secondary, 0.5),
+    edge_dim_color = colors.with_alpha(colors.ui.border_dim, 0.7),
+    on_node = function(id)
+      if state.endospores:buy(id) then
+        persist()
+      end
+    end,
+    on_action = open_reincarnate,
+    on_close = function() endospore_tree_open = false end,
+  }
 end
 
 -- Centered footer help line, a direct text overlay (not part of the panel tree).
@@ -1430,18 +1421,27 @@ function cell.draw()
   draw_help(width)
   toast.draw(width)
 
-  -- The sporulate confirm modal overlays the panel (its own UI-kit frame, drawn last
+  -- The endospore tree modal overlays the panel (its own UI-kit frame). Drawn BEFORE the
+  -- reincarnate confirm so that, when reincarnate is invoked from inside it, the confirm
+  -- card stacks on top. Stash its click map for mousepressed.
+  if endospore_tree_open then
+    cell._endospore_tree_click_map = ui.tree_modal.draw(build_endospore_tree_config(state))
+  else
+    cell._endospore_tree_click_map = nil
+  end
+
+  -- The reincarnate confirm modal overlays the panel (its own UI-kit frame, drawn last
   -- so it sits on top). Stash its click map so mousepressed can hit-test it FIRST and
   -- swallow clicks behind it. Suppressed while a cinematic owns the screen (the early
   -- returns above never reach here then).
-  if sporulate_confirming then
-    cell._sporulate_click_map = sporulate.draw({
-      amount = state.spores:bankable(SPORULATE_PENALTY),
-      on_confirm = do_sporulate,
-      on_cancel = function() sporulate_confirming = false end,
+  if reincarnate_confirming then
+    cell._reincarnate_click_map = reincarnate.draw({
+      amount = state.endospores:bankable(REINCARNATE_PENALTY),
+      on_confirm = do_reincarnate,
+      on_cancel = function() reincarnate_confirming = false end,
     })
   else
-    cell._sporulate_click_map = nil
+    cell._reincarnate_click_map = nil
   end
 end
 
@@ -1485,11 +1485,22 @@ function cell.mousepressed(x, y, button_index)
   if transition.active(transition_state) or collapsing then
     return
   end
-  -- The sporulate modal is MODAL: while open, hit-test its card first and swallow the
+  -- The reincarnate modal is MODAL: while open, hit-test its card first and swallow the
   -- click (a hit fires confirm/cancel; a miss is absorbed so the panel/blooms behind
   -- the scrim stay inert).
-  if sporulate_confirming then
-    local sb = cell._sporulate_click_map and renderer.hit_test(cell._sporulate_click_map, x, y)
+  if reincarnate_confirming then
+    local sb = cell._reincarnate_click_map and renderer.hit_test(cell._reincarnate_click_map, x, y)
+    if sb then
+      sb()
+    end
+    return
+  end
+  -- The endospore tree modal is MODAL too (one layer below the confirm): hit-test its zones
+  -- and swallow everything else so the panel/blooms behind the scrim stay inert. A miss
+  -- inside the card hits its swallow zone; a miss outside hits the close zone.
+  if endospore_tree_open then
+    local sb = cell._endospore_tree_click_map
+      and renderer.hit_test(cell._endospore_tree_click_map, x, y)
     if sb then
       sb()
     end
@@ -1530,13 +1541,16 @@ local DEBUG_FIXED_DT = require("lib.engine.clock").tick_dt
 local DEBUG_NOT_LOADED = "layer not loaded"
 -- Field-name sets the seam recognises, named so the routing branches carry no inline
 -- string literals. NON-NEGATIVE: clamped to >= 0. LEVELABLE traits: integer level >= 0.
--- UNLOCKABLE ids flip a milestone via debug_unlock (NOT debug_set, which returns
+-- UNLOCKABLE ids grant a capability via debug_unlock (NOT debug_set, which returns
 -- unknown for them). Sim fields with bespoke clamps (population, toxicity) are handled
 -- explicitly below rather than via a set.
 local DEBUG_SIM_NONNEGATIVE = { biomass = true, energy = true, age = true }
 local DEBUG_TRAIT_LEVELS =
   { photosynthesis = true, motility = true, sensing = true, digestion = true, evasion = true }
-local DEBUG_UNLOCK_IDS = { photosynthesis = true, predation = true }
+-- The console capability shortcuts map onto endospore tree NODES now (capabilities moved
+-- off the in-run unlock system): `unlock photosynthesis` grants the root, `unlock predation`
+-- grants Engulf (the phagocytosis gate). debug_unlock sets the mapped node to level 1.
+local DEBUG_UNLOCK_IDS = { photosynthesis = "photosynthesis", predation = "engulf" }
 
 -- Explicit min/max clamp (no math.clamp in Lua 5.1 / LuaJIT). Pure.
 local function clamp(v, lo, hi)
@@ -1579,6 +1593,22 @@ function cell.debug_get(field)
   return nil
 end
 
+-- Ordered snapshot of this layer's leveled traits with their CURRENT levels, for the
+-- console `trait list`. nil when the layer is unloaded (the list command reports
+-- not-loaded). Reuses traits.list() for the canonical panel order so a new trait
+-- shows up here for free.
+function cell.debug_traits()
+  if not cell.state then
+    return nil
+  end
+  local levels = cell.state.traits.levels
+  local out = {}
+  for _, def in ipairs(traits.list()) do
+    out[#out + 1] = { id = def.id, level = levels[def.id] or 0 }
+  end
+  return out
+end
+
 -- Set a single numeric/level field, APPLYING the documented clamp, then persist().
 -- Unlock ids are NOT handled here (use debug_unlock); they return unknown. Returns
 -- true on success, or false + a reason on an unloaded layer / unrecognised field.
@@ -1605,16 +1635,19 @@ function cell.debug_set(field, value)
   return true
 end
 
--- Flip a milestone unlock on (photosynthesis / predation), then persist(). Returns
--- true, or false + a reason on an unloaded layer / unrecognised id.
+-- Grant a capability by force (photosynthesis -> the tree root, predation -> Engulf), then
+-- persist(). Sets the mapped endospore node to level 1 (capabilities now live on the tree),
+-- bypassing cost/requires -- a debug shortcut. Returns true, or false + a reason on an
+-- unloaded layer / unrecognised id.
 function cell.debug_unlock(id)
   if not cell.state then
     return false, DEBUG_NOT_LOADED
   end
-  if not DEBUG_UNLOCK_IDS[id] then
+  local node = DEBUG_UNLOCK_IDS[id]
+  if not node then
     return false, "unknown unlock: " .. tostring(id)
   end
-  cell.state.traits.unlocked[id] = true
+  cell.state.endospores.levels[node] = 1
   persist()
   return true
 end

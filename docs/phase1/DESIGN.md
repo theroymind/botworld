@@ -15,9 +15,9 @@ fail-state) · [PRESTIGE.md](PRESTIGE.md) (the endosymbiosis seam). **Next phase
 ## Fantasy
 
 You don't *play* a cell — you *influence a soup*. You're a gentle hand on a shared
-primordial broth, nudging single-celled life toward complexity. It's Spore's "shape a
+primordial broth, nudging single-celled life toward complexity. It's Endospore's "shape a
 creature and watch it thrive," but the creature is a population and your design surface is
-its biology, not its limbs. The Spore feeling comes from editing life; the incremental
+its biology, not its limbs. The Endospore feeling comes from editing life; the incremental
 feeling comes from the soup metabolizing while you're away. A new player drops into a
 living dish, taps to feed a cell, watches it divide, spends biomass to level a trait, and
 *sees the dish visibly change* — more motes consumed, a flagellum sprouts, a new color
@@ -62,7 +62,7 @@ honest outcome of neglecting it.
 2. **Divide** — The energy reserve auto-spends on cell division; the visible swarm grows.
    More cells = more passive generation (the economy compounds — see below).
 3. **Level** — Spend biomass to raise trait levels and chase the two synergy pairs.
-4. **Evolve** — Collapse a generation into Spores and buy the permanent milestone unlocks
+4. **Evolve** — Collapse a generation into Endospores and buy the permanent milestone unlocks
    (photosynthesis → engulf → mitochondria) on the meta-tree (see [PRESTIGE.md](PRESTIGE.md)).
 5. **Drift together (co-op)** — Specialize, and your aura + niche construction quietly lift
    nearby lineages and the shared medium. Automatic; no management.
@@ -94,18 +94,18 @@ Evasion) — see [BALANCE.md](BALANCE.md) for the `√(a·b)` shape and constant
 
 ### The milestone unlock spine
 
-Capabilities are **permanent evolutions on the Spore meta-tree** ([PRESTIGE.md](PRESTIGE.md)),
-not in-run purchases — they're bought once with Spores and inherited by every later
+Capabilities are **permanent evolutions on the Endospore meta-tree** ([PRESTIGE.md](PRESTIGE.md)),
+not in-run purchases — they're bought once with Endospores and inherited by every later
 generation ("your descendants remember"). Each opens a closed-form income channel *and* world
 contents *and* a visual tell. The spine is:
 
 **Absorption** (start — ambient motes; the always-on state, not a purchase) →
-**Photosynthesis** (the Spore tree's root unlock; light → biomass, and reveals the trait) →
+**Photosynthesis** (the Endospore tree's root unlock; light → biomass, and reveals the trait) →
 **Engulf / Phagocytosis** (the tree's gate node, unlocked only once both branch capstones are
 maxed; your cells hunt & engulf prey — legitimate at the unicellular scale) →
 **Mitochondria** (Engulf maxed; the endosymbiosis chance toward the phase-2 seam). Engulf also
 `enables_predators` — the paired hazard cells that eat cells which fail to flee (Evasion
-mitigates) ride on the same unlock; predators are not a separate purchase. Spore costs and
+mitigates) ride on the same unlock; predators are not a separate purchase. Endospore costs and
 gate prereqs in [BALANCE.md](BALANCE.md); the full tree and loop in [PRESTIGE.md](PRESTIGE.md).
 
 Within a single generation the player still spends **biomass** on the five direct trait levels
