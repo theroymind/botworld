@@ -302,13 +302,10 @@ function registration.register_all()
     "give",
     { desc = "give <resource> <amount> to the active layer", fn = command_give }
   )
-  console.register(
-    "trait",
-    {
-      desc = "set <id> <level> on the active layer; `trait list` dumps all phases",
-      fn = command_trait,
-    }
-  )
+  console.register("trait", {
+    desc = "set <id> <level> on the active layer; `trait list` dumps all phases",
+    fn = command_trait,
+  })
   console.register("unlock", { desc = "unlock <id> on the active layer", fn = command_unlock })
   console.register(
     "screenshot",
