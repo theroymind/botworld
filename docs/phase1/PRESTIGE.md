@@ -8,24 +8,34 @@ zoom model ([`../../GAME_PLAN.md`](../../GAME_PLAN.md)).
 
 There are **two** prestige layers and they nest: the *within-phase* Spore loop runs many
 generations inside phase 1; the *cross-phase* seam fires once, when Mitochondria carries the
-endosymbiosis proc, and collapses all of phase 1 into a single number for phase 2.
+endosymbiosis proc, and collapses all of phase 1 into a single number for phase 2. The Spore
+loop is **strictly within-phase**: it owns the per-generation prestige and nothing crossing
+the seam — the cross-phase carry below is its own, separate system.
 
 ## Within-phase prestige — the Spore loop
 
 **Status: in design.** The named spend model for the cell layer (each later phase gets its
-own; see [`../../GAME_PLAN.md`](../../GAME_PLAN.md)). A generation grows until the age-ramped
-pressures (competition + predation, [FAILURE.md](FAILURE.md)) wall it out, then the player
-collapses it into **Spores** and spends them on a permanent tree. Each regrowth re-climbs
+own; see [`../../GAME_PLAN.md`](../../GAME_PLAN.md)). A generation grows under the age-ramped
+pressures (competition + predation, [FAILURE.md](FAILURE.md)); the player banks it into
+**Spores** by sporulating, then spends them on a permanent tree. Each regrowth re-climbs
 faster and peaks higher — the compounding ramp that gives the phase its playtime.
 
 ### The currency: Spores
 
 Bacterial endospores — the dormant survival capsule a colony forms under hostile conditions,
-then germinates into a fitter generation; the reset *is* the metaphor. Earned on cash-out
-from the colony's **health × growth** (peak population, weighted by the per-capita vitality
-band) on a diminishing curve, so the tree — not grinding one long generation — is the lever.
-Spores are **spent**, with a small always-on bonus from lifetime Spores so a weak run still
-counts. Earn formula and curve constants in [BALANCE.md](BALANCE.md).
+then germinates into a fitter generation; the reset *is* the metaphor.
+
+Spores reward the generation's **peak**, not a cash-out snapshot. The colony has an
+instantaneous **spore value** = `health × growth`, folded from population, the toxicity
+health factor, and a per-capita vitality term (formula and constants in
+[BALANCE.md](BALANCE.md)). The loop tracks the running **high-water peak** of that value
+across the generation — the peak only ratchets up, never down, so a colony banks its best
+moment even if it sickens afterward.
+
+Banking comes in two grades: **sporulating manually banks the full peak**; a **full collapse
+(extinction) banks half the peak** — the reset still pays, just at a discount for letting it
+die. The peak resets each generation. Spores are **spent** on the tree, with a small always-on
+global intake bonus per lifetime Spore so a weak run still counts.
 
 ### Two compounding layers
 
@@ -67,11 +77,12 @@ Maxing it is also the *only* path to Mitochondria.
 
 ### The reset beat
 
-Collapse is **voluntary**, but the age-ramped pressures supply the timer: a generation gets
-more contested as `state.age` climbs ([FAILURE.md](FAILURE.md)), so the decision is "harvest
-this generation at its healthiest, or push for more size and risk banking a sick colony."
-No hard force and no artificial decay — the teeth already in the sim do the work. *(Open:
-voluntary-with-ramp vs. a forced-on-condition collapse — see Open questions.)*
+Collapse is **manual only** — a player-clicked **sporulate**. Nothing in the sim ever forces
+it. The age-ramped pressures are pure *texture*: a generation gets more contested as
+`state.age` climbs ([FAILURE.md](FAILURE.md)), and since banking takes the running peak, the
+decision is "sporulate now and pocket the full peak, or push for a higher peak and risk
+letting the colony slide into a half-paying extinction." No hard force and no artificial
+decay — the teeth already in the sim do the work.
 
 ## The evolve-gate / climax
 
@@ -102,6 +113,11 @@ continues *inside* the engulfing cell: the bacterium it just kept becomes its fi
 Phase 2 is a *complex single cell*, **not** multicellular — going multicellular is a **later**
 phase ([`../../GAME_PLAN.md`](../../GAME_PLAN.md)).
 
+The seam itself — its cinematic and the lineage handoff — stays exactly as built
+(`lib/layers/cell/transition.lua` + the lineage transition). The seam multiplier / cross-phase
+carry is **not** designed or built by the Spore loop; that within-phase prestige engine stops
+at the seam and owns no part of the cross-phase number.
+
 ## The seam in
 
 None — phase 1 is the first phase; it receives no handoff.
@@ -120,11 +136,9 @@ size-ramped endosymbiosis proc (the Mitochondria node folds into that same chanc
 
 ## Open questions
 
-- **Collapse trigger:** voluntary-with-age-ramp (the standing lean) vs. a forced-on-condition
-  collapse — affects how hands-on the reset feels.
 - **Capstone strictness:** both capstones require their branch **fully maxed** to unlock
   Engulf (the standing call); revisit if the loop runs long against the ~15-min budget.
-- **Spore payout shape:** the exact health × growth weighting and the diminishing curve
-  (tuning — see [BALANCE.md](BALANCE.md)).
+- **Spore payout shape:** the exact spore-value weighting (population exponent, vitality
+  weight) and the full-vs-half banking split (tuning — see [BALANCE.md](BALANCE.md)).
 - **Seam multiplier framing:** how peak Spores / tree depth maps to phase 2's starting state
   (ties into [DESIGN.md](DESIGN.md)'s trait/catalog-cap question).

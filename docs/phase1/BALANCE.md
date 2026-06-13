@@ -54,23 +54,32 @@ counters mapped in [FAILURE.md](FAILURE.md).
 ## Spore prestige constants
 
 **Status: in design** — the within-phase Spore loop ([PRESTIGE.md](PRESTIGE.md)) is not yet
-built, so these are *placeholder* values to tune, not locked. When the loop ships they live
-in a new `spores.lua` (the meta-tree defs + folds) and are **mirrored in the harness** under
-the standing mirror rule; `tools/sim_lab.lua` grows a `prestige` mode that replays N
-accelerating loops and reports total playtime against the ~15-min budget.
+built, so these are *placeholder* values to tune, not locked. The generic high-water kernel
+lives in `lib/engine/spore_tree.lua`; the phase-1 tree defs, the spore-value formula, the
+intake fold, and the `SPORE_*` constants below live in `lib/layers/cell/spores.lua`, **mirrored
+in the harness** under the standing mirror rule (`tools/sim_lab.lua`, which grows a `prestige`
+mode that replays N accelerating loops and reports total playtime against the ~15-min budget).
 
-**Earning** — Spores banked on cash-out from health × growth:
+**Earning** — a running peak-observer, not a cash-out formula. The colony has an instantaneous
+**spore value**; the loop tracks its running peak (high-water, ratchets up only) across the
+generation, and banks on reset:
 
 ```
-spores_gained = floor( SPORE_EARN_K · peak_population^SPORE_GROWTH_EXP · vitality_factor )
+health  = TOX_HALF / (TOX_HALF + toxicity)                       -- toxicity health factor
+vitality = 1 + SPORE_VITALITY_WEIGHT · max(per_capita_net_replication, 0)
+spore_value = SPORE_EARN_K · population^SPORE_GROWTH_EXP · health · vitality
+peak    = max(peak, spore_value)                                 -- per-tick high-water
+
+banked  = floor( peak )         on manual sporulate (full peak)
+banked  = floor( peak / 2 )     on full collapse / extinction (half peak)
 ```
 
 | Constant | Placeholder | Why |
 |---|---|---|
-| `SPORE_EARN_K` | 1.0 | Payout scalar; dial so loop 1 yields enough to open one branch node. |
-| `SPORE_GROWTH_EXP` | 0.5 | The `√` diminishing curve on peak population — makes the *tree*, not grinding one long run, the lever. |
-| `SPORE_VITALITY_WEIGHT` | 1.0 | How hard the per-capita vitality band ([FAILURE.md](FAILURE.md)) scales payout — rewards cashing out healthy. |
-| `SPORE_LIFETIME_BONUS` | 0.005 | Small always-on global bonus per lifetime Spore earned, so a weak run still counts (the "spent but not wasted" mark). |
+| `SPORE_EARN_K` | 1.0 | Spore-value scalar; dial so loop 1's peak yields enough to open one branch node. |
+| `SPORE_GROWTH_EXP` | 0.5 | The `√` diminishing curve on population in the spore value — makes the *tree*, not grinding one long run, the lever. |
+| `SPORE_VITALITY_WEIGHT` | 1.0 | How hard per-capita net replication ([FAILURE.md](FAILURE.md)) lifts the vitality term — rewards peaking healthy. |
+| `SPORE_LIFETIME_BONUS` | 0.005 | Small always-on global intake bonus per lifetime Spore earned, so a weak run still counts (the "spent but not wasted" mark). |
 
 **Tree node effects** — multiplicative, permanent across resets; level caps in parens:
 
