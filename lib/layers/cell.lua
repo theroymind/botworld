@@ -27,6 +27,14 @@ local organelles = require("lib.layers.cell.organelles")
 local world = require("lib.layers.cell.world")
 local view = require("lib.layers.cell.view")
 local transition = require("lib.layers.cell.transition")
+-- The Spore prestige loop: the generic leveled-tree kernel, the phase-1 data over it,
+-- and the confirm modal. The tree's meta-currency survives the within-phase reset
+-- (sporulate / extinction bank into it); spores.fold mixes its node levels into the
+-- intake (neutral at level 0, so a fresh game is unchanged); sporulate.lua is the
+-- voluntary cash-out card.
+local spore_tree = require("lib.engine.spore_tree")
+local spores = require("lib.layers.cell.spores")
+local sporulate = require("lib.layers.cell.sporulate")
 -- Phase-2 seam: the endosymbiosis finale no longer restarts phase 1 -- it zooms
 -- INTO the cell and hands off to the complex-cell layer (see begin_lineage_transition).
 local layers = require("lib.engine.layers")
@@ -165,6 +173,12 @@ local PRED_MIT_CAP = 0.97 -- max fraction of predation a high-evasion build can 
 local PRED_FEAR = 8.0 -- intake suppression per unit effective predation pressure (the fear gain) [lab-locked; softened from 18 in the lab's pop re-key so a neglected founder still grows enough for toxicity+competition to stay co-dominant]
 local FEAR_FLOOR = 0.0 -- min surviving fraction of intake under max fear (0 -> fear can fully starve income)
 
+-- Spore Homeostasis (the resilience capstone) DAMPENS the competition + predation
+-- ramps by its folded pressure_damp, but it can never FULLY neutralize a pressure --
+-- a colony that buys infinite Homeostasis must still face some crowding and some
+-- predation, or the late game becomes unloseable. Cap the dampening at this fraction.
+local PRESSURE_DAMP_CAP = 0.9 -- max fraction of a pressure ramp Homeostasis can cancel (<1: never immune)
+
 -- Endosymbiosis (phase 1's climax) is an RNG event possible at ANY colony size, but
 -- the per-engulf chance starts vanishingly small and only begins to RAMP once the
 -- colony crosses ENDO_RAMP_START cells, then climbs by ENDO_RAMP_PER_STEP for every
@@ -196,6 +210,11 @@ local TOGGLE_BTN_W = 26 -- square minimize/expand toggle pinned to the title row
 -- stays reachable so it can be expanded again). In-memory only -- a fresh launch
 -- opens expanded.
 local panel_collapsed = false
+
+-- Sporulate confirm modal: true while the player is being asked to confirm the
+-- voluntary prestige cash-out. In-memory only (a fresh launch opens with no modal).
+-- While true, cell.draw stamps the modal and cell.mousepressed hit-tests it first.
+local sporulate_confirming = false
 
 -- VITALITY BAND thresholds -- a qualitative weak->strong read driven by PER-CAPITA
 -- net replication (net_rate / population), so it's SCALE-INVARIANT: the same per-cell
@@ -254,6 +273,9 @@ local COLLAPSE_CAUSE = {
   [pressures.PREDATORS] = "was hunted to extinction",
 }
 local COLLAPSE_TAIL = " — a new lineage begins"
+-- Extinction is the INVOLUNTARY collapse: it banks only HALF the spore peak (a
+-- voluntary sporulate banks the full peak). The lost generation still pays forward.
+local EXTINCTION_PENALTY = 0.5
 
 -- The saturating COMPETITION ramp (mirrors sim_lab.comp_frac): rivals take a
 -- growing share of the food as the lineage ages, climbing toward COMP_FRAC_MAX with
@@ -296,13 +318,17 @@ end
 local function intake_for(state)
   local stats = traits.stats(state.traits)
   local set = state.sim.organelles
+  -- The spore tree's folded economy modifiers (NEUTRAL at level 0: multipliers 1,
+  -- additive terms 0), threaded into the existing fold below. A fresh game (empty
+  -- tree) leaves every term identity, so the intake is byte-identical to pre-spore.
+  local sp = spores.fold(state.spores)
   local photo = 0
   if traits.is_unlocked(state.traits, "photosynthesis") then
-    photo = PHOTO_LIGHT * stats.photo_mult
+    photo = PHOTO_LIGHT * stats.photo_mult * sp.photo_mult
   end
   photo = photo + organelles.photo_bonus(set)
   local upkeep = metabolism.loss(FIXED_TEMPO) * stats.upkeep_mult * UPKEEP_SCALE
-  local mult = traits.income_mult(state.traits) * organelles.intake_mult(set)
+  local mult = traits.income_mult(state.traits) * organelles.intake_mult(set) * sp.all_intake
 
   -- The lineage clock the two age-keyed pressures ramp on (seconds since lineage
   -- start; ticked by sim.step, so it advances identically online and offline).
@@ -317,13 +343,19 @@ local function intake_for(state)
   -- mobile forager keeps your_share near 1 while an immobile colony eats the full
   -- crowding tax. counter in [0,1]; tax = comp_frac*(1-counter).
   local motility = traits.level_of(state.traits, "motility")
-  local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+  local counter = COMP_MOTILITY_COUNTER * motility
+    + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+    + sp.comp_counter
   if counter < 0 then
     counter = 0
   elseif counter > 1 then
     counter = 1
   end
-  local your_share = 1 / (1 + comp_frac(age) * (1 - counter))
+  -- Spore Homeostasis DAMPENS both age-ramped pressures (competition + predation) by
+  -- the folded pressure_damp, capped at PRESSURE_DAMP_CAP so a maxed tree never fully
+  -- cancels a pressure. damp_factor scales the two ramps DOWN below.
+  local damp_factor = 1 - math.min(sp.pressure_damp, PRESSURE_DAMP_CAP)
+  local your_share = 1 / (1 + comp_frac(age) * damp_factor * (1 - counter))
   mult = mult * your_share
 
   -- PREDATION fear/harassment throttle (mirrors sim_lab intake_for): heavy predation
@@ -333,8 +365,8 @@ local function intake_for(state)
   -- millions) while a zero-evasion build's births are suppressed AND the floorless
   -- cull (sim.step) runs -> deaths beat births -> spiral to literal 0. Clamped to
   -- [FEAR_FLOOR, 1]. The cull fraction itself is forwarded as pred_cull_frac for sim.step.
-  local pred_mit = evasion_mit(stats.evasion)
-  local pred_cull_frac = pred_pressure(age) * pred_mit
+  local pred_mit = evasion_mit(stats.evasion + sp.evasion_add)
+  local pred_cull_frac = pred_pressure(age) * damp_factor * pred_mit
   local fear = 1 - PRED_FEAR * pred_cull_frac
   if fear < FEAR_FLOOR then
     fear = FEAR_FLOOR
@@ -355,17 +387,17 @@ local function intake_for(state)
   local growth_per_cell = upkeep / mult + GROWTH_RATE
   return {
     photo = photo,
-    forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult,
+    forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult * sp.forage_mult,
     forage_cap = FORAGE_CAP * stats.forage_cap_mult, -- reach synergy lifts the saturation cap
     upkeep_per_cell = upkeep,
     growth_per_cell = growth_per_cell, -- the open-ended compounding channel (-> millions)
     mult = mult,
-    div_mult = stats.div_mult, -- digestion: < 1 cheapens every division
+    div_mult = stats.div_mult * sp.div_mult, -- digestion + Mitotic Speed: < 1 cheapens every division
     -- Toxicity model (the failure pressure): the dish fouls at TOX_PROD and the
     -- colony clears at stats.cleanup (cleanup traits). Net waste throttles intake
     -- (TOX_HALF) and, past TOX_TOLERANCE, CULLS cells (TOX_KILL_K) toward extinction.
     tox_prod = TOX_PROD,
-    tox_clear = stats.cleanup,
+    tox_clear = stats.cleanup + sp.cleanup,
     tox_half = TOX_HALF,
     tox_tolerance = TOX_TOLERANCE,
     tox_kill_k = TOX_KILL_K,
@@ -414,6 +446,7 @@ local function persist()
   save.write(SAVE_NAME, {
     traits = traits.serialize(cell.state.traits),
     sim = sim.serialize(cell.state.sim),
+    spores = spore_tree.serialize(cell.state.spores), -- the prestige tree (survives the reset)
     stamp = os.time(),
     -- legacy `genome` and `dial` keys (old systems) are intentionally not written.
   })
@@ -477,7 +510,18 @@ local function begin_collapse()
   -- copy matches what actually drove the extinction -- not always the waste default.
   collapse_cause =
     pressures.dominant(death_attrib.waste, death_attrib.rivals, death_attrib.predators)
-  toast.show("The colony " .. COLLAPSE_CAUSE[collapse_cause] .. COLLAPSE_TAIL)
+  -- The colony still BANKS half its spore peak on extinction (the collapse itself
+  -- fires later, in cell.update's collapsing branch -- so read the bankable amount
+  -- NOW, before the peak is zeroed, to name it in the death toast).
+  local banked = cell.state.spores:bankable(EXTINCTION_PENALTY)
+  toast.show(
+    "The colony "
+      .. COLLAPSE_CAUSE[collapse_cause]
+      .. COLLAPSE_TAIL
+      .. " — banked "
+      .. format.number(banked)
+      .. " spores (½)"
+  )
   sound.play("pop", { volume = 1.0, pitch_spread = 0.2 })
   view.spawn(view_state, fx.flash({ color = colors.quaternary, alpha = 0.4, life = 0.6 }))
   view.spawn(view_state, fx.shake({ mag = 10, life = 0.7, seed = cell.state.sim.population }))
@@ -564,7 +608,12 @@ local function roll_endosymbiosis(engulfs, engulf_points, predation)
     return
   end
   local s = cell.state.sim
-  local chance = endo_chance(s.population)
+  -- The spore Mitochondria node lifts the per-engulf keep chance toward near-certain.
+  -- Folded in here (not threaded through the stateless endo_chance) and re-clamped <= 1.
+  local chance = endo_chance(s.population) + spores.fold(cell.state.spores).endo_chance_add
+  if chance > 1 then
+    chance = 1
+  end
   for i = 1, engulfs do
     local def = organelles.next_eligible(s.organelles, s.total_divisions, predation)
     if def and love.math.random() < chance then
@@ -584,6 +633,74 @@ local function roll_endosymbiosis(engulfs, engulf_points, predation)
   end
 end
 
+-- Seed the live world + view for a fresh founder colony: a new cosmetic swarm over
+-- the current sim baseline. Factored out of cell.load so the in-run reseed (after a
+-- sporulate / a half-bank extinction) rebuilds the SAME founder world without touching
+-- the prestige tree or the save. Reads love.graphics for the aspect (1280x720 headless).
+local function seed_world()
+  view_state = view.new()
+  local width, height = 1280, 720
+  if love and love.graphics then
+    width, height = love.graphics.getDimensions()
+  end
+  world_state = world.new({
+    rng = function() return love.math.random() end,
+    aspect = width / height,
+  })
+end
+
+-- Reset the IN-RUN state for a fresh generation but KEEP the prestige tree (the
+-- banked spores survive the within-phase reset, per the spore loop's whole point).
+-- The traits + sim reset to the founder; the world/view reseed. Does NOT remove the
+-- save and does NOT rebuild cell.state.spores. Persists the fresh generation.
+local function reseed_in_run()
+  collapsing = false
+  collapse_anim = 0
+  collapse_cause = pressures.DEFAULT
+  death_attrib.waste, death_attrib.rivals, death_attrib.predators = 0, 0, 0
+  cell.state.traits = traits.new()
+  cell.state.sim = sim.load(nil)
+  seed_world()
+  persist()
+end
+
+-- Open the sporulate confirm modal -- the voluntary prestige cash-out gate. A no-op
+-- unless a full collapse would actually bank something (a peak above 0), so the
+-- button never opens an empty "bank 0 spores" card.
+local SPORULATE_PENALTY = 1 -- voluntary cash-out banks the FULL peak (extinction banks half)
+local function open_sporulate()
+  if cell.state.spores:bankable(SPORULATE_PENALTY) > 0 then
+    sporulate_confirming = true
+  end
+end
+
+-- Confirm the sporulate: close the modal and arm the "white" collapse cinematic on
+-- the swarm centre. The actual bank + in-run reseed fire at the white peak (on_reset),
+-- so the colony you banked dissolves into the flash and the fresh founder emerges out
+-- of it. Style "white" (vs the endosymbiosis finale's "dive") so the two read apart.
+local function do_sporulate()
+  sporulate_confirming = false
+  local base_zoom = view_state.camera.zoom
+  local cx, cy = world.swarm_center(world_state)
+  transition.begin(transition_state, {
+    style = "white",
+    x = cx,
+    y = cy,
+    title = "SPORULATION",
+    kicker = "collapse",
+    subtitle = "regrow",
+    on_focus = function(x, y, mult) view.focus(view_state, x, y, base_zoom * mult) end,
+    on_shake = function(mag, life, seed)
+      view.spawn(view_state, fx.shake({ mag = mag, life = life, seed = seed }))
+    end,
+    on_reset = function()
+      local gained = cell.state.spores:collapse(SPORULATE_PENALTY)
+      toast.show("Sporulated — banked " .. format.number(gained) .. " spores")
+      reseed_in_run()
+    end,
+  })
+end
+
 function cell.load()
   retired = false -- a fresh lineage runs live again (clears any prior phase-2 hand-off)
   collapsing = false -- clear any prior game-over state (a fresh founder runs normally)
@@ -597,16 +714,11 @@ function cell.load()
   cell.state = {
     traits = traits.load(data.traits),
     sim = sim.load(data.sim),
+    -- The prestige tree loads from its own save slice (tolerant of a missing/changed
+    -- tree). Neutral until spent, so a fresh game behaves identically.
+    spores = spore_tree.load(spores.defs(), spores.tree_opts(), data.spores),
   }
-  view_state = view.new()
-  local width, height = 1280, 720
-  if love and love.graphics then
-    width, height = love.graphics.getDimensions()
-  end
-  world_state = world.new({
-    rng = function() return love.math.random() end,
-    aspect = width / height,
-  })
+  seed_world()
 
   -- Offline catch-up from a wall-clock stamp (closed-form rate only -- no
   -- predators, no agent dependency). Swallow the division pulses; the live
@@ -675,6 +787,10 @@ function cell.tick(tick_dt)
   local pop_before = cell.state.sim.population
   local div_before = cell.state.sim.total_divisions
   sim.tick(cell.state.sim, tick_dt, intake)
+  -- Ratchet the prestige peak from this tick's instantaneous spore-value (health x
+  -- growth). Live economy path only (past the retired/transition/collapsing guards
+  -- above), so the peak reflects an actually-running colony at its healthiest.
+  cell.state.spores:observe(spores.value(cell.state.sim, { tox_half = TOX_HALF }))
   track_death_attrib(intake, pop_before, div_before, tick_dt)
 end
 
@@ -703,8 +819,11 @@ function cell.update(dt)
     toast.update(dt)
     collapse_anim = collapse_anim - dt
     if collapse_anim <= 0 then
-      save.remove(SAVE_NAME)
-      cell.load() -- fresh founder; clears collapsing via the load reset below
+      -- Half-bank the spore peak and reseed the IN-RUN state -- the prestige tree
+      -- survives, so this is NOT a wipe. ([r] remains the true full wipe.) The death
+      -- toast (begin_collapse) already named the banked amount before the peak zeroed.
+      cell.state.spores:collapse(EXTINCTION_PENALTY)
+      reseed_in_run() -- fresh founder; clears collapsing
     end
     return
   end
@@ -1001,6 +1120,57 @@ local function capability_children(state)
   return rows
 end
 
+-- The SPORE TREE section: the prestige loop's panel. Leads with a sporulate action
+-- button (the voluntary cash-out, enabled once a peak is bankable), then one buy row
+-- per UNLOCKED node (locked nodes are hidden -- the same reveal discipline as the
+-- evolutions section, where a gated capability simply doesn't list). Each row buys one
+-- level off the spore currency. Always shown (the tree is always present), so unlike
+-- the capability/organelle sections this never returns nil.
+local function spore_children(state)
+  local tree = state.spores
+  local bankable = tree:bankable(SPORULATE_PENALTY)
+  local children = {
+    layout.text("spores", { color = colors.ui.text_dim }),
+    action_button_node({
+      label = "sporulate",
+      sublabel = format.number(bankable) .. " spores",
+      enabled = bankable > 0,
+      w = BTN_W,
+      h = TRAIT_BTN_H,
+      id = "sporulate",
+      on_click = open_sporulate,
+    }),
+  }
+  for _, def in ipairs(spores.defs()) do
+    if tree:is_unlocked(def.id) then
+      local level = tree:level_of(def.id)
+      local can_buy = tree:can_buy(def.id)
+      local label_col = layout.vstack({
+        layout.text(
+          string.format("%s   Lv %d/%d", def.label, level, def.cap),
+          { color = colors.ui.text }
+        ),
+      }, { gap = 2 })
+      local right = action_button_node({
+        label = tree:is_maxed(def.id) and "maxed" or "grow",
+        sublabel = tree:is_maxed(def.id) and "—"
+          or (format.number(tree:node_cost(def.id)) .. " spores"),
+        enabled = can_buy,
+        w = BTN_W,
+        h = TRAIT_BTN_H,
+        id = "spore_" .. def.id,
+        on_click = function()
+          if state.spores:buy(def.id) then
+            persist()
+          end
+        end,
+      })
+      table.insert(children, layout.hstack({ label_col, right }, { gap = theme.spacing.sm }))
+    end
+  end
+  return children
+end
+
 -- The VITALITY BAND: classify the colony's health from its SCALE-INVARIANT per-capita
 -- net replication (net_rate / population). Returns the label, its color token, a trend
 -- arrow (sign of net_rate), and an analog 0..1 fraction for the thin backing bar.
@@ -1068,6 +1238,19 @@ local function build_panel(state)
     header,
     layout.text(string.format("colony  %d", pop), { color = colors.ui.text_dim })
   )
+  -- Compact prestige read: the banked spore currency and the bankable peak, so the
+  -- at-a-glance number stays visible even when the spore tree section is empty/hidden.
+  table.insert(
+    header,
+    layout.text(
+      string.format(
+        "spores  %s  (+%s)",
+        format.number(state.spores:currency_amount()),
+        format.number(state.spores:bankable(1))
+      ),
+      { color = colors.secondary }
+    )
+  )
   -- NET REPLICATION headline: births minus ALL deaths, per MINUTE, SIGNED -- the
   -- single most honest "are you winning" number. It goes red and negative BEFORE
   -- the colony visibly slides, the leading indicator the vitality band follows.
@@ -1118,6 +1301,11 @@ local function build_panel(state)
     layout.vstack(header, { gap = theme.spacing.xs }),
     layout.vstack(trait_children, { gap = theme.spacing.sm }),
   }
+
+  local spore_group = spore_children(state)
+  if spore_group then
+    table.insert(groups, layout.vstack(spore_group, { gap = theme.spacing.sm }))
+  end
 
   local capability_group = capability_children(state)
   if capability_group then
@@ -1241,6 +1429,20 @@ function cell.draw()
 
   draw_help(width)
   toast.draw(width)
+
+  -- The sporulate confirm modal overlays the panel (its own UI-kit frame, drawn last
+  -- so it sits on top). Stash its click map so mousepressed can hit-test it FIRST and
+  -- swallow clicks behind it. Suppressed while a cinematic owns the screen (the early
+  -- returns above never reach here then).
+  if sporulate_confirming then
+    cell._sporulate_click_map = sporulate.draw({
+      amount = state.spores:bankable(SPORULATE_PENALTY),
+      on_confirm = do_sporulate,
+      on_cancel = function() sporulate_confirming = false end,
+    })
+  else
+    cell._sporulate_click_map = nil
+  end
 end
 
 function cell.keypressed(key)
@@ -1281,6 +1483,16 @@ function cell.mousepressed(x, y, button_index)
   end
   -- The cinematic / game-over beat owns the screen: ignore clicks until it ends.
   if transition.active(transition_state) or collapsing then
+    return
+  end
+  -- The sporulate modal is MODAL: while open, hit-test its card first and swallow the
+  -- click (a hit fires confirm/cancel; a miss is absorbed so the panel/blooms behind
+  -- the scrim stay inert).
+  if sporulate_confirming then
+    local sb = cell._sporulate_click_map and renderer.hit_test(cell._sporulate_click_map, x, y)
+    if sb then
+      sb()
+    end
     return
   end
   -- A widget hit fires its on_click closure; anything else outside the panel
