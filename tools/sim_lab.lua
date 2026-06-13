@@ -35,6 +35,16 @@ local metabolism = require("lib.layers.cell.metabolism")
 local traits = require("lib.layers.cell.traits")
 local organelles = require("lib.layers.cell.organelles")
 
+-- Loaded for the `prestige` mode (the spore meta-progression rig). Unlike the economy
+-- constants above -- which are MIRRORED here as a divergent copy -- the prestige path uses
+-- the REAL spores module directly: spores.lua is the SINGLE SOURCE for every SPORE_*
+-- constant, the defs spine, and the value/fold helpers, so this harness stays a TRUE
+-- regression reference for it (no copy to drift). The "mirror rule" here therefore means:
+-- never re-type a SPORE_* magnitude in this file -- pull it from spores.constants / the
+-- module if a numeric reference is ever needed. spore_tree is the kernel the loops drive.
+local spores = require("lib.layers.cell.spores")
+local spore_tree = require("lib.engine.spore_tree")
+
 -- ---------------------------------------------------------------------------
 -- Game constants, mirrored from lib/layers/cell.lua. Kept here as the BASELINE
 -- defaults; a config can override any of them to test a tuning change. If these
@@ -252,11 +262,24 @@ local function intake_for(cfg, population, t)
   local stats = traits.stats(tstate)
   local set = cfg.organelles or {}
 
+  -- SPORE prestige fold (the `prestige` mode only): when cfg carries a spore_tree
+  -- instance, mix its bought-node modifiers into this intake at the SAME points the
+  -- game does (so the climb accelerates as the tree fills). Neutral (all 1 / 0) at
+  -- level 0, so it never moves a config that didn't set cfg.spores -- the existing
+  -- scenario/growth/sweep/survival folds stay byte-identical (sp is nil there).
+  local sp
+  if cfg.spores then
+    sp = spores.fold(cfg.spores)
+  end
+
   local photo = 0
   if cfg.unlocked.photosynthesis then
     photo = cfg.photo_light * stats.photo_mult
   end
   photo = photo + organelles.photo_bonus(set)
+  if sp then
+    photo = photo * sp.photo_mult
+  end
 
   -- Synergy is already folded into stats (forage_cap_mult + upkeep_mult), so it
   -- comes through here automatically -- the harness mirrors the shipped game.
@@ -271,6 +294,9 @@ local function intake_for(cfg, population, t)
   end
 
   local mult = traits.income_mult(tstate) * organelles.intake_mult(set)
+  if sp then
+    mult = mult * sp.all_intake -- spore all-intake capstone + lifetime bonus
+  end
   -- COMPETITION throttle (prototype): rivals thin your share of the food. Applied
   -- to the mult so it scales ALL gain channels (photo + foraging + compounding),
   -- mirroring how the toxicity health factor throttles the whole intake side --
@@ -282,16 +308,26 @@ local function intake_for(cfg, population, t)
   -- [0,1]; effective tax = comp_frac * (1-counter).
   -- Capture each throttle's factor (<= 1) so the caller can attribute the carrying-cap
   -- starvation it causes to the right pressure (competition vs predation fear).
+  -- pressure_damp (Homeostasis capstone): dampens BOTH the competition crowding and the
+  -- predation fear/cull, mirroring the game. Clamped to 0.9 max so it can never zero a
+  -- pressure outright. Neutral (0 damp) without spores.
+  local pressure_damp = 0
+  if sp then
+    pressure_damp = math.min(sp.pressure_damp, 0.9)
+  end
   local comp_factor, fear_factor = 1, 1
   if cfg.competition and t then
     local motility = traits.level_of(tstate, "motility")
     local counter = COMP_MOTILITY_COUNTER * motility + (stats.forage_mult - 1) * COMP_COUNTER_GAIN
+    if sp then
+      counter = counter + sp.comp_counter -- Foraging Dominance branch restores share
+    end
     if counter < 0 then
       counter = 0
     elseif counter > 1 then
       counter = 1
     end
-    comp_factor = 1 / (1 + comp_frac(t or 0) * (1 - counter))
+    comp_factor = 1 / (1 + comp_frac(t or 0) * (1 - pressure_damp) * (1 - counter))
     mult = mult * comp_factor
   end
   -- PREDATION FEAR / HARASSMENT throttle (prototype) -- the death-spiral driver.
@@ -307,7 +343,14 @@ local function intake_for(cfg, population, t)
   -- the SINGLE source of predation deaths, live AND offline (no separate lab cull).
   local pred_cull_frac
   if cfg.predation and t then
-    pred_cull_frac = effective_pred_pressure(cfg, population, t)
+    if sp then
+      -- Spore membrane evasion (evasion_add) folds in BEFORE mitigation, and the
+      -- Homeostasis damp softens the residual cull -- mirroring the game's predation fold.
+      local evasion = (traits.stats(tstate).evasion or 0) + sp.evasion_add
+      pred_cull_frac = pred_pressure(t or 0) * evasion_mitigation(evasion) * (1 - pressure_damp)
+    else
+      pred_cull_frac = effective_pred_pressure(cfg, population, t)
+    end
     local fear = 1 - PRED_FEAR * pred_cull_frac
     if fear < FEAR_FLOOR then
       fear = FEAR_FLOOR
@@ -338,14 +381,26 @@ local function intake_for(cfg, population, t)
     tox_tolerance = TOX_TOLERANCE
     tox_kill_k = TOX_KILL_K
   end
+  -- Spore terms that map onto the per-cell channels: Flagella -> forage, Detox ->
+  -- cleanup (additive units/sec, only meaningful when toxicity is modelled), Mitosis ->
+  -- cheaper division (div_mult < 1). All neutral without spores.
+  local forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult
+  local div_mult = stats.div_mult
+  if sp then
+    forage_per_cell = forage_per_cell * sp.forage_mult
+    div_mult = div_mult * sp.div_mult
+    if tox_clear then
+      tox_clear = tox_clear + sp.cleanup
+    end
+  end
   return {
     photo = photo,
-    forage_per_cell = metabolism.gain(FIXED_TEMPO) * stats.forage_mult,
+    forage_per_cell = forage_per_cell,
     forage_cap = forage_cap,
     upkeep_per_cell = upkeep,
     growth_per_cell = growth_per_cell,
     mult = mult,
-    div_mult = stats.div_mult,
+    div_mult = div_mult,
     tox_prod = tox_prod,
     tox_clear = tox_clear,
     tox_half = tox_half,
@@ -1343,6 +1398,162 @@ local function survival_sweep(knob, lo, hi, step)
 end
 
 -- ---------------------------------------------------------------------------
+-- PRESTIGE -- the spore meta-progression rig. Replays N ACCELERATING grow ->
+-- cash-out -> spend loops on ONE persistent spore_tree: each loop grows a maxed-ish
+-- colony (with cfg.spores = the tree, so every bought node feeds the NEXT climb),
+-- cashes out at a target population (or a sim-time cap), banks the peak via
+-- tree:collapse(1), then GREEDILY auto-buys the cheapest affordable node until broke.
+-- The readout is the per-loop sim-MINUTES to cash out and the CUMULATIVE total vs the
+-- ~15-min budget (docs/phase1/BALANCE.md), so this is the tuning rig for the SPORE_*
+-- earning / cost constants (EARN_K / COST_GROWTH / TIER_MULT) -- all of which live in
+-- spores.lua; this mode never re-types them, it just measures the loop they produce.
+-- ---------------------------------------------------------------------------
+
+-- Defaults for the prestige rig. PRESTIGE_TARGET is the cash-out population (the loop
+-- ends when the colony first crosses it); PRESTIGE_MAX_T caps a single loop's sim time
+-- so a too-slow climb can't hang the rig (it just cashes out whatever peak it reached).
+local PRESTIGE_LOOPS_DEFAULT = 7 -- ~5-7 accelerating loops is the BALANCE.md pacing target
+local PRESTIGE_TARGET = 1000000 -- cash-out population per loop (the phase-1 millions exit)
+local PRESTIGE_MAX_T = 60 * 60 -- 1h per-loop sim cap (safety: never spin forever)
+local PRESTIGE_STEP_DT = 1 -- seconds per economy step (matches the survival/growth drivers)
+
+-- Grow ONE prestige loop forward on the real economy with cfg.spores live, feeding the
+-- tree spores.value() every step so its peak ratchets with the colony's health x growth.
+-- Reuses the run()/survival_run() stepping shape (sim.step on intake_for) and
+-- survival_run's peak tracker. Stops at PRESTIGE_TARGET or the sim-time cap; returns the
+-- elapsed sim seconds and the peak population reached.
+local function prestige_grow(cfg, tox_half)
+  local state = sim.new()
+  state.organelles = cfg.organelles or {}
+  local dt, t = PRESTIGE_STEP_DT, 0
+  local peak = state.population
+  while t < PRESTIGE_MAX_T do
+    sim.step(state, dt, intake_for(cfg, state.population, t))
+    t = t + dt
+    -- Feed the kernel the instantaneous spore-value (health x growth), so the peak it
+    -- banks reflects the colony at its healthiest -- the same value the live game observes.
+    cfg.spores:observe(spores.value(state, { tox_half = tox_half }))
+    if state.population > peak then
+      peak = state.population
+    end
+    if state.population >= PRESTIGE_TARGET or state.population <= 0 then
+      break
+    end
+  end
+  return t, peak
+end
+
+-- Greedily spend the banked currency: repeatedly buy the CHEAPEST currently-affordable
+-- node until none is buyable. Scans spores.defs() each pass (the spine is small), so a
+-- newly-maxed branch that unlocks a capstone is picked up on the next scan. Returns the
+-- number of levels bought this cash-out.
+local function prestige_autobuy(tree)
+  local bought = 0
+  while true do
+    local best_id, best_cost = nil, math.huge
+    for _, def in ipairs(spores.defs()) do
+      if tree:can_buy(def.id) then
+        local cost = tree:node_cost(def.id)
+        if cost < best_cost then
+          best_id, best_cost = def.id, cost
+        end
+      end
+    end
+    if not best_id then
+      break
+    end
+    tree:buy(best_id)
+    bought = bought + 1
+  end
+  return bought
+end
+
+-- A compact "node:level" ownership summary for the per-loop row (only nodes with a
+-- level > 0, in spine order), e.g. "photosynthesis:1 flagella:3 chemo:2".
+local function prestige_owned(tree)
+  local parts = {}
+  for _, def in ipairs(spores.defs()) do
+    local lv = tree:level_of(def.id)
+    if lv > 0 then
+      parts[#parts + 1] = string.format("%s:%d", def.id, lv)
+    end
+  end
+  if #parts == 0 then
+    return "(none)"
+  end
+  return table.concat(parts, " ")
+end
+
+local function prestige_mode(loops_arg)
+  local loops = tonumber(loops_arg) or PRESTIGE_LOOPS_DEFAULT
+  -- ONE persistent tree across all loops -- the whole point: spores banked + spent in
+  -- loop N accelerate loop N+1. spores.lua owns the defs/opts (and the SPORE_* costs).
+  local tree = spore_tree.new(spores.defs(), spores.tree_opts())
+  -- The growth config every loop reuses: the maxed colony with the compounding climb on
+  -- (the best-growth cfg the growth/survival modes use), plus the live tree so the climb
+  -- accelerates as the tree fills. tox_half is the harness's mirrored TOX_HALF -- the
+  -- toxicity-half curve spores.value() needs (shared with the live intake throttle).
+  local cfg = maxed_cfg({ growth_rate = GROWTH_RATE, spores = tree })
+
+  print("")
+  print(
+    string.format(
+      "prestige -- %d accelerating spore loops (cash out at %s, persistent tree)",
+      loops,
+      fmt_pop(PRESTIGE_TARGET)
+    )
+  )
+  print("each loop: grow the maxed colony with the tree LIVE, cash out the peak, auto-buy")
+  print("the cheapest nodes. budget = ~15 min cumulative (docs/phase1/BALANCE.md).")
+  print(string.rep("-", 100))
+  print(
+    string.format(
+      "%-5s %10s %9s %9s %9s   %s",
+      "loop",
+      "min->cash",
+      "peak",
+      "gained",
+      "total",
+      "owned (node:level)"
+    )
+  )
+  print(string.rep("-", 100))
+
+  local cumulative = 0
+  for i = 1, loops do
+    local elapsed, peak = prestige_grow(cfg, TOX_HALF)
+    cumulative = cumulative + elapsed
+    local gained = tree:collapse(1) -- voluntary cash-out (penalty 1 = full peak banked)
+    prestige_autobuy(tree)
+    print(
+      string.format(
+        "%-5d %9.1fm %9s %9d %9d   %s",
+        i,
+        elapsed / 60,
+        fmt_pop(peak),
+        gained,
+        tree:currency_amount(),
+        prestige_owned(tree)
+      )
+    )
+  end
+  print(string.rep("-", 100))
+  local BUDGET_MIN = 15 -- the BALANCE.md pacing target (~15 min over the run of loops)
+  print(
+    string.format(
+      "CUMULATIVE sim time over %d loops: %.1f min   [budget ~%d min; %s]",
+      loops,
+      cumulative / 60,
+      BUDGET_MIN,
+      (cumulative / 60 <= BUDGET_MIN) and "within budget"
+        or "OVER budget (tune EARN_K / COST_GROWTH / TIER_MULT in spores.lua)"
+    )
+  )
+  print("tune the SPORE_* earning/cost constants in lib/layers/cell/spores.lua, then re-run.")
+  print("")
+end
+
+-- ---------------------------------------------------------------------------
 -- Entry.
 -- ---------------------------------------------------------------------------
 local mode = arg[1]
@@ -1358,6 +1569,8 @@ elseif mode == "counters" then
   counters()
 elseif mode == "survsweep" then
   survival_sweep(arg[2], arg[3], arg[4], arg[5])
+elseif mode == "prestige" then
+  prestige_mode(arg[2])
 else
   scenario_table()
 end
