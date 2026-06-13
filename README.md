@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> **This repository has moved.** `botworld` is now part of the
+> [**lua-games** monorepo](https://github.com/theroymind/lua-games), at
+> [`games/botworld`](https://github.com/theroymind/lua-games/tree/main/games/botworld).
+> This repo is archived (read-only); development continues in the monorepo.
+
+---
+
 # botworld
 
 Prototype/benchmark testbed for a Starvester-inspired multi-scale incremental game,
